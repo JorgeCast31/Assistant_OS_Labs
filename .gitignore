@@ -1,0 +1,74 @@
+# =============================================================================
+# Assistant OS - .gitignore
+# =============================================================================
+
+# ----- Secrets & Environment -----
+.env
+.env.local
+.env.*.local
+secrets/
+**/secrets/
+*.pem
+*.key
+*service-account*.json
+*credentials*.json
+client_secret*.json
+assistant_os/memory/context_store.json
+var/
+
+# ----- Python -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+.eggs/
+*.egg-info/
+*.egg
+dist/
+build/
+
+# ----- Testing -----
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+scratch/
+scripts/
+src/crear_modulo_test.py
+
+# ----- Generated/Runtime -----
+tests_generated/
+*.log
+*.ndjson
+
+# ----- Memory (runtime state, logs) -----
+assistant_os/memory/state.json
+assistant_os/memory/log.ndjson
+assistant_os/memory/taxonomy_cache.json
+
+# ----- Scratch outputs (auto-generated module files) -----
+src/crea_modulo_*
+src/crear_modulo_test_*
+
+# ----- Seeds (real data, allow templates) -----
+seeds/*.json
+!seeds/*.example.json
+!seeds/*.template.json
+
+# ----- IDE / Editor -----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ----- Misc -----
+Thumbs.db
+*.bak

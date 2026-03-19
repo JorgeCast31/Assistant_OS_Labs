@@ -1,0 +1,23 @@
+{
+  "schema_version": "work_seed.v1",
+  "defaults": {
+    "status": "INBOX",
+    "load": "Media",
+    "priority": "P2",
+    "domain": "WORK"
+  },
+  "items": [
+    {
+      "title": "Example task - Replace with your items",
+      "external_id": "example-001",
+      "project": "Tareas personales",
+      "status": "INBOX",
+      "load": "Baja",
+      "priority": "P3",
+      "domain": "WORK",
+      "due": "2026-12-31",
+      "notes": "This is a template item. Replace with your real data.",
+      "tags": []
+    }
+  ]
+}
