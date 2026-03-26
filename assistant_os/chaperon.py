@@ -183,7 +183,21 @@ def _extract_montos_with_positions(text: str) -> list[tuple[float, str, int, int
         monto = float(match.group(1).replace(",", "."))
         if not any(r[2] <= match.start() < r[3] for r in results):
             results.append((monto, "PAB", match.start(), match.end()))
-    
+
+    # M26-A FIX: Bare numbers (no currency symbol) — USD assumed in FIN context.
+    # This is checked last so the dedup guard prevents double-matching numbers
+    # that were already captured by a currency-symbol pattern above.
+    # Lookbehind excludes positions immediately after letters, digits, or
+    # currency characters to avoid matching inside compound tokens (e.g. "v3.0",
+    # "B/.50").  Lookahead excludes the same set plus "." to avoid version strings.
+    for match in re.finditer(
+        r"(?<![A-Za-z\d/$€£¥.])(\d+(?:[.,]\d{1,2})?)(?![A-Za-z\d/$€£¥.])",
+        text,
+    ):
+        monto = float(match.group(1).replace(",", "."))
+        if not any(r[2] <= match.start() < r[3] for r in results):
+            results.append((monto, "USD", match.start(), match.end()))
+
     # Sort by position
     results.sort(key=lambda x: x[2])
     return [(m, c, s, e) for m, c, s, e in results]

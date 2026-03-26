@@ -157,6 +157,7 @@ class UIAction(TypedDict, total=False):
     label: str              # Button/field label
     fields: list[str]       # For forms: list of field names
     options: list[str]      # For select: list of options
+    values: dict[str, str]  # For forms: pre-filled field values (M27)
 
 
 class ChatSession(TypedDict, total=False):
@@ -166,6 +167,34 @@ class ChatSession(TypedDict, total=False):
     context_id: str               # ID to pass on next turn
     last_domain: Optional[str]    # Last classified domain
     last_action_type: Optional[str]
+
+
+class ChatAction(TypedDict, total=False):
+    """
+    Structured action sent by the frontend as first-class intent (M11+).
+
+    Introduced in M11 on the frontend; M12 makes the backend process it
+    explicitly instead of relying on text heuristics.
+
+    Fields:
+        type    — Intent identifier:
+                  'confirm' | 'cancel' | 'select' | 'form_submit' |
+                  'plan_item_execute' | 'chip'
+        target  — trace_id of the originating assistant message (for
+                  correlation; optional)
+        id      — Item identifier / index (used by plan_item_execute)
+        payload — Type-specific structured data:
+                    confirm:           { choice: 'confirm' }
+                    cancel:            { choice: 'cancel' }
+                    select:            { choice: <selected_value> }
+                    form_submit:       { field1: val1, field2: val2, ... }
+                    plan_item_execute: PlanItem dict (monto, categoria, ...)
+                    chip:              { text: <command_text> }
+    """
+    type: str
+    target: Optional[str]
+    id: Optional[str]
+    payload: dict[str, Any]
 
 
 class ChatCoreResponse(TypedDict):

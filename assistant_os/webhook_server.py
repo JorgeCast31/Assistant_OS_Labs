@@ -56,6 +56,8 @@ from .summary import summarize
 from .context_store import store_pending_plan, get_pending_plan, remove_pending_plan
 from .chat_ui import generate_chat_html
 from .chat_core import process_chat_input
+from .chat_renderer import render_chat_response
+from . import chat_db
 from .classifier import (
     classify_text,
     parse_work_query_filters,
@@ -1417,20 +1419,40 @@ def _create_plan_from_intent(text: str, intent: dict) -> Plan:
 
 class WebhookHandler(BaseHTTPRequestHandler):
     """HTTP request handler for /command endpoint."""
-    
+
     # Server instance with shutdown flag
     server: "WebhookHTTPServer"
-    
+
+    _CORS_ORIGINS = {"http://localhost:3100", "http://127.0.0.1:3100"}
+
     def log_message(self, format: str, *args: Any) -> None:
         """Suppress default logging to stderr."""
         pass
-    
+
+    def _cors_origin(self) -> str:
+        origin = self.headers.get("Origin", "")
+        return origin if origin in self._CORS_ORIGINS else ""
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        origin = self._cors_origin()
+        self.send_response(204)
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Assistant-Token")
+            self.send_header("Access-Control-Max-Age", "86400")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _send_json_response(self, status_code: int, data: JsonResponse) -> None:
         """Send JSON response with proper headers."""
         body = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        origin = self._cors_origin()
+        if origin:
+            self.send_header("Access-Control-Allow-Origin", origin)
         self.end_headers()
         self.wfile.write(body)
     
@@ -1519,7 +1541,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if path == "/chat/process":
             self._handle_chat_process(remote)
             return
-        
+
+        # M17: POST /chat/sessions  — create a new session
+        if path == "/chat/sessions":
+            self._handle_post_chat_sessions(remote)
+            return
+
         # Route: /fin/plan (Plan Always - main entry for FIN domain)
         if path == "/fin/plan":
             self._handle_fin_plan(remote)
@@ -1601,6 +1628,29 @@ class WebhookHandler(BaseHTTPRequestHandler):
         _log_webhook_event(path, remote, ok=False)
         self._send_json_response(status, error)
     
+    # M17: PATCH and DELETE for session management ─────────────────────────────
+
+    def do_PATCH(self) -> None:  # noqa: N802
+        """Handle PATCH requests (chat session updates)."""
+        remote = self._get_remote_addr()
+        path   = self._get_path_without_query()
+        m = re.match(r"^/chat/sessions/([^/]+)$", path)
+        if m:
+            self._handle_patch_chat_session(m.group(1), remote)
+            return
+        status, error = _make_json_error(405, "Method not allowed", "MethodNotAllowed")
+        self._send_json_response(status, error)
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        """Handle DELETE requests (chat session removal)."""
+        path = self._get_path_without_query()
+        m = re.match(r"^/chat/sessions/([^/]+)$", path)
+        if m:
+            self._handle_delete_chat_session(m.group(1))
+            return
+        status, error = _make_json_error(405, "Method not allowed", "MethodNotAllowed")
+        self._send_json_response(status, error)
+
     def do_GET(self) -> None:
         """Handle GET requests (health, chat UI, chat history, sheets status)."""
         path = self._get_path_without_query()
@@ -1634,7 +1684,23 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if path == "/chat/history":
             self._handle_chat_history()
             return
-        
+
+        # M17: GET /chat/sessions  — list all sessions
+        if path == "/chat/sessions":
+            self._handle_get_chat_sessions()
+            return
+
+        # M17: GET /chat/sessions/{id}  — session detail + messages
+        _m17_get = re.match(r"^/chat/sessions/([^/]+)$", path)
+        if _m17_get:
+            self._handle_get_chat_session(_m17_get.group(1))
+            return
+
+        # M21: GET /chat/search?q=...  — full-text search across messages
+        if path == "/chat/search":
+            self._handle_chat_search()
+            return
+
         if path == "/fin/sheets/status":
             self._handle_fin_sheets_status()
             return
@@ -1647,6 +1713,122 @@ class WebhookHandler(BaseHTTPRequestHandler):
         status, error = _make_json_error(405, "Method not allowed. Use POST.", "MethodNotAllowed")
         self._send_json_response(status, error)
     
+    # ── M21: Message search ───────────────────────────────────────────────────
+
+    def _handle_chat_search(self) -> None:
+        """GET /chat/search?q=... — full-text search across all persisted messages."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        from urllib.parse import unquote_plus
+        raw_params = self._parse_query_params()
+        q = unquote_plus(raw_params.get("q", "")).strip()
+
+        if len(q) < 2:
+            self._send_json_response(
+                400, {"ok": False, "error": "Query too short (min 2 chars)"}
+            )
+            return
+
+        results = chat_db.search_messages(q)
+        self._send_json_response(200, {"ok": True, "results": results, "count": len(results)})
+
+    # ── M17: Chat session CRUD handlers ──────────────────────────────────────
+
+    def _handle_get_chat_sessions(self) -> None:
+        """GET /chat/sessions — list all sessions."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+        sessions = chat_db.list_sessions()
+        self._send_json_response(200, {"ok": True, "sessions": sessions})
+
+    def _handle_post_chat_sessions(self, remote: str) -> None:
+        """POST /chat/sessions — create a session."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+        result = self._read_body()
+        if result[1] is not None:
+            self._send_json_response(*result[1])
+            return
+        try:
+            data = json.loads(result[0].decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        import uuid as _uuid
+        session_id = str(data.get("id") or _uuid.uuid4())
+        title      = str(data.get("title") or "Nuevo chat")
+        session    = chat_db.create_session(session_id, title)
+        self._send_json_response(201, {"ok": True, "session": session})
+
+    def _handle_get_chat_session(self, session_id: str) -> None:
+        """GET /chat/sessions/{id} — session detail with messages."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+        session = chat_db.get_session_with_messages(session_id)
+        if session is None:
+            status, error = _make_json_error(404, f"Session {session_id!r} not found", "NotFound")
+            self._send_json_response(status, error)
+            return
+        self._send_json_response(200, {"ok": True, "session": session})
+
+    def _handle_patch_chat_session(self, session_id: str, remote: str) -> None:
+        """PATCH /chat/sessions/{id} — update title / context_id / messages."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+        result = self._read_body()
+        if result[1] is not None:
+            self._send_json_response(*result[1])
+            return
+        try:
+            data = json.loads(result[0].decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        kwargs = {}
+        if "title"      in data: kwargs["title"]      = data["title"]
+        if "context_id" in data: kwargs["context_id"] = data["context_id"]
+        if "messages"   in data: kwargs["messages"]   = data["messages"]
+        session = chat_db.update_session(session_id, **kwargs)
+        if session is None:
+            status, error = _make_json_error(404, f"Session {session_id!r} not found", "NotFound")
+            self._send_json_response(status, error)
+            return
+        self._send_json_response(200, {"ok": True, "session": session})
+
+    def _handle_delete_chat_session(self, session_id: str) -> None:
+        """DELETE /chat/sessions/{id} — remove session and its messages."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+        deleted = chat_db.delete_session(session_id)
+        if not deleted:
+            status, error = _make_json_error(404, f"Session {session_id!r} not found", "NotFound")
+            self._send_json_response(status, error)
+            return
+        self._send_json_response(200, {"ok": True})
+
+    # ─────────────────────────────────────────────────────────────────────────
+
     def _handle_chat_ui(self) -> None:
         """Serve the chat UI HTML page."""
         html = generate_chat_html()
@@ -2200,19 +2382,31 @@ class WebhookHandler(BaseHTTPRequestHandler):
     
     def _handle_chat_process(self, remote: str) -> None:
         """Handle POST /chat/process - Backend is King unified processing.
-        
-        This is the single entry point for all chat messages.
-        The backend decides routing, NO UI-side classification.
-        
-        Request:
+
+        Single entry point for all chat messages.  The backend owns routing —
+        no UI-side classification.
+
+        Request (M12 contract):
             {
-                "text": str (required),
-                "session_context": dict (optional),
-                "conversation_id": str (optional)
+                "text":             str   — optional when action is present
+                "action":           dict  — optional structured action (M12)
+                    {
+                        "type":     str   — 'confirm'|'cancel'|'select'|
+                                           'form_submit'|'plan_item_execute'
+                        "target":   str?  — trace_id of originating message
+                        "id":       str?  — item id (plan_item_execute)
+                        "payload":  dict? — type-specific data
+                    }
+                "session_context":  dict  — optional multi-turn state
+                "conversation_id":  str   — optional, for logging
             }
-        
+
+        Validation:
+            At least one of "text" (non-empty) OR "action" must be present.
+
         Response:
-            ChatCoreResponse with trace_id, domain, intent, mode, ui_actions, etc.
+            ChatCoreResponse fields: trace_id, domain, intent, mode,
+            ui_actions, plan, needs_confirmation, session, audit.
         """
         import logging
         _log = logging.getLogger("chat_process")
@@ -2254,17 +2448,51 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._send_json_response(status, error)
             return
         
-        # Get text (required)
-        text = data.get("text", "")
-        if not isinstance(text, str) or not text.strip():
-            status, error = _make_json_error(400, 'Missing required field: "text"', "BadRequest")
+        # --- M12: Extract text and action (at least one required) -----------
+        text_raw = data.get("text", "")
+        text = text_raw.strip() if isinstance(text_raw, str) else ""
+
+        action_raw = data.get("action")  # May be None, dict, or garbage
+
+        # Validate action shape early so we can return a clean 400 before
+        # touching the core pipeline.
+        if action_raw is not None and not isinstance(action_raw, dict):
+            status, error = _make_json_error(
+                400, '"action" must be a JSON object', "BadRequest"
+            )
             self._send_json_response(status, error)
             return
-        
-        text = text.strip()
-        
+
+        if action_raw is not None and not isinstance(action_raw.get("type", ""), str):
+            status, error = _make_json_error(
+                400, '"action.type" must be a non-empty string', "BadRequest"
+            )
+            self._send_json_response(status, error)
+            return
+
+        # At least one of text or action must be meaningful
+        if not text and action_raw is None:
+            status, error = _make_json_error(
+                400,
+                'Missing required field: provide "text", "action", or both',
+                "BadRequest",
+            )
+            self._send_json_response(status, error)
+            return
+
         # Get optional session context
         session_data = data.get("session_context", {})
+        if not isinstance(session_data, dict):
+            session_data = {}
+
+        # M17: if session_id provided, load context_id from DB (authoritative)
+        session_id = data.get("session_id") if isinstance(data.get("session_id"), str) else None
+        if session_id:
+            db_sess = chat_db.get_session(session_id)
+            if db_sess and db_sess.get("context_id"):
+                session_data = dict(session_data)
+                session_data["context_id"] = db_sess["context_id"]
+
         session = ChatSession(
             pending_flow=session_data.get("pending_flow"),
             pending_data=session_data.get("pending_data", {}),
@@ -2272,23 +2500,35 @@ class WebhookHandler(BaseHTTPRequestHandler):
             last_domain=session_data.get("last_domain"),
             last_action_type=session_data.get("last_action_type"),
         )
-        
+
         # Get optional conversation_id for logging
         conversation_id = data.get("conversation_id", "")
-        
+
         # --- BACKEND IS KING: Process through chat_core ---
-        response: ChatCoreResponse = process_chat_input(text, session)
-        
-        # Logging: trace_id, intent, pending_flow, action_types
-        action_types = [a.get("type", "") for a in response.get("ui_actions", [])]
+        # action_raw is passed as-is; parse_action() in chat_core validates it.
+        # M23 diagnostic: log incoming session state + action before dispatching
+        incoming_action = action_raw.get("type") if isinstance(action_raw, dict) else None
         _log.info(
-            f"[CHAT_PROCESS] trace_id={response.get('trace_id', 'N/A')} "
-            f"session_id={session.get('context_id', 'N/A')[:8]} "
-            f"intent={response['domain']}/{response['intent']} "
-            f"mode={response['mode']} "
-            f"pending_flow={response['session'].get('pending_flow', None)} "
-            f"ui_actions={action_types} "
-            f"text_preview={text[:30]!r}"
+            "[M23][RECV] action=%s pending_flow_in=%s context_id=%s text=%r",
+            incoming_action or "None",
+            session.get("pending_flow") or "None",
+            (session.get("context_id") or "")[:8],
+            text[:40],
+        )
+
+        response: ChatCoreResponse = process_chat_input(
+            text, session, action=action_raw
+        )
+
+        # Logging: trace_id, intent, pending_flow, action_types
+        ui_action_types = [a.get("type", "") for a in response.get("ui_actions", [])]
+        _log.info(
+            "[M23][RESP] trace_id=%s intent=%s/%s mode=%s pending_flow_out=%s ui_actions=%s",
+            response.get("trace_id", "N/A")[:8],
+            response["domain"], response["intent"],
+            response["mode"],
+            response["session"].get("pending_flow") or "None",
+            ui_action_types,
         )
         
         # Log chat message
@@ -2300,9 +2540,21 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 context_id=response["session"].get("context_id", ""),
             )
         
+        # Layer 2: render human-readable message from structured response
+        rendered = render_chat_response(response)
+
+        # Build base audit — merge core audit with action-level metadata so the
+        # client can correlate which structured action triggered this response.
+        base_audit = dict(response.get("audit", {}))
+        if isinstance(action_raw, dict):
+            base_audit.setdefault("action_type",   action_raw.get("type"))
+            base_audit.setdefault("action_target", action_raw.get("target"))
+            base_audit.setdefault("action_id",     action_raw.get("id"))
+
         # Convert ChatCoreResponse to JSON-serializable dict
         response_data = {
             "ok": True,
+            "message": rendered.message,
             "trace_id": response.get("trace_id", ""),
             "domain": response["domain"],
             "intent": response["intent"],
@@ -2312,9 +2564,48 @@ class WebhookHandler(BaseHTTPRequestHandler):
             "plan": response.get("plan", []),
             "ui_actions": response.get("ui_actions", []),
             "session": dict(response.get("session", {})),
-            "audit": response.get("audit", {}),
+            "audit": base_audit,
         }
-        
+
+        # M17: persist messages + update context_id if session_id was provided
+        if session_id:
+            import uuid as _uuid2
+            user_content = text or (
+                f"[{action_raw.get('type', 'action')}]"
+                if isinstance(action_raw, dict) else "[action]"
+            )
+            new_ctx = response["session"].get("context_id")
+            try:
+                chat_db.append_message(session_id, "user", {
+                    "id":        str(_uuid2.uuid4()),
+                    "role":      "user",
+                    "content":   user_content,
+                    "status":    "sent",
+                    "createdAt": now_iso(),
+                })
+                chat_db.append_message(session_id, "assistant", {
+                    "id":        str(_uuid2.uuid4()),
+                    "role":      "assistant",
+                    "content":   rendered.message,
+                    "status":    "sent",
+                    "createdAt": now_iso(),
+                    "uiActions": response.get("ui_actions") or [],
+                    "plan":      response.get("plan") or [],
+                    "meta": {
+                        "domain":            response["domain"],
+                        "intent":            response["intent"],
+                        "mode":              response["mode"],
+                        "traceId":           response.get("trace_id", ""),
+                        "needsConfirmation": response.get("needs_confirmation", False),
+                    },
+                    "kind":    "confirmation_request" if response.get("needs_confirmation") else "normal",
+                    "handled": False,
+                })
+                if new_ctx:
+                    chat_db.update_session(session_id, context_id=new_ctx)
+            except Exception as _m17_exc:
+                _log.warning("[M17] persist failed for session %s: %s", session_id, _m17_exc)
+
         self._send_json_response(200, response_data)
     
     def _handle_fin_plan(self, remote: str) -> None:

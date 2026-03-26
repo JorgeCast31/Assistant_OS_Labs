@@ -714,6 +714,20 @@ def classify_text(request: ClassifyRequest) -> Intent:
         needs_conf = False
         reason_parts.append("override:code_op->CODE")
 
+    # WORK operations override domain to WORK.
+    # Without this, prompts like "crear tarea revisar autenticacion" (no WORK
+    # domain keywords) fall through to domain=ENERGY at 0.5 confidence.
+    # chat_core.py has a parallel guard, but classify_text should be self-consistent.
+    elif operation in (OP_WORK_CREATE, OP_WORK_UPDATE, OP_WORK_DELETE, OP_WORK_QUERY) \
+            and winner != DOMAIN_WORK:
+        alternatives = [a for a in alternatives if a["domain"] != DOMAIN_WORK]
+        alternatives.insert(0, IntentAlternative(domain=winner, confidence=round(confidence * 0.6, 3)))
+        alternatives = alternatives[:2]
+        winner = DOMAIN_WORK
+        confidence = max(confidence, 0.90)
+        needs_conf = False
+        reason_parts.append("override:work_op->WORK")
+
     # Complete reason for debugging
     if scores[winner] > 0 and not any("override" in r or "tiebreaker" in r for r in reason_parts):
         reason_parts.append(f"keywords:{winner}={scores[winner]:.1f}")
@@ -1000,6 +1014,9 @@ OPERATIONAL_CODE_EXPLAIN_PATTERNS = [
     r"\bc[oó]mo\s+funciona\b.{0,40}\b(?:c[oó]digo|módulo|archivo|clase|función|script|este|esta)\b",
     r"\bqu[eé]\s+hace\b.{0,40}\b(?:c[oó]digo|módulo|archivo|clase|función|este|esta)\b",
     r"\bdescribe\b.{0,40}\b(?:módulo|archivo|clase|función|c[oó]digo|script)\b",
+    # M27: "explica <file.ext>" / "cómo funciona <file.ext>" — filename is explain target
+    r"\bexpl[ií]ca(?:me|r)?\b.{0,80}\b\w+\.(?:py|ts|js|tsx|jsx|go|rs)\b",
+    r"\bc[oó]mo\s+funciona\b.{0,80}\b\w+\.(?:py|ts|js|tsx|jsx|go)\b",
 ]
 
 # CODE_REVIEW — read-only review / audit
@@ -1008,27 +1025,53 @@ OPERATIONAL_CODE_REVIEW_PATTERNS = [
     r"\banaliza\b.{0,40}\b(?:c[oó]digo|módulo|archivo|clase|función)\b",
     r"\bencuentra\b.{0,40}\b(?:bugs?|errores?)\b",
     r"\baudit[ao]\b.{0,40}\b(?:c[oó]digo|módulo|archivo)\b",
+    # M27: "revisa <file.ext>" — filename with code extension is strong review signal
+    r"\brevis[ae]\b.{0,60}\b\w+\.(?:py|ts|js|tsx|jsx|go|rs|yaml|yml)\b",
+    r"\bsugiere\b.{0,50}\bmejoras?\b",
+    # M29: structural index requests — "lista las funciones de X", "índice de X.py"
+    r"\blista(?:r)?\s+(?:las?\s+)?(?:funciones?|clases?|m[eé]todos?|s[íi]mbolos?)\b",
+    r"\b[íi]ndice\s+(?:de|del?)\s+\w+\.(?:py|ts|js|tsx|jsx|go|rs)\b",
+    r"\bqu[eé]\s+(?:funciones?|clases?|m[eé]todos?)\s+tiene\b",
+    r"\bqu[eé]\s+hay\s+en\b.{0,60}\b\w+\.(?:py|ts|js|tsx|jsx|go|rs)\b",
 ]
 
-# CODE_FIX — mutating: fix / correct code (requires code noun or "bug")
+# CODE_FIX — mutating: fix / correct code (requires code noun or technical context)
 OPERATIONAL_CODE_FIX_PATTERNS = [
-    r"\barregla[r]?\b.{0,60}\b(?:bug|error|c[oó]digo|archivo|función|clase|módulo|script)\b",
-    r"\bcorrige?\b.{0,60}\b(?:bug|error|c[oó]digo|archivo|función)\b",
-    r"\bfixea?\b",                                        # "fixea" is always code-specific
+    # "arregla" + code noun (extended to include auth, token, manejo, webhook)
+    r"\barregla[r]?\b.{0,60}\b(?:bug|error|problema|fallo|c[oó]digo|archivo|función|clase|módulo|script|auth|autenticaci[oó]n|token|manejo|proxy|webhook|middleware|endpoint|handler)\b",
+    # "corrige" + code noun (added auth short-form and token)
+    r"\bcorrige?\b.{0,60}\b(?:bug|error|problema|fallo|c[oó]digo|archivo|función|autenticaci[oó]n|auth|token|proxy|middleware|endpoint|handler|webhook)\b",
+    r"\bfixea?\b",                                        # "fixea" — Spanish conjugation
+    # "fix" (English) + code noun — e.g. "fix auth del webhook"
+    r"\bfix\b.{0,60}\b(?:bug|error|auth|autenticaci[oó]n|token|proxy|middleware|endpoint|handler|webhook|c[oó]digo|función|clase|script)\b",
     r"\bsoluciona[r]?\b.{0,60}\b(?:bug|error|problema)\b.{0,40}\b(?:c[oó]digo|archivo|función)?\b",
     r"\bhaz\s+que\s+(?:esto|este)\s+funcione\b",
+    # Pattern for "corrige este/el" where target is a code artifact
+    r"\bcorrige?\s+(?:el|la|este|esta|los|las|un|una)\b.{0,80}\b(?:proxy|middleware|endpoint|ruta|handler|hook|auth|token)\b",
+    # M27: refactorizar, ajustar, extender — common mutating verbs with code nouns
+    r"\brefactoriza[r]?\b.{0,80}\b(?:c[oó]digo|manejo|archivo|función|clase|módulo|auth|autenticaci[oó]n|token|rutas?|handler|middleware|endpoint|hook|proxy|webhook)\b",
+    r"\bajusta[r]?\b.{0,60}\b(?:endpoint|ruta|handler|middleware|auth|token|función|clase|api|proxy|webhook|parser|schema)\b",
+    r"\bextiende?\b.{0,60}\b(?:handler|endpoint|clase|función|api|ruta|schema|parser)\b",
+    r"\ba[ñn]ade?\s+validaci[oó]n\b",
+    # "soluciona el problema de X" where X is a code artifact
+    r"\bsoluciona[r]?\b.{0,60}\b(?:auth|autenticaci[oó]n|token|proxy|middleware|endpoint|ruta|handler|hook|webhook)\b",
 ]
 
-# CODE_CREATE — mutating: create new file / class / function
+# CODE_CREATE — mutating: create new file / class / function / endpoint support
 # Deliberately excludes "módulo" (ambiguous with EIPROTA research modules) and
 # bare "script" (ambiguous with WORK tasks); require language qualifier for script.
 OPERATIONAL_CODE_CREATE_PATTERNS = [
     r"\b(?:crea|crear)\b.{0,60}\b(?:archivo|clase|función|método)\b",
     r"\b(?:crea|crear)\b.{0,40}\bscript\b.{0,30}\b(?:python|bash|shell|js|javascript|\.py|\.sh)\b",
     r"\b(?:genera|generar)\b.{0,60}\b(?:archivo|clase|función)\b",
-    r"\b(?:implementa|implementar)\b.{0,60}\b(?:clase|función|método)\b",
+    # "implementa" + code noun (extended to include validación, handler, endpoint, api, soporte)
+    r"\b(?:implementa|implementar)\b.{0,60}\b(?:clase|función|método|validaci[oó]n|endpoint|handler|middleware|soporte|api|token|auth)\b",
     r"\bnuevo?\s+(?:archivo|clase|función)\b",
     r"\bescribe\b.{0,40}\b(?:clase|función)\b",
+    # M23+: "agrega/añade soporte/funcionalidad/campo/endpoint/api" — clearly code mutation
+    r"\b(?:agrega|agregar|a[ñn]ade|a[ñn]adir)\b.{0,80}\b(?:soporte|funcionalidad|campo|par[aá]metro|endpoint|ruta|opci[oó]n)\b",
+    # API/route path in the prompt is strong evidence of CODE context
+    r"\b(?:agrega|agregar|a[ñn]ade|a[ñn]adir|implementa|crea|crear)\b.{0,40}/(?:api|chat|codeops|auth|app)/",
 ]
 
 # Frozen set used in classify_text for domain override
@@ -1312,11 +1355,26 @@ def parse_work_query_filters(text: str) -> dict:
     # ---------------------------------------------------------------------------
     # Detect load (unchanged)
     # ---------------------------------------------------------------------------
-    if re.search(r"\bcarga\s+alta\b|\balta\s+carga\b|\bpesad[oa]s?\b", text_lower):
+    if re.search(
+        r"\bcarga\s+alta\b|\balta\s+carga\b|\bpesad[oa]s?\b"
+        r"|\balta\s+prioridad\b|\bprioridad\s+alta\b"
+        r"|\bhigh\s+priority\b|\bprioridad[:\s]+alta\b",
+        text_lower,
+    ):
         filters["load"] = "Alta"
-    elif re.search(r"\bcarga\s+media\b|\bmedia\s+carga\b", text_lower):
+    elif re.search(
+        r"\bcarga\s+media\b|\bmedia\s+carga\b"
+        r"|\bmedia\s+prioridad\b|\bprioridad\s+media\b"
+        r"|\bmedium\s+priority\b|\bprioridad[:\s]+media\b",
+        text_lower,
+    ):
         filters["load"] = "Media"
-    elif re.search(r"\bcarga\s+baja\b|\bbaja\s+carga\b|\blivianas?\b", text_lower):
+    elif re.search(
+        r"\bcarga\s+baja\b|\bbaja\s+carga\b|\blivianas?\b"
+        r"|\bbaja\s+prioridad\b|\bprioridad\s+baja\b"
+        r"|\blow\s+priority\b|\bprioridad[:\s]+baja\b",
+        text_lower,
+    ):
         filters["load"] = "Baja"
     
     # ---------------------------------------------------------------------------
