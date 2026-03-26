@@ -99,9 +99,9 @@ SHEETS_EXPECTED_HEADER: list[str] = [
 # Canonical list of responsible parties for expenses.
 # These exact strings are used in UI, parsing, validation, and Sheets.
 FIN_RESPONSIBLES: list[str] = [
+    "Jorge",      # ← index 0 = default when none detected
     "Ana",
     "Conejos",
-    "Jorge",
     "eiProta",
     "Proyectos",
     "Hogar",

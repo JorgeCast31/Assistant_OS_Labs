@@ -26,7 +26,7 @@ File reading
 If both target_file and workspace are provided, the file is read and included
 in the prompt as a fenced code block.  Hard limits prevent sending files that
 are too large:
-  - _MAX_FILE_BYTES: 32 768 bytes (32 KB) — truncates the API context safely
+  - _MAX_FILE_BYTES: 65 536 bytes (64 KB) — keeps API context manageable
   - Binary files: read with errors="replace" to avoid decode failures
 
 Context-only mode
@@ -43,12 +43,15 @@ Missing optional fields are handled gracefully with empty-string fallbacks.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Callable, Optional
 
+_log = logging.getLogger(__name__)
+
 # Maximum file size accepted for analysis.  Files larger than this are rejected
 # with a clean error rather than silently truncated (which would mislead the AI).
-_MAX_FILE_BYTES: int = 32_768  # 32 KB
+_MAX_FILE_BYTES: int = 65_536  # 64 KB
 
 _SYSTEM_PROMPT = """\
 You are an expert code analyst embedded in a developer assistant.
@@ -63,7 +66,12 @@ Guidelines:
 - Use bullet points for lists of findings or features.
 - Keep responses under 400 words unless the file is large and complex.
 - Do not repeat the code back verbatim.
-- If no file is provided, respond based on the user question alone.
+- CRITICAL: When file content is provided in the prompt, base your analysis \
+EXCLUSIVELY on that real code. Do NOT produce generic advice or assume anything \
+not present in the provided content. Reference specific line numbers, function \
+names, and patterns from the actual code.
+- If no file content is provided (only a file path or user question), \
+say so explicitly and respond based on what you can infer.
 """
 
 
@@ -71,44 +79,108 @@ Guidelines:
 # File reading
 # ---------------------------------------------------------------------------
 
-def _read_target_file(workspace: str, target_file: str) -> tuple[Optional[str], Optional[str]]:
+def _resolve_and_check_path(
+    workspace: str,
+    target_file: str,
+) -> tuple[Optional[str], Optional[str]]:
     """
-    Read the contents of target_file relative to workspace.
-
-    Returns (content, error_message).  Exactly one will be None:
-      - (content, None)  on success
-      - (None, message)  on any failure
-      - (None, None)     when target_file or workspace is empty (context-only mode)
+    Resolve and security-check a file path.
+    Returns (abs_path, error) — abs_path is None on error.
     """
     if not target_file or not workspace:
         return None, None  # context-only mode — not an error
 
     abs_path = os.path.normpath(os.path.join(workspace, target_file))
-
-    # Guard: reject paths that escape the workspace root (traversal attempt)
     workspace_norm = os.path.normpath(workspace)
     if not abs_path.startswith(workspace_norm + os.sep) and abs_path != workspace_norm:
         return None, f"Path traversal rejected: {target_file!r} escapes workspace"
-
     if not os.path.exists(abs_path):
         return None, f"File not found: {target_file!r}"
-
     if not os.path.isfile(abs_path):
         return None, f"Not a regular file: {target_file!r}"
+    return abs_path, None
+
+
+def _read_target_file(
+    workspace: str,
+    target_file: str,
+    symbol_name: str = "",
+    line_start: Optional[int] = None,
+    line_end: Optional[int] = None,
+) -> tuple[Optional[str], Optional[str], Optional[int]]:
+    """
+    Read target_file relative to workspace, optionally extracting a section.
+
+    When symbol_name or line_start is provided:
+      - The file is read in full (size limit bypassed for local extraction)
+      - Only the matching block is returned
+
+    When neither is provided:
+      - Files exceeding _MAX_FILE_BYTES are rejected to protect API context
+
+    Returns (content, error, context_start_line):
+      - (content, None, line)  on success  — line is 1-based, None if full file
+      - (None, error, None)    on failure
+      - (None, None, None)     when target_file or workspace is empty
+    """
+    abs_path, err = _resolve_and_check_path(workspace, target_file)
+    if err:
+        return None, err, None
+    if abs_path is None:
+        return None, None, None  # context-only mode
 
     file_size = os.path.getsize(abs_path)
-    if file_size > _MAX_FILE_BYTES:
+    _log.debug("[review_executor] reading %r  size=%d bytes", target_file, file_size)
+
+    # Size check: only enforced when no targeted extraction is requested
+    if file_size > _MAX_FILE_BYTES and not symbol_name and line_start is None:
+        _log.info(
+            "[review_executor] file too large: %r  size=%d  limit=%d",
+            target_file, file_size, _MAX_FILE_BYTES,
+        )
         return None, (
             f"File too large to analyse: {target_file!r} "
             f"({file_size:,} bytes; limit is {_MAX_FILE_BYTES:,} bytes). "
             "Split the file or specify a smaller excerpt."
-        )
+        ), None
 
     try:
         with open(abs_path, "r", encoding="utf-8", errors="replace") as fh:
-            return fh.read(), None
+            full_content = fh.read()
     except OSError as exc:
-        return None, f"Cannot read {target_file!r}: {exc}"
+        _log.warning("[review_executor] cannot read %r: %s", target_file, exc)
+        return None, f"Cannot read {target_file!r}: {exc}", None
+
+    # Symbol targeting
+    if symbol_name:
+        from .code_extractor import extract_symbol, detect_lang
+        lang = detect_lang(target_file)
+        block, start_line, sym_err = extract_symbol(full_content, symbol_name, lang)
+        if sym_err:
+            _log.warning("[review_executor] symbol %r not found in %r: %s", symbol_name, target_file, sym_err)
+            return None, sym_err, None
+        _log.info(
+            "[review_executor] extracted symbol %r from %r  start_line=%s  chars=%d",
+            symbol_name, target_file, start_line, len(block or ""),
+        )
+        return block, None, start_line
+
+    # Line range targeting
+    if line_start is not None:
+        from .code_extractor import extract_line_range
+        effective_end = line_end if line_end is not None else line_start + 100
+        block, rng_err = extract_line_range(full_content, line_start, effective_end)
+        if rng_err:
+            return None, rng_err, None
+        _log.info(
+            "[review_executor] extracted lines %d-%d from %r  chars=%d",
+            line_start, effective_end, target_file, len(block or ""),
+        )
+        return block, None, line_start
+
+    # Full file (within size limit)
+    _log.info("[review_executor] loaded %r  chars=%d", target_file, len(full_content))
+    return full_content, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -120,15 +192,18 @@ def _build_user_prompt(
     target_file: str,
     file_content: Optional[str],
     context: str,
+    symbol_name: str = "",
+    start_line: Optional[int] = None,
+    line_end: Optional[int] = None,
 ) -> str:
     """
     Build the user-turn prompt sent to Claude.
 
     Structure:
       [Action directive]
-      [File path if present]
-      [User question / context if present]
-      [File content block if available, else notice]
+      [File path + optional extraction annotation]
+      [User question / context]
+      [File content block or notice]
     """
     parts: list[str] = []
 
@@ -140,8 +215,16 @@ def _build_user_prompt(
             "security concerns, and concrete improvements."
         )
 
+    # File annotation with extraction context
     if target_file:
-        parts.append(f"File: `{target_file}`")
+        if symbol_name and start_line:
+            parts.append(f"File: `{target_file}` — extracted symbol `{symbol_name}` (starts at line {start_line})")
+        elif start_line is not None and line_end is not None:
+            parts.append(f"File: `{target_file}` — lines {start_line}-{line_end}")
+        elif start_line is not None:
+            parts.append(f"File: `{target_file}` — starting at line {start_line}")
+        else:
+            parts.append(f"File: `{target_file}`")
 
     if context and context.strip():
         parts.append(f"User question / context: {context.strip()}")
@@ -230,20 +313,57 @@ def build_claude_review_executor(
         client = _anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     def executor(inp: dict) -> dict:
-        action: str = inp.get("action", "CODE_REVIEW")
+        action: str      = inp.get("action", "CODE_REVIEW")
         target_file: str = inp.get("target_file", "")
-        workspace: str = inp.get("workspace", "")
-        context: str = inp.get("context", "")
+        workspace: str   = inp.get("workspace", "")
+        context: str     = inp.get("context", "")
+        # M29: optional targeting params
+        symbol_name: str        = inp.get("symbol_name", "")
+        line_start: Optional[int] = inp.get("line_start")
+        line_end: Optional[int]   = inp.get("line_end")
 
-        # Step 1: read file (None content = context-only mode, not an error)
-        file_content, read_error = _read_target_file(workspace, target_file)
+        # [M29.5][executor] — what the executor received
+        _log.info(
+            "[M29.5][executor] action=%s  file=%r  workspace=%r  symbol=%r  "
+            "line_start=%s  line_end=%s",
+            action, target_file, workspace[:40] if workspace else "",
+            symbol_name or None, line_start, line_end,
+        )
+
+        # Step 1: read file — supports targeted extraction (symbol / line range)
+        file_content, read_error, ctx_start_line = _read_target_file(
+            workspace, target_file,
+            symbol_name=symbol_name,
+            line_start=line_start,
+            line_end=line_end,
+        )
         if read_error:
+            _log.warning("[M29.5][executor] read_error: %s", read_error)
             return {"ok": False, "error": read_error}
 
-        # Step 2: build prompt
-        prompt = _build_user_prompt(action, target_file, file_content, context)
+        # Step 2: build prompt with extraction annotation
+        prompt = _build_user_prompt(
+            action, target_file, file_content, context,
+            symbol_name=symbol_name,
+            start_line=ctx_start_line,
+            line_end=line_end,
+        )
+
+        # [M29.5][prompt] — what will actually be sent to Claude
+        _log.info(
+            "[M29.5][prompt] has_content=%s  content_chars=%d  symbol=%r  start_line=%s",
+            file_content is not None,
+            len(file_content) if file_content else 0,
+            symbol_name or None,
+            ctx_start_line,
+        )
 
         # Step 3: call Claude
+        _log.info(
+            "[M29.5][executor] calling Claude  action=%s  file=%r  symbol=%r  "
+            "start_line=%s  prompt_chars=%d",
+            action, target_file, symbol_name or None, ctx_start_line, len(prompt),
+        )
         try:
             response = client.messages.create(
                 model=_model,

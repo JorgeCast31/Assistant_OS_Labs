@@ -15,6 +15,10 @@ secrets/
 client_secret*.json
 assistant_os/memory/context_store.json
 var/
+ui/node_modules/
+node_modules/
+.next/
+assistant_os/memory/chat_sessions.db
 
 # ----- Python -----
 __pycache__/

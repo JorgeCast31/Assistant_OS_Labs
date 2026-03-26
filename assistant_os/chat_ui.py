@@ -25,17 +25,23 @@ def generate_chat_html() -> str:
         }
         
         :root {
-            --bg-primary: #f5f5f5;
-            --bg-secondary: #ffffff;
-            --bg-user: #007aff;
-            --bg-assistant: #e9e9eb;
-            --text-primary: #1c1c1e;
-            --text-secondary: #8e8e93;
+            --bg-primary: #0f1117;
+            --bg-secondary: #1a1d27;
+            --bg-sidebar: #0c0e16;
+            --bg-topbar: #141720;
+            --bg-card: #1e2133;
+            --bg-user: #2563eb;
+            --bg-assistant: #252836;
+            --text-primary: #e2e4ed;
+            --text-secondary: #6b7280;
             --text-user: #ffffff;
-            --border-color: #c6c6c8;
-            --success-color: #34c759;
-            --error-color: #ff3b30;
-            --accent-color: #007aff;
+            --border-color: #2a2d3e;
+            --success-color: #10b981;
+            --error-color: #ef4444;
+            --warning-color: #f59e0b;
+            --accent-color: #3b82f6;
+            --sidebar-width: 200px;
+            --topbar-height: 44px;
             --vh: 1vh;
         }
         
@@ -998,51 +1004,1120 @@ def generate_chat_html() -> str:
             color: #555;
             margin-bottom: 10px;
         }
+
+        /* ================================================================
+           SPA SHELL
+        ================================================================ */
+
+        #appShell {
+            flex: 1;
+            display: flex;
+            flex-direction: row;
+            overflow: hidden;
+            min-height: 0;
+        }
+
+        /* Sidebar */
+        #sidebar {
+            width: var(--sidebar-width);
+            background: var(--bg-sidebar);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            overflow: hidden;
+        }
+
+        .sidebar-brand {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 14px 14px 10px;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text-primary);
+            letter-spacing: 0.3px;
+        }
+
+        .brand-text { flex: 1; }
+
+        .sidebar-nav {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 8px 6px;
+            gap: 2px;
+            overflow-y: auto;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border-radius: 7px;
+            border: none;
+            background: none;
+            color: var(--text-secondary);
+            font-size: 13px;
+            font-family: inherit;
+            cursor: pointer;
+            text-align: left;
+            width: 100%;
+            transition: background 0.15s, color 0.15s;
+        }
+
+        .nav-item:hover {
+            background: rgba(255,255,255,0.06);
+            color: var(--text-primary);
+        }
+
+        .nav-item.active {
+            background: rgba(59, 130, 246, 0.15);
+            color: var(--accent-color);
+            font-weight: 600;
+        }
+
+        .nav-icon { font-size: 14px; width: 18px; text-align: center; }
+
+        .sidebar-footer {
+            padding: 10px 14px;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .sidebar-footer .session-id {
+            font-size: 10px;
+            color: var(--text-secondary);
+            font-family: 'SF Mono', Monaco, monospace;
+        }
+
+        /* Top Bar */
+        #mainArea {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            min-width: 0;
+        }
+
+        #topBar {
+            height: var(--topbar-height);
+            background: var(--bg-topbar);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            padding: 0 12px;
+            gap: 10px;
+            flex-shrink: 0;
+        }
+
+        .topbar-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 60px;
+        }
+
+        .topbar-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        .topbar-center {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+        }
+
+        .topbar-right {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+        }
+
+        /* View container */
+        #viewContainer {
+            flex: 1;
+            overflow: hidden;
+            position: relative;
+            min-height: 0;
+        }
+
+        .view {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .view.hidden { display: none !important; }
+
+        /* Override input-container sticky - flex handles positioning */
+        .input-container {
+            position: relative;
+            bottom: auto;
+            z-index: 10;
+            padding-bottom: max(12px, env(safe-area-inset-bottom));
+        }
+
+        /* Remove excess bottom padding from chat - flex handles it */
+        .chat-container {
+            padding-bottom: 12px;
+        }
+
+        /* ================================================================
+           EXECUTIONS VIEW
+        ================================================================ */
+
+        .executions-split {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+            min-height: 0;
+        }
+
+        .executions-list {
+            width: 260px;
+            flex-shrink: 0;
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background: var(--bg-secondary);
+        }
+
+        .list-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 10px 14px 8px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--border-color);
+            flex-shrink: 0;
+        }
+
+        .list-count {
+            background: rgba(59, 130, 246, 0.15);
+            color: var(--accent-color);
+            font-size: 10px;
+            padding: 1px 7px;
+            border-radius: 10px;
+            font-weight: 700;
+        }
+
+        .list-filters {
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--border-color);
+            flex-shrink: 0;
+        }
+
+        .filter-select {
+            width: 100%;
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            font-size: 12px;
+            padding: 5px 8px;
+            border-radius: 6px;
+            outline: none;
+            cursor: pointer;
+            font-family: inherit;
+        }
+
+        .list-items {
+            flex: 1;
+            overflow-y: auto;
+            padding: 6px;
+        }
+
+        .exec-card {
+            padding: 10px 12px;
+            border-radius: 7px;
+            margin-bottom: 4px;
+            cursor: pointer;
+            border: 1px solid transparent;
+            transition: background 0.15s, border-color 0.15s;
+            background: var(--bg-primary);
+        }
+
+        .exec-card:hover { background: rgba(255,255,255,0.04); }
+
+        .exec-card.selected {
+            border-color: var(--accent-color);
+            background: rgba(59, 130, 246, 0.08);
+        }
+
+        .exec-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+
+        .exec-id {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-primary);
+            font-family: 'SF Mono', Monaco, monospace;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 120px;
+        }
+
+        .exec-status {
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 7px;
+            border-radius: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+
+        .exec-status.status-success, .status-success { background: rgba(16,185,129,0.15); color: #10b981; }
+        .exec-status.status-failed, .status-failed { background: rgba(239,68,68,0.15); color: #ef4444; }
+        .exec-status.status-review, .exec-status.status-needs_review, .status-needs_review { background: rgba(245,158,11,0.15); color: #f59e0b; }
+        .exec-status.status-needs-review { background: rgba(245,158,11,0.15); color: #f59e0b; }
+
+        .exec-summary {
+            font-size: 11px;
+            color: var(--text-secondary);
+            line-height: 1.4;
+            overflow: hidden;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            margin-bottom: 4px;
+        }
+
+        .exec-meta {
+            font-size: 10px;
+            color: var(--text-secondary);
+            opacity: 0.7;
+        }
+
+        /* Execution detail panel */
+        .executions-detail {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background: var(--bg-primary);
+        }
+
+        .detail-empty {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text-secondary);
+            font-size: 13px;
+        }
+
+        #detailContent {
+            display: flex;
+            flex-direction: column;
+            flex: 1;
+            overflow: hidden;
+        }
+
+        #detailContent.hidden { display: none; }
+
+        .detail-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 16px;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+            flex-shrink: 0;
+        }
+
+        .detail-id {
+            font-size: 12px;
+            font-family: 'SF Mono', Monaco, monospace;
+            color: var(--text-secondary);
+            flex: 1;
+        }
+
+        .detail-tabs {
+            display: flex;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+            flex-shrink: 0;
+        }
+
+        .detail-tab {
+            padding: 9px 14px;
+            font-size: 12px;
+            font-weight: 500;
+            cursor: pointer;
+            border: none;
+            background: none;
+            color: var(--text-secondary);
+            border-bottom: 2px solid transparent;
+            font-family: inherit;
+            transition: color 0.15s, border-color 0.15s;
+        }
+
+        .detail-tab:hover { color: var(--text-primary); }
+
+        .detail-tab.active {
+            color: var(--accent-color);
+            border-bottom-color: var(--accent-color);
+        }
+
+        .detail-body {
+            flex: 1;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .detail-pane {
+            display: none;
+            position: absolute;
+            inset: 0;
+            overflow-y: auto;
+            padding: 16px;
+        }
+
+        .detail-pane.active { display: block; }
+
+        /* Pane content */
+        .summary-grid { display: flex; flex-direction: column; gap: 10px; }
+
+        .meta-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            font-size: 12px;
+            padding: 6px 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .meta-key {
+            width: 100px;
+            flex-shrink: 0;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .meta-value { color: var(--text-primary); line-height: 1.4; }
+        .meta-value.mono { font-family: 'SF Mono', Monaco, monospace; font-size: 11px; }
+        .meta-value.dim { color: var(--text-secondary); }
+
+        .log-output {
+            background: #0a0c13;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 12px;
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 11px;
+            color: #9ca3af;
+            white-space: pre-wrap;
+            word-break: break-all;
+            line-height: 1.6;
+        }
+
+        .changes-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
+
+        .change-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            background: var(--bg-secondary);
+            border-radius: 5px;
+            font-size: 12px;
+            font-family: 'SF Mono', Monaco, monospace;
+            color: var(--text-primary);
+        }
+
+        .change-icon {
+            width: 18px;
+            height: 18px;
+            background: rgba(245,158,11,0.15);
+            color: #f59e0b;
+            border-radius: 3px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+
+        .reasons-list { list-style: none; padding: 0; margin: 8px 0; display: flex; flex-direction: column; gap: 4px; }
+        .reasons-list li { padding: 6px 10px; background: var(--bg-secondary); border-radius: 5px; font-size: 12px; color: var(--text-secondary); }
+
+        .error-box {
+            margin-top: 12px;
+            padding: 10px 12px;
+            background: rgba(239,68,68,0.1);
+            border: 1px solid rgba(239,68,68,0.3);
+            border-radius: 6px;
+            font-size: 12px;
+            color: #ef4444;
+            font-family: 'SF Mono', Monaco, monospace;
+        }
+
+        .section-title {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+            margin: 12px 0 6px;
+        }
+
+        .dim-text { color: var(--text-secondary); font-size: 12px; padding: 8px 0; }
+
+        /* ================================================================
+           SYSTEM VIEW
+        ================================================================ */
+
+        .system-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+        }
+
+        .system-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+            gap: 14px;
+        }
+
+        .system-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 16px;
+        }
+
+        .system-card-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .system-card-icon { font-size: 16px; }
+
+        .system-card-title {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-secondary);
+        }
+
+        .system-card-body { font-size: 14px; color: var(--text-primary); }
+
+        .status-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .status-badge.ok { background: rgba(16,185,129,0.15); color: #10b981; }
+        .status-badge.error { background: rgba(239,68,68,0.15); color: #ef4444; }
+
+        .sys-count {
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--accent-color);
+        }
+
+        /* ================================================================
+           DARK MODE OVERRIDES for light-built components
+        ================================================================ */
+
+        .modal {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+        }
+
+        .modal h2 { color: var(--text-primary); }
+        .modal p { color: var(--text-secondary); }
+
+        .modal input {
+            background: var(--bg-primary);
+            border-color: var(--border-color);
+            color: var(--text-primary);
+        }
+
+        .btn-modal.secondary {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .domain-option {
+            background: var(--bg-primary);
+            color: var(--text-primary);
+        }
+
+        .domain-option .domain-name { color: var(--text-primary); }
+        .domain-option .domain-desc { color: var(--text-secondary); }
+
+        .domain-option:hover {
+            background: rgba(59, 130, 246, 0.1);
+            border-color: var(--accent-color);
+        }
+
+        .expense-card {
+            background: var(--bg-card);
+            border-color: var(--border-color);
+        }
+
+        .expense-card .expense-header { color: var(--text-primary); }
+
+        .expense-card .expense-field input,
+        .expense-card .expense-field select {
+            background: var(--bg-primary);
+            border-color: var(--border-color);
+            color: var(--text-primary);
+        }
+
+        .plan-card { background: var(--bg-card); border-color: rgba(59,130,246,0.4); }
+        .plan-card .plan-header { color: var(--accent-color); }
+        .plan-card .plan-item { background: rgba(255,255,255,0.04); }
+
+        .work-update-card { background: var(--bg-card); border-color: rgba(92,107,192,0.4); }
+
+        .fin-clarify-card { background: var(--bg-card); border-color: var(--border-color); }
+        .fin-clarify-card .clarify-amount { color: var(--text-primary); }
+        .fin-clarify-card .clarify-prompt { color: var(--text-secondary); }
+        .fin-clarify-card .clarify-input { background: var(--bg-primary); border-color: var(--border-color); color: var(--text-primary); }
+
+        .confirm-panel { background: var(--bg-card); border-color: rgba(245,158,11,0.4); }
+        .confirm-panel .confirm-text { color: var(--text-primary); }
+        .confirm-btn { background: var(--bg-secondary); border-color: var(--border-color); color: var(--text-primary); }
+
+        .details-panel { background: rgba(255,255,255,0.04); color: var(--text-secondary); }
+
+        .expense-card .expense-success { background: rgba(16,185,129,0.1); border-color: rgba(16,185,129,0.3); color: #10b981; }
+        .expense-card .expense-warning { background: rgba(245,158,11,0.1); border-color: rgba(245,158,11,0.3); color: #f59e0b; }
+
+        #messageInput { color: var(--text-primary); }
+        #messageInput::placeholder { color: var(--text-secondary); }
+
+        /* ================================================================
+           ACTIONS VIEW — CODE form
+        ================================================================ */
+
+        .actions-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+        }
+
+        .actions-inner {
+            max-width: 580px;
+        }
+
+        .action-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            overflow: hidden;
+            margin-bottom: 14px;
+        }
+
+        .action-card-header {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .action-card-icon { font-size: 18px; margin-top: 1px; }
+
+        .action-card-title {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 2px;
+        }
+
+        .action-card-desc {
+            font-size: 11px;
+            color: var(--text-secondary);
+            line-height: 1.4;
+        }
+
+        .action-form {
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .form-field { display: flex; flex-direction: column; gap: 5px; }
+
+        .form-label {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+
+        .form-required { color: var(--error-color); margin-left: 2px; }
+
+        .form-input,
+        .form-textarea {
+            background: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            font-size: 12px;
+            padding: 8px 10px;
+            border-radius: 6px;
+            font-family: 'SF Mono', Monaco, monospace;
+            outline: none;
+            transition: border-color 0.15s;
+            width: 100%;
+        }
+
+        .form-input:focus,
+        .form-textarea:focus { border-color: var(--accent-color); }
+
+        .form-textarea { resize: vertical; min-height: 72px; line-height: 1.5; }
+
+        .form-hint {
+            font-size: 10px;
+            color: var(--text-secondary);
+            line-height: 1.4;
+        }
+
+        .form-toggles {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .form-toggle {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            font-size: 13px;
+            color: var(--text-primary);
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .form-toggle input[type=checkbox] {
+            accent-color: var(--accent-color);
+            width: 14px;
+            height: 14px;
+            cursor: pointer;
+        }
+
+        .form-error {
+            background: rgba(239,68,68,0.1);
+            border: 1px solid rgba(239,68,68,0.3);
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 12px;
+            color: #ef4444;
+        }
+
+        .form-error.hidden { display: none; }
+
+        .form-actions {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .btn-run {
+            background: var(--accent-color);
+            color: white;
+            border: none;
+            padding: 9px 22px;
+            border-radius: 7px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            font-family: inherit;
+            transition: opacity 0.15s;
+            flex-shrink: 0;
+        }
+
+        .btn-run:hover { opacity: 0.85; }
+        .btn-run:disabled { opacity: 0.45; cursor: not-allowed; }
+
+        .form-status {
+            padding: 7px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            flex: 1;
+        }
+
+        .form-status.hidden { display: none; }
+
+        .form-status.submitting {
+            background: rgba(59,130,246,0.1);
+            color: var(--accent-color);
+            border: 1px solid rgba(59,130,246,0.3);
+        }
+
+        .form-status.success {
+            background: rgba(16,185,129,0.1);
+            color: #10b981;
+            border: 1px solid rgba(16,185,129,0.3);
+        }
+
+        .form-status.error {
+            background: rgba(239,68,68,0.1);
+            color: #ef4444;
+            border: 1px solid rgba(239,68,68,0.3);
+        }
+
+        /* report paths in detail pane */
+        .path-value {
+            font-family: 'SF Mono', Monaco, monospace;
+            font-size: 10px;
+            color: var(--text-secondary);
+            word-break: break-all;
+        }
+
+        .path-value.exists { color: var(--success-color); }
+        .path-value.missing { color: var(--text-secondary); opacity: 0.5; }
+
+        .real-badge {
+            display: inline-block;
+            background: rgba(59,130,246,0.15);
+            color: var(--accent-color);
+            font-size: 9px;
+            font-weight: 700;
+            padding: 1px 6px;
+            border-radius: 8px;
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+            margin-left: 6px;
+            vertical-align: middle;
+        }
+
+        /* ---- Sprint 4: needs_review review flow ---- */
+        .exec-card.needs-review {
+            border-left: 3px solid #f59e0b;
+            background: rgba(245,158,11,0.04);
+        }
+        .exec-card.needs-review:hover { background: rgba(245,158,11,0.08); }
+        .exec-card.needs-review.selected { background: rgba(245,158,11,0.1); border-color: #f59e0b; }
+
+        .review-badge {
+            display: inline-block;
+            background: rgba(245,158,11,0.15);
+            color: #f59e0b;
+            font-size: 9px;
+            font-weight: 700;
+            padding: 1px 6px;
+            border-radius: 8px;
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+            margin-top: 4px;
+        }
+
+        .review-panel {
+            margin: 10px 14px 0;
+            background: rgba(245,158,11,0.06);
+            border: 1px solid rgba(245,158,11,0.3);
+            border-radius: 8px;
+            padding: 14px 16px;
+            flex-shrink: 0;
+        }
+        .review-panel.hidden { display: none; }
+        .review-panel-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: #f59e0b;
+            margin-bottom: 6px;
+        }
+        .review-panel-summary {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-bottom: 12px;
+            line-height: 1.5;
+        }
+        .review-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .review-btn {
+            font-size: 11px;
+            font-weight: 600;
+            padding: 5px 14px;
+            border-radius: 6px;
+            border: 1px solid transparent;
+            cursor: pointer;
+            transition: opacity 0.15s;
+            background: none;
+        }
+        .review-btn:hover { opacity: 0.75; }
+        .review-btn.approve { background: rgba(16,185,129,0.15); color: #10b981; border-color: rgba(16,185,129,0.3); }
+        .review-btn.reject  { background: rgba(239,68,68,0.15);  color: #ef4444;  border-color: rgba(239,68,68,0.3); }
+        .review-btn.rerun   { background: rgba(255,255,255,0.06); color: var(--text-secondary); border-color: rgba(255,255,255,0.12); }
+        .review-feedback {
+            font-size: 11px;
+            margin-top: 8px;
+            padding: 4px 8px;
+            border-radius: 5px;
+            display: none;
+        }
+        .review-feedback.visible { display: block; }
+        .review-feedback.approved { background: rgba(16,185,129,0.1); color: #10b981; }
+        .review-feedback.rejected { background: rgba(239,68,68,0.1);  color: #ef4444; }
+        .review-feedback.rerun    { background: rgba(255,255,255,0.05); color: var(--text-secondary); }
+
+        .exec-status.status-approved { background: rgba(16,185,129,0.15); color: #10b981; }
+
+        /* ---- Sprint 6: review_action badge in card ---- */
+        .review-action-badge {
+            display: inline-block;
+            font-size: 9px;
+            font-weight: 700;
+            padding: 1px 6px;
+            border-radius: 8px;
+            letter-spacing: 0.3px;
+            text-transform: uppercase;
+            margin-left: 5px;
+            vertical-align: middle;
+        }
+        .review-action-badge.badge-approved { background: rgba(16,185,129,0.15); color: #10b981; }
+        .review-action-badge.badge-rejected { background: rgba(239,68,68,0.15);  color: #ef4444; }
+        .review-action-badge.badge-rerun    { background: rgba(245,158,11,0.1);  color: #f59e0b; }
+
+        /* ---- Sprint 6: comment textarea in review panel ---- */
+        .review-comment {
+            width: 100%;
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 11px;
+            padding: 6px 8px;
+            margin-bottom: 10px;
+            resize: vertical;
+            min-height: 48px;
+            font-family: inherit;
+            box-sizing: border-box;
+        }
+        .review-comment:focus { outline: none; border-color: rgba(245,158,11,0.4); }
+        .review-comment::placeholder { color: var(--text-secondary); opacity: 0.55; }
+
+        /* ---- Sprint 6: rerun-now button ---- */
+        .review-btn.rerun-now {
+            background: rgba(59,130,246,0.12);
+            color: var(--accent-color);
+            border-color: rgba(59,130,246,0.3);
+        }
+
+        /* ---- Sprint H1: hardening ---- */
+        .review-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+        .review-error {
+            margin-top: 8px;
+            padding: 6px 8px;
+            background: rgba(239,68,68,0.1);
+            color: #ef4444;
+            border-radius: 5px;
+            font-size: 11px;
+        }
+        .dim-text.error-text { color: #ef4444; opacity: 0.85; }
+        .list-load-error {
+            padding: 16px 12px;
+            color: #ef4444;
+            font-size: 12px;
+            opacity: 0.85;
+        }
     </style>
 </head>
 <body>
-    <header class="header">
-        <div class="header-left">
-            <div class="header-title">
+    <div id="appShell">
+
+        <!-- Sidebar -->
+        <nav id="sidebar">
+            <div class="sidebar-brand">
                 <span class="status-dot" id="statusDot"></span>
-                <span>Assistant OS</span>
+                <span class="brand-text">Assistant OS</span>
             </div>
-            <div class="session-id" id="sessionId">Session: ...</div>
-        </div>
-        <div class="header-actions">
-            <div class="mode-selector">
-                <button class="mode-btn active" data-mode="auto" title="Clasificación automática">Auto</button>
-                <button class="mode-btn" data-mode="chat" title="Solo chat, sin ejecutar">Chat</button>
-                <button class="mode-btn" data-mode="action" title="Forzar confirmación">Acción</button>
+            <div class="sidebar-nav">
+                <button class="nav-item active" data-view="chat" onclick="navigate('chat')">
+                    <span class="nav-icon">💬</span>
+                    <span>Chat</span>
+                </button>
+                <button class="nav-item" data-view="executions" onclick="navigate('executions')">
+                    <span class="nav-icon">⚙</span>
+                    <span>Executions</span>
+                </button>
+                <button class="nav-item" data-view="system" onclick="navigate('system')">
+                    <span class="nav-icon">◉</span>
+                    <span>System</span>
+                </button>
+                <button class="nav-item" data-view="actions" onclick="navigate('actions')">
+                    <span class="nav-icon">⚡</span>
+                    <span>Actions</span>
+                </button>
             </div>
-            <button class="btn-icon" id="btnCopySession" title="Copy session ID">Copy</button>
-            <button class="btn-icon" id="btnJoinSession" title="Join session">Join</button>
-            <button class="btn-icon" id="btnNewSession" title="New session">New</button>
-            <button class="btn-icon" id="btnReload" title="Reload history">Reload</button>
-            <button class="btn-icon" id="btnExport" title="Export chat">Export</button>
-            <button class="btn-icon" id="btnClear" title="Clear chat">Clear</button>
-            <button class="btn-icon" id="btnToken" title="Clear token">Token</button>
-        </div>
-    </header>
-    
-    <div class="chat-container" id="chatContainer">
-        <div class="empty-state" id="emptyState">
-            Envía un comando para comenzar.<br>
-            <small>Ej: CODE: crear módulo math_utils</small>
+            <div class="sidebar-footer">
+                <div class="session-id" id="sessionId">Session: ...</div>
+            </div>
+        </nav>
+
+        <!-- Main area -->
+        <div id="mainArea">
+
+            <!-- Top HUD bar -->
+            <div id="topBar">
+                <div class="topbar-left">
+                    <span class="topbar-title" id="viewTitle">Chat</span>
+                </div>
+                <div class="topbar-center">
+                    <div class="mode-selector">
+                        <button class="mode-btn active" data-mode="auto" title="Clasificación automática">Auto</button>
+                        <button class="mode-btn" data-mode="chat" title="Solo chat, sin ejecutar">Chat</button>
+                        <button class="mode-btn" data-mode="action" title="Forzar confirmación">Acción</button>
+                    </div>
+                </div>
+                <div class="topbar-right">
+                    <button class="btn-icon" id="btnCopySession" title="Copy session ID">Copy</button>
+                    <button class="btn-icon" id="btnJoinSession" title="Join session">Join</button>
+                    <button class="btn-icon" id="btnNewSession" title="New session">New</button>
+                    <button class="btn-icon" id="btnReload" title="Reload history">Reload</button>
+                    <button class="btn-icon" id="btnExport" title="Export chat">Export</button>
+                    <button class="btn-icon" id="btnClear" title="Clear chat">Clear</button>
+                    <button class="btn-icon" id="btnToken" title="Clear token">Token</button>
+                </div>
+            </div>
+
+            <!-- Views -->
+            <div id="viewContainer">
+
+                <!-- Chat View -->
+                <div id="chatView" class="view">
+                    <div class="chat-container" id="chatContainer">
+                        <div class="empty-state" id="emptyState">
+                            Envía un comando para comenzar.<br>
+                            <small>Ej: CODE: crear módulo math_utils</small>
+                        </div>
+                    </div>
+                    <div class="input-container">
+                        <div class="input-wrapper">
+                            <textarea id="messageInput" placeholder="Escribe un comando..." rows="1"></textarea>
+                        </div>
+                        <button class="btn-send" id="btnSend" disabled>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Executions View -->
+                <div id="executionsView" class="view hidden">
+                    <div class="executions-split">
+                        <div class="executions-list">
+                            <div class="list-header">
+                                <span>Executions</span>
+                                <span class="list-count" id="executionCount">0</span>
+                            </div>
+                            <div class="list-filters">
+                                <select class="filter-select" id="statusFilter" onchange="filterExecutions()">
+                                    <option value="all">All</option>
+                                    <option value="success">Success</option>
+                                    <option value="failed">Failed</option>
+                                    <option value="needs_review">Review</option>
+                                </select>
+                            </div>
+                            <div class="list-items" id="executionListItems"></div>
+                        </div>
+                        <div class="executions-detail">
+                            <div class="detail-empty" id="detailEmpty">Select an execution to view details</div>
+                            <div id="detailContent" class="hidden">
+                                <div class="detail-header" id="detailHeader"></div>
+                                <div class="review-panel hidden" id="reviewPanel"></div>
+                                <div class="detail-tabs">
+                                    <button class="detail-tab active" data-tab="summary" onclick="switchTab(\'summary\')">Summary</button>
+                                    <button class="detail-tab" data-tab="logs" onclick="switchTab(\'logs\')">Logs</button>
+                                    <button class="detail-tab" data-tab="changes" onclick="switchTab(\'changes\')">Changes</button>
+                                    <button class="detail-tab" data-tab="validation" onclick="switchTab(\'validation\')">Validation</button>
+                                </div>
+                                <div class="detail-body">
+                                    <div class="detail-pane active" id="pane-summary"></div>
+                                    <div class="detail-pane" id="pane-logs"></div>
+                                    <div class="detail-pane" id="pane-changes"></div>
+                                    <div class="detail-pane" id="pane-validation"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- System View -->
+                <div id="systemView" class="view hidden">
+                    <div class="system-content" id="systemContent"></div>
+                </div>
+
+                <!-- Actions View -->
+                <div id="actionsView" class="view hidden">
+                    <div class="actions-content">
+                        <div class="actions-inner">
+                            <div class="action-card">
+                                <div class="action-card-header">
+                                    <span class="action-card-icon">⚙</span>
+                                    <div>
+                                        <div class="action-card-title">CODE Execution</div>
+                                        <div class="action-card-desc">Apply file changes and run tests against a local repository via the CODE Runner.</div>
+                                    </div>
+                                </div>
+                                <div class="action-form">
+                                    <div class="form-field">
+                                        <label class="form-label">Repo Path<span class="form-required">*</span></label>
+                                        <input type="text" id="codeRepoPath" class="form-input" placeholder="/absolute/path/to/repo">
+                                    </div>
+                                    <div class="form-field">
+                                        <label class="form-label">Changes (JSON array, optional)</label>
+                                        <textarea id="codeChanges" class="form-textarea" rows="4" placeholder=\'[{"op": "file_replace", "path": "main.py", "content": "pass\\n"}]\'></textarea>
+                                        <div class="form-hint">Array of change objects with op, path, content. Leave empty to run without changes.</div>
+                                    </div>
+                                    <div class="form-toggles">
+                                        <label class="form-toggle">
+                                            <input type="checkbox" id="codeRunTests" checked>
+                                            <span>Run tests (pytest -q)</span>
+                                        </label>
+                                        <label class="form-toggle">
+                                            <input type="checkbox" id="codeAllowReview">
+                                            <span>Allow needs_review</span>
+                                        </label>
+                                    </div>
+                                    <div class="form-error hidden" id="codeFormError"></div>
+                                    <div class="form-actions">
+                                        <button class="btn-run" id="btnRunCode" onclick="submitCodeAction()">Run CODE</button>
+                                        <div class="form-status hidden" id="codeFormStatus"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
         </div>
     </div>
-    
-    <div class="input-container">
-        <div class="input-wrapper">
-            <textarea id="messageInput" placeholder="Escribe un comando..." rows="1"></textarea>
-        </div>
-        <button class="btn-send" id="btnSend" disabled>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
-            </svg>
-        </button>
-    </div>
-    
+
+    <!-- Modals: position:fixed — appear above shell -->
     <div class="modal-overlay hidden" id="tokenModal">
         <div class="modal">
             <h2>🔐 Token requerido</h2>
@@ -1054,7 +2129,7 @@ def generate_chat_html() -> str:
             </div>
         </div>
     </div>
-        <div class="modal-overlay hidden" id="joinModal">
+    <div class="modal-overlay hidden" id="joinModal">
         <div class="modal">
             <h2>🔗 Join Session</h2>
             <p>Pega el conversation_id de la sesión a la que quieres unirte.</p>
@@ -1066,7 +2141,6 @@ def generate_chat_html() -> str:
             </div>
         </div>
     </div>
-    
     <div class="modal-overlay hidden" id="domainModal">
         <div class="modal">
             <h2>🎯 Seleccionar dominio</h2>
@@ -1106,9 +2180,719 @@ def generate_chat_html() -> str:
             </div>
         </div>
     </div>
-    
+
     <div class="toast" id="toast">Copied!</div>
         <script>
+        // ================================================================
+        // SPA STATE & ROUTER
+        // ================================================================
+
+        const appState = {
+            view: 'chat',
+            selectedExecutionId: null,
+            executions: [],
+            activeTab: 'summary',
+        };
+
+        // Live executions — populated from /api/code/executions + session-created entries
+        const MOCK_EXECUTIONS = [];
+
+        // H1: submit-lock flags (prevent double-click race conditions)
+        var _isSubmittingReview = false;
+        var _isLaunchingRerun   = false;
+
+        // H1: safe timestamp formatter — never throws, always returns a string
+        function _formatTs(isoString) {
+            if (!isoString) return '—';
+            try { return new Date(isoString).toLocaleString(); }
+            catch (e) { return String(isoString); }
+        }
+
+        function navigate(view) {
+            appState.view = view;
+            renderSidebar();
+            renderMain();
+            var titles = { chat: 'Chat', executions: 'Executions', system: 'System', actions: 'Actions' };
+            var viewTitle = document.getElementById('viewTitle');
+            if (viewTitle) viewTitle.textContent = titles[view] || view;
+        }
+
+        function renderSidebar() {
+            document.querySelectorAll('.nav-item').forEach(function(item) {
+                item.classList.toggle('active', item.dataset.view === appState.view);
+            });
+        }
+
+        function renderMain() {
+            document.querySelectorAll('.view').forEach(function(v) {
+                v.classList.add('hidden');
+            });
+            var viewMap = {
+                chat: 'chatView',
+                executions: 'executionsView',
+                system: 'systemView',
+                actions: 'actionsView',
+            };
+            var targetId = viewMap[appState.view] || 'chatView';
+            var target = document.getElementById(targetId);
+            if (target) target.classList.remove('hidden');
+            if (appState.view === 'chat') {
+                // Re-bind composer on every chat navigation to ensure listeners
+                // are on the live DOM nodes (guards against stale const refs).
+                if (typeof initComposerBindings === 'function') initComposerBindings();
+                // Clear any stuck loading state.
+                if (typeof state !== 'undefined' && state.isLoading) {
+                    state.isLoading = false;
+                    if (typeof updateSendButton === 'function') updateSendButton();
+                }
+            }
+            if (appState.view === 'executions') loadExecutions();
+            if (appState.view === 'system') renderSystemView();
+        }
+
+        // ================================================================
+        // EXECUTIONS VIEW
+        // ================================================================
+
+        async function loadExecutions() {
+            // Preserve session-created execs (submitted this session via the Actions form)
+            var sessionExecs = MOCK_EXECUTIONS.filter(function(e) { return e._real; });
+            var sessionIds = new Set(sessionExecs.map(function(e) { return e.id; }));
+            try {
+                var resp = await fetch('/api/code/executions');
+                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                var data = await resp.json();
+                var apiExecs = (data.executions || [])
+                    .filter(function(e) { return !sessionIds.has(e.execution_id); })
+                    .map(function(e) {
+                        return {
+                            id:               e.execution_id,
+                            final_status:     e.final_status,
+                            summary:          e.summary,
+                            started_at:       e.timestamp,
+                            repo_path:        null,
+                            report_json_path: e.report_json_path,
+                            report_md_path:   e.report_md_path,
+                            done_path:        e.done_path,
+                            error:            null,
+                            changes:          [],
+                            test_result:      null,
+                            validation:       null,
+                            review_action:    null,
+                            reviewed_at:      null,
+                            review_comment:   null,
+                            _fromApi:         true,
+                            _detailLoaded:    false,
+                            _detailError:     false,
+                        };
+                    });
+                // Rebuild: session execs first, then disk execs (already sorted newest-first by API)
+                MOCK_EXECUTIONS.length = 0;
+                Array.prototype.push.apply(MOCK_EXECUTIONS, sessionExecs);
+                Array.prototype.push.apply(MOCK_EXECUTIONS, apiExecs);
+            } catch (err) {
+                console.warn('loadExecutions failed:', err);
+                var listEl = document.getElementById('executionListItems');
+                if (listEl) listEl.innerHTML = '<div class="list-load-error">Failed to load executions. Check API connection.</div>';
+                return;
+            }
+            renderExecutionsList();
+        }
+
+        function renderExecutionsList() {
+            var container = document.getElementById('executionListItems');
+            if (!container) return;
+            var filterEl = document.getElementById('statusFilter');
+            var filter = filterEl ? filterEl.value : 'all';
+            var filtered = filter === 'all'
+                ? MOCK_EXECUTIONS
+                : MOCK_EXECUTIONS.filter(function(e) { return e.final_status === filter; });
+            var countEl = document.getElementById('executionCount');
+            if (countEl) countEl.textContent = filtered.length;
+            container.innerHTML = '';
+            if (filtered.length === 0) {
+                container.innerHTML = '<div class="dim-text" style="padding:16px 12px">No executions found.</div>';
+                return;
+            }
+            filtered.forEach(function(exec) {
+                var card = document.createElement('div');
+                var isSelected = exec.id === appState.selectedExecutionId;
+                var isReview = exec.final_status === 'needs_review';
+                card.className = 'exec-card' + (isSelected ? ' selected' : '') + (isReview ? ' needs-review' : '');
+                card.dataset.id = exec.id;
+                card.onclick = function() { selectExecution(exec.id); };
+                var statusClass = {
+                    success: 'status-success',
+                    approved: 'status-approved',
+                    failed: 'status-failed',
+                    needs_review: 'status-review',
+                }[exec.final_status] || '';
+                var ago = _timeAgo(exec.started_at);
+                var reviewBadge = isReview ? '<div class="review-badge">Review required</div>' : '';
+                var reviewActionBadge = exec.review_action
+                    ? '<span class="review-action-badge badge-' + exec.review_action + '">' + exec.review_action + '</span>'
+                    : '';
+                card.innerHTML =
+                    '<div class="exec-card-header">' +
+                        '<span class="exec-id">' + escapeHtml(exec.id.replace('n8n_', '')) + '</span>' +
+                        '<span class="exec-status ' + statusClass + '">' + exec.final_status + '</span>' +
+                        reviewActionBadge +
+                    '</div>' +
+                    '<div class="exec-summary">' + escapeHtml(exec.summary) + '</div>' +
+                    '<div class="exec-meta">' + ago + '</div>' +
+                    reviewBadge;
+                container.appendChild(card);
+            });
+        }
+
+        function filterExecutions() { renderExecutionsList(); }
+
+        async function selectExecution(id) {
+            appState.selectedExecutionId = id;
+            renderExecutionsList();
+            // Find the exec object
+            var exec = null;
+            for (var i = 0; i < MOCK_EXECUTIONS.length; i++) {
+                if (MOCK_EXECUTIONS[i].id === id) { exec = MOCK_EXECUTIONS[i]; break; }
+            }
+            // If loaded from API and detail not yet fetched, enrich it
+            if (exec && exec._fromApi && !exec._detailLoaded) {
+                try {
+                    var resp = await fetch('/api/code/executions/' + encodeURIComponent(id));
+                    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                    var d = await resp.json();
+                    var meta = d.metadata || {};
+                    exec.repo_path    = meta.repo_path || null;
+                    exec.error        = meta.error || null;
+                    exec.started_at   = meta.started_at || exec.started_at;
+                    exec.changes      = meta.modified_files || [];
+                    exec.test_result  = meta.test_result || null;
+                    // Normalise validation: API stores it as validation_result
+                    var vr = meta.validation_result || null;
+                    if (vr) {
+                        exec.validation = {
+                            final_status:       vr.final_status,
+                            reasons:            vr.reasons || [],
+                            validation_summary: vr.validation_summary || null,
+                        };
+                    }
+                    exec._logContent    = d.log_content   || null;
+                    exec.review_action  = d.review_action  || null;
+                    exec.reviewed_at    = d.reviewed_at    || null;
+                    exec.review_comment = d.review_comment || null;
+                    exec.rerun_of       = d.rerun_of       || null;
+                    exec.has_snapshot   = d.has_snapshot   || false;
+                    exec._detailLoaded  = true;
+                    exec._detailError   = false;
+                } catch (err) {
+                    console.warn('selectExecution detail fetch failed:', err);
+                    exec._detailError = 'Failed to load execution detail.';
+                }
+            }
+            renderExecutionDetail(id);
+        }
+
+        function renderExecutionDetail(id) {
+            var exec = null;
+            for (var i = 0; i < MOCK_EXECUTIONS.length; i++) {
+                if (MOCK_EXECUTIONS[i].id === id) { exec = MOCK_EXECUTIONS[i]; break; }
+            }
+            var detailEmpty = document.getElementById('detailEmpty');
+            var detailContent = document.getElementById('detailContent');
+            if (!exec) {
+                if (detailEmpty) detailEmpty.classList.remove('hidden');
+                if (detailContent) detailContent.classList.add('hidden');
+                return;
+            }
+            if (detailEmpty) detailEmpty.classList.add('hidden');
+            if (detailContent) detailContent.classList.remove('hidden');
+            var header = document.getElementById('detailHeader');
+            if (header) {
+                var sc = { success: 'status-success', approved: 'status-approved', failed: 'status-failed', needs_review: 'status-review' }[exec.final_status] || '';
+                header.innerHTML =
+                    '<div class="detail-id">' + escapeHtml(exec.id) + '</div>' +
+                    '<span class="exec-status ' + sc + '">' + exec.final_status + '</span>';
+            }
+            _renderReviewPanel(exec);
+            _renderSummaryPane(exec);
+            _renderLogsPane(exec);
+            _renderChangesPane(exec);
+            _renderValidationPane(exec);
+            switchTab(appState.activeTab);
+        }
+
+        function switchTab(tab) {
+            appState.activeTab = tab;
+            document.querySelectorAll('.detail-tab').forEach(function(t) {
+                t.classList.toggle('active', t.dataset.tab === tab);
+            });
+            document.querySelectorAll('.detail-pane').forEach(function(p) {
+                p.classList.toggle('active', p.id === 'pane-' + tab);
+            });
+        }
+
+        function _renderSummaryPane(exec) {
+            var pane = document.getElementById('pane-summary');
+            if (!pane) return;
+            var testInfo = exec.test_result
+                ? '<span class="meta-value">' + exec.test_result.passed + ' passed, ' + exec.test_result.failed + ' failed</span>'
+                : '<span class="meta-value dim">No tests configured</span>';
+            var sc = { success: 'status-success', failed: 'status-failed', needs_review: 'status-review' }[exec.final_status] || '';
+            var realBadge = exec._real ? '<span class="real-badge">live</span>' : '';
+
+            function pathRow(label, p) {
+                if (!p) return '<div class="meta-row"><span class="meta-key">' + label + '</span><span class="path-value missing">—</span></div>';
+                return '<div class="meta-row"><span class="meta-key">' + label + '</span><span class="path-value exists">' + escapeHtml(p) + '</span></div>';
+            }
+
+            pane.innerHTML =
+                '<div class="summary-grid">' +
+                    '<div class="meta-row"><span class="meta-key">Status</span><span class="exec-status ' + sc + '">' + exec.final_status + '</span>' + realBadge + '</div>' +
+                    '<div class="meta-row"><span class="meta-key">Execution ID</span><span class="meta-value mono">' + escapeHtml(exec.id) + '</span></div>' +
+                    '<div class="meta-row"><span class="meta-key">Repo</span><span class="meta-value mono">' + escapeHtml(exec.repo_path || '—') + '</span></div>' +
+                    '<div class="meta-row"><span class="meta-key">Started</span><span class="meta-value">' + _formatTs(exec.started_at) + '</span></div>' +
+                    '<div class="meta-row"><span class="meta-key">Tests</span>' + testInfo + '</div>' +
+                    '<div class="meta-row"><span class="meta-key">Summary</span><span class="meta-value">' + escapeHtml(exec.summary) + '</span></div>' +
+                    pathRow('Report JSON', exec.report_json_path) +
+                    pathRow('Report MD',   exec.report_md_path) +
+                    pathRow('Done file',   exec.done_path) +
+                '</div>';
+            if (exec.error) {
+                pane.innerHTML += '<div class="error-box">' + escapeHtml(exec.error) + '</div>';
+            }
+        }
+
+        function _renderLogsPane(exec) {
+            var pane = document.getElementById('pane-logs');
+            if (!pane) return;
+            if (exec._detailError) { pane.innerHTML = '<div class="dim-text error-text">' + escapeHtml(exec._detailError) + '</div>'; return; }
+            var content = exec._logContent || exec.logs || null;
+            if (!content) {
+                pane.innerHTML = exec._fromApi && !exec._detailLoaded
+                    ? '<div class="dim-text">Loading logs…</div>'
+                    : '<div class="dim-text">No logs available.</div>';
+                return;
+            }
+            pane.innerHTML = '<pre class="log-output">' + escapeHtml(content) + '</pre>';
+        }
+
+        function _renderChangesPane(exec) {
+            var pane = document.getElementById('pane-changes');
+            if (!pane) return;
+            if (exec._detailError) { pane.innerHTML = '<div class="dim-text error-text">' + escapeHtml(exec._detailError) + '</div>'; return; }
+            if (exec._fromApi && !exec._detailLoaded) {
+                pane.innerHTML = '<div class="dim-text">Loading…</div>';
+                return;
+            }
+            var files = exec.changes || [];
+            if (files.length === 0) {
+                pane.innerHTML = '<div class="dim-text">No file changes recorded.</div>';
+                return;
+            }
+            pane.innerHTML = '<ul class="changes-list">' +
+                files.map(function(f) {
+                    return '<li class="change-item"><div class="change-icon">M</div>' + escapeHtml(f) + '</li>';
+                }).join('') +
+            '</ul>';
+        }
+
+        function _renderValidationPane(exec) {
+            var pane = document.getElementById('pane-validation');
+            if (!pane) return;
+            if (exec._detailError) { pane.innerHTML = '<div class="dim-text error-text">' + escapeHtml(exec._detailError) + '</div>'; return; }
+            if (exec._fromApi && !exec._detailLoaded) {
+                pane.innerHTML = '<div class="dim-text">Loading…</div>';
+                return;
+            }
+            var v = exec.validation;
+            if (!v) { pane.innerHTML = '<div class="dim-text">No validation data.</div>'; return; }
+            var sc = { success: 'status-success', failed: 'status-failed', needs_review: 'status-review' }[v.final_status] || '';
+            var reasons = (v.reasons || []).length > 0
+                ? '<ul class="reasons-list">' + v.reasons.map(function(r) { return '<li>' + escapeHtml(r) + '</li>'; }).join('') + '</ul>'
+                : '<div class="dim-text">No validation notes.</div>';
+            var summaryRow = v.validation_summary
+                ? '<div class="meta-row"><span class="meta-key">Summary</span><span class="meta-value">' + escapeHtml(v.validation_summary) + '</span></div>'
+                : '';
+            pane.innerHTML =
+                '<div class="meta-row"><span class="meta-key">Verdict</span><span class="exec-status ' + sc + '">' + v.final_status + '</span></div>' +
+                summaryRow +
+                '<div class="section-title">Notes</div>' + reasons;
+        }
+
+        function _renderReviewPanel(exec) {
+            var panel = document.getElementById('reviewPanel');
+            if (!panel) return;
+            // Prefer persisted review_action; fall back to legacy in-memory _reviewAction
+            var reviewAction = exec.review_action || exec._reviewAction || null;
+
+            if (reviewAction === 'approved' || reviewAction === 'rejected') {
+                var ts = ' at ' + _formatTs(exec.reviewed_at);
+                var commentNote = exec.review_comment
+                    ? '<div class="review-panel-summary" style="margin-top:6px">' + escapeHtml(exec.review_comment) + '</div>'
+                    : '';
+                var fbMsg = (reviewAction === 'approved' ? 'Approved' : 'Rejected') + ts;
+                var fbCls = reviewAction === 'approved' ? 'approved' : 'rejected';
+                panel.classList.remove('hidden');
+                panel.innerHTML =
+                    '<div class="review-feedback visible ' + fbCls + '">' + escapeHtml(fbMsg) + '</div>' +
+                    commentNote;
+                return;
+            }
+            if (reviewAction === 'rerun') {
+                panel.classList.remove('hidden');
+                panel.innerHTML =
+                    '<div class="review-feedback visible rerun">Marked for later review.</div>' +
+                    '<button class="review-btn rerun-now" style="margin-top:8px" onclick="_rerunNow(\'' + escapeHtml(exec.id) + '\')">Launch rerun using stored execution parameters</button>';
+                return;
+            }
+            if (exec.final_status !== 'needs_review') {
+                panel.classList.add('hidden');
+                panel.innerHTML = '';
+                return;
+            }
+            panel.classList.remove('hidden');
+            panel.innerHTML =
+                '<div class="review-panel-title">This execution requires manual review</div>' +
+                '<div class="review-panel-summary">' + escapeHtml(exec.summary || exec.id) + '</div>' +
+                '<textarea class="review-comment" id="reviewComment" placeholder="Optional review comment (max 500 chars)"></textarea>' +
+                '<div class="review-actions">' +
+                    '<button class="review-btn approve" onclick="approveExecution(\'' + escapeHtml(exec.id) + '\')">Approve</button>' +
+                    '<button class="review-btn reject"  onclick="_confirmReject(\''   + escapeHtml(exec.id) + '\')">Reject</button>' +
+                    '<button class="review-btn rerun"   onclick="rerunExecution(\''   + escapeHtml(exec.id) + '\')">Rerun later</button>' +
+                '</div>';
+        }
+
+        function _findExec(id) {
+            for (var i = 0; i < MOCK_EXECUTIONS.length; i++) {
+                if (MOCK_EXECUTIONS[i].id === id) return MOCK_EXECUTIONS[i];
+            }
+            return null;
+        }
+
+        function _confirmReject(id) {
+            if (!confirm('Are you sure you want to reject this execution?')) return;
+            rejectExecution(id);
+        }
+
+        function _setReviewBtns(disabled, activeLabel) {
+            document.querySelectorAll('#reviewPanel .review-btn').forEach(function(btn) {
+                btn.disabled = disabled;
+                if (disabled && activeLabel && btn.classList.contains(activeLabel.cls)) {
+                    btn.textContent = activeLabel.text;
+                }
+            });
+        }
+
+        function _showReviewError(msg) {
+            var panel = document.getElementById('reviewPanel');
+            if (!panel) return;
+            var existing = panel.querySelector('.review-error');
+            if (existing) existing.remove();
+            var err = document.createElement('div');
+            err.className = 'review-error';
+            err.textContent = msg;
+            panel.appendChild(err);
+            _setReviewBtns(false, null);
+            var ta = document.getElementById('reviewComment');
+            if (ta) ta.focus();
+        }
+
+        async function _postReview(id, action) {
+            if (_isSubmittingReview) return;
+            var exec = _findExec(id);
+            if (!exec) return;
+            // Sanitize comment: trim, cap at 500 chars
+            var commentEl = document.getElementById('reviewComment');
+            var comment = (commentEl ? commentEl.value : '').trim().slice(0, 500);
+            // Lock buttons
+            _isSubmittingReview = true;
+            var labelMap = { approve: { cls: 'approve', text: 'Approving\u2026' }, reject: { cls: 'reject', text: 'Rejecting\u2026' }, rerun: { cls: 'rerun', text: 'Marking\u2026' } };
+            _setReviewBtns(true, labelMap[action]);
+            try {
+                var resp = await fetch('/api/code/executions/' + encodeURIComponent(id) + '/review', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: action, comment: comment }),
+                });
+                var d;
+                try { d = await resp.json(); } catch (e) { d = {}; }
+                if (!resp.ok) {
+                    _isSubmittingReview = false;
+                    _showReviewError('Review failed (' + resp.status + '): ' + (d.error || 'Unknown error'));
+                    return;
+                }
+                exec.review_action  = d.review_action;
+                exec.reviewed_at    = d.reviewed_at;
+                exec.review_comment = d.review_comment || '';
+                exec._reviewAction  = null;
+                if (commentEl) commentEl.value = '';
+            } catch (err) {
+                _isSubmittingReview = false;
+                _showReviewError('Network error: ' + err.message);
+                return;
+            }
+            _isSubmittingReview = false;
+            renderExecutionDetail(id);
+        }
+
+        async function approveExecution(id) { await _postReview(id, 'approve'); }
+        async function rejectExecution(id)  { await _postReview(id, 'reject');  }
+        async function rerunExecution(id)   { await _postReview(id, 'rerun');   }
+
+        async function _rerunNow(id) {
+            if (_isLaunchingRerun) return;
+            var exec = _findExec(id);
+            if (!exec) return;
+            _isLaunchingRerun = true;
+            var panel = document.getElementById('reviewPanel');
+            var launchBtn = panel ? panel.querySelector('.review-btn.rerun-now') : null;
+            if (launchBtn) { launchBtn.disabled = true; launchBtn.textContent = 'Launching\u2026'; }
+            try {
+                var resp = await fetch('/api/code/executions/' + encodeURIComponent(id) + '/rerun', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: '{}',
+                });
+                var data;
+                try { data = await resp.json(); } catch (e) { data = {}; }
+                if (!resp.ok) {
+                    _isLaunchingRerun = false;
+                    var errMsg = data.error || 'Rerun failed (' + resp.status + ').';
+                    if (panel) panel.innerHTML =
+                        '<div class="review-feedback visible rerun">Marked for later review.</div>' +
+                        '<div class="review-error">' + escapeHtml(errMsg) + '</div>';
+                    return;
+                }
+                var newExec = {
+                    id:               data.execution_id,
+                    final_status:     data.final_status || 'failed',
+                    summary:          data.summary || ('Rerun of ' + id),
+                    repo_path:        null,
+                    started_at:       new Date().toISOString(),
+                    report_json_path: data.report_json_path || null,
+                    report_md_path:   data.report_md_path   || null,
+                    done_path:        data.done_path         || null,
+                    error:            data.error             || null,
+                    changes:          [],
+                    test_result:      null,
+                    validation:       null,
+                    review_action:    null,
+                    reviewed_at:      null,
+                    review_comment:   null,
+                    _fromApi:         true,
+                    _detailLoaded:    false,
+                    _detailError:     false,
+                    _real:            true,
+                };
+                MOCK_EXECUTIONS.unshift(newExec);
+                _isLaunchingRerun = false;
+                navigate('executions');
+                setTimeout(function() { selectExecution(newExec.id); }, 60);
+            } catch (err) {
+                _isLaunchingRerun = false;
+                if (panel) panel.innerHTML =
+                    '<div class="review-feedback visible rerun">Marked for later review.</div>' +
+                    '<div class="review-error">Network error: ' + escapeHtml(err.message) + '</div>';
+            }
+        }
+
+        function _timeAgo(isoString) {
+            var diff = (Date.now() - new Date(isoString).getTime()) / 1000;
+            if (diff < 60) return Math.round(diff) + 's ago';
+            if (diff < 3600) return Math.round(diff / 60) + 'm ago';
+            return Math.round(diff / 3600) + 'h ago';
+        }
+
+        // ================================================================
+        // CODE ACTION — submit to /api/code/execute
+        // ================================================================
+
+        var _codeActionState = 'idle'; // idle | submitting | success | error
+
+        function _setCodeState(state, message) {
+            _codeActionState = state;
+            var btn = document.getElementById('btnRunCode');
+            var statusEl = document.getElementById('codeFormStatus');
+            if (btn) btn.disabled = (state === 'submitting');
+            if (statusEl) {
+                if (message) {
+                    statusEl.className = 'form-status ' + state;
+                    statusEl.textContent = message;
+                } else {
+                    statusEl.className = 'form-status hidden';
+                    statusEl.textContent = '';
+                }
+            }
+        }
+
+        function _showCodeError(msg) {
+            var el = document.getElementById('codeFormError');
+            if (el) { el.className = 'form-error'; el.textContent = msg; }
+            _setCodeState('idle', null);
+        }
+
+        function _clearCodeError() {
+            var el = document.getElementById('codeFormError');
+            if (el) el.className = 'form-error hidden';
+        }
+
+        async function submitCodeAction() {
+            if (_codeActionState === 'submitting') return;
+            _clearCodeError();
+
+            var repoPathEl = document.getElementById('codeRepoPath');
+            var changesEl  = document.getElementById('codeChanges');
+            var runTestsEl = document.getElementById('codeRunTests');
+            var allowRevEl = document.getElementById('codeAllowReview');
+
+            var repoPath  = repoPathEl ? repoPathEl.value.trim() : '';
+            var changesRaw = changesEl ? changesEl.value.trim() : '';
+            var runTests  = runTestsEl ? runTestsEl.checked : true;
+            var allowRev  = allowRevEl ? allowRevEl.checked : false;
+
+            // Validate repo_path
+            if (!repoPath) {
+                _showCodeError('repo_path is required.');
+                return;
+            }
+
+            // Parse changes JSON
+            var changes = null;
+            if (changesRaw) {
+                try {
+                    changes = JSON.parse(changesRaw);
+                    if (!Array.isArray(changes)) throw new Error('must be a JSON array');
+                } catch (e) {
+                    _showCodeError('Invalid changes JSON: ' + e.message);
+                    return;
+                }
+            }
+
+            // Build payload
+            var requestId = 'ui_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+            var payload = {
+                request_id: requestId,
+                source: 'ui',
+                mode: 'code_execution',
+                repo_path: repoPath,
+                changes: changes || [],
+                test_spec: runTests
+                    ? { command: ['python', '-m', 'pytest', '-q'], timeout_sec: 60 }
+                    : null,
+                validation_spec: {
+                    require_tests: runTests,
+                    require_changes: false,
+                    allow_needs_review: allowRev,
+                },
+                metadata: {
+                    trigger_type: 'ui',
+                    requested_by: 'local_user',
+                },
+            };
+
+            _setCodeState('submitting', 'Submitting to CODE Runner...');
+
+            try {
+                var resp = await fetch('/api/code/execute', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+
+                var data = await resp.json();
+
+                if (!resp.ok) {
+                    _showCodeError('Request failed (' + resp.status + '): ' + escapeHtml(safeText(data.error || data)));
+                    return;
+                }
+
+                // Build UI execution object from response
+                var changedFiles = [];
+                if (changes) {
+                    changes.forEach(function(c) { if (c && c.path) changedFiles.push(c.path); });
+                }
+
+                var exec = {
+                    id: data.execution_id || requestId,
+                    final_status: data.final_status || 'failed',
+                    summary: data.summary || 'CODE execution',
+                    repo_path: repoPath,
+                    started_at: new Date().toISOString(),
+                    report_json_path: data.report_json_path || null,
+                    report_md_path:   data.report_md_path   || null,
+                    done_path:        data.done_path         || null,
+                    error:            data.error             || null,
+                    changes:          changedFiles,
+                    test_result:      null,
+                    validation: {
+                        final_status: data.final_status || 'failed',
+                        reasons: data.error ? [data.error] : [],
+                    },
+                    logs: data.summary || '(no log)',
+                    _real: true,
+                };
+
+                // Prepend to execution list (mocks stay below)
+                MOCK_EXECUTIONS.unshift(exec);
+
+                var finalLabel = exec.final_status;
+                _setCodeState('success', 'Done: ' + finalLabel + ' — opening Executions...');
+
+                setTimeout(function() {
+                    navigate('executions');
+                    setTimeout(function() {
+                        selectExecution(exec.id);
+                        _setCodeState('idle', null);
+                    }, 60);
+                }, 900);
+
+            } catch (e) {
+                _showCodeError('Network error: ' + e.message);
+            }
+        }
+
+        // ================================================================
+        // SYSTEM VIEW
+        // ================================================================
+
+        function renderSystemView() {
+            var content = document.getElementById('systemContent');
+            if (!content || content.dataset.initialized) return;
+            content.dataset.initialized = 'true';
+            content.innerHTML =
+                '<div class="system-grid">' +
+                    _systemCard('API Health', '<span id="sysHealth"><span class="status-badge">checking...</span></span>', '🟢') +
+                    _systemCard('Runner Status', '<span class="status-badge ok">Ready</span>', '⚙') +
+                    _systemCard('Active Executions', '<span class="sys-count">0</span>', '▶') +
+                    _systemCard('Session', '<span class="meta-value mono" style="font-size:12px" id="sysSession">—</span>', '🔑') +
+                '</div>';
+            var sessEl = document.getElementById('sysSession');
+            if (sessEl && typeof state !== 'undefined') {
+                sessEl.textContent = state.conversationId.substring(0, 8);
+            }
+            fetch('/health').then(function(r) { return r.json(); }).then(function(d) {
+                var el = document.getElementById('sysHealth');
+                if (el) el.innerHTML = '<span class="status-badge ' + (d.status === 'ok' ? 'ok' : 'error') + '">' + (d.status || 'unknown') + '</span>';
+            }).catch(function() {
+                var el = document.getElementById('sysHealth');
+                if (el) el.innerHTML = '<span class="status-badge error">offline</span>';
+            });
+        }
+
+        function _systemCard(title, body, icon) {
+            return '<div class="system-card">' +
+                '<div class="system-card-header">' +
+                    '<span class="system-card-icon">' + icon + '</span>' +
+                    '<span class="system-card-title">' + escapeHtml(title) + '</span>' +
+                '</div>' +
+                '<div class="system-card-body">' + body + '</div>' +
+            '</div>';
+        }
+
+        // ================================================================
+        // iOS viewport height fix: set --vh to actual viewport height
+        // ================================================================
+
         // iOS viewport height fix: set --vh to actual viewport height
         function setVH() {
             const vh = window.innerHeight * 0.01;
@@ -1261,17 +3045,22 @@ def generate_chat_html() -> str:
             updateSessionDisplay();
             checkHealth();
             setInterval(checkHealth, 30000);
-            
+
             if (!state.token) {
                 showTokenModal();
             } else {
-                // Validate token and load history on startup
-                const isValid = await checkAuth();
-                if (isValid) {
+                // Validate token and load history on startup.
+                // null = network/server error; still try to use the cached token.
+                const authResult = await checkAuth();
+                if (authResult === true) {
                     await loadHistory();
+                } else if (authResult === null) {
+                    // Server unreachable on startup — proceed without history.
+                    console.warn('[Init] server unreachable, starting without history');
                 }
+                // authResult === false means 401; modal is already shown.
             }
-            
+
             updateSendButton();
         }
         
@@ -1301,6 +3090,10 @@ def generate_chat_html() -> str:
         }
         
         // Auth check - validates token against backend
+        // checkAuth returns:
+        //   true  — token confirmed valid
+        //   false — token explicitly rejected (401); modal already shown
+        //   null  — network/server error; token unknown, do not block UI
         async function checkAuth() {
             const tokenPrefix = state.token ? state.token.substring(0, 4) + '...' : 'none';
             if (!state.token) {
@@ -1308,48 +3101,57 @@ def generate_chat_html() -> str:
                 showTokenModal();
                 return false;
             }
-            
+
             try {
                 const res = await fetch('/auth/check', {
                     headers: { 'X-Assistant-Token': state.token }
                 });
-                
+
                 console.debug('[Auth] status=' + res.status + ', token_prefix=' + tokenPrefix);
-                
+
                 if (res.status === 401) {
                     showTokenModal('Token inválido o expirado');
                     return false;
                 }
-                
+
                 if (!res.ok) {
-                    showTokenModal('Error de conexión con el servidor');
-                    return false;
+                    // Server is reachable but returned an unexpected error.
+                    // Don't block the UI — log and let the user try.
+                    console.warn('[Auth] unexpected status=' + res.status + ', proceeding anyway');
+                    return null;
                 }
-                
+
                 return true;
             } catch (e) {
-                console.debug('[Auth] status=error, error=' + e.message + ', token_prefix=' + tokenPrefix);
-                showTokenModal('No se pudo conectar con el servidor');
-                return false;
+                // Network error (server unreachable, CORS, etc.).
+                // Don't block the UI — the user can still try to interact.
+                console.warn('[Auth] network error:', e.message);
+                return null;
             }
         }
         
         async function saveToken() {
             const token = tokenInput.value.trim();
-            if (token) {
-                state.token = token;
-                localStorage.setItem('assistant_token', token);
-                
-                // Validate the token before hiding modal
-                const isValid = await checkAuth();
-                if (isValid) {
-                    hideTokenModal();
-                    updateSendButton();
-                    tokenInput.value = '';
-                    // Load history after token is set
-                    await loadHistory();
-                }
+            if (!token) return;
+
+            state.token = token;
+            localStorage.setItem('assistant_token', token);
+
+            const authResult = await checkAuth();
+            if (authResult === true) {
+                // Token confirmed valid.
+                hideTokenModal();
+                updateSendButton();
+                tokenInput.value = '';
+                await loadHistory();
+            } else if (authResult === null) {
+                // Server unreachable — token saved locally, allow the user to proceed.
+                hideTokenModal();
+                tokenInput.value = '';
+                updateSendButton();
+                showToast('Token guardado (servidor no disponible — intenta de nuevo)');
             }
+            // authResult === false → 401; modal stays open with the error message shown by checkAuth.
         }
         
         function clearToken() {
@@ -1407,17 +3209,115 @@ def generate_chat_html() -> str:
             chatContainer.appendChild(emptyState);
         }
         
-        // Send button state
+        // Send button state — always re-queries the live DOM nodes.
         function updateSendButton() {
-            const hasText = messageInput.value.trim().length > 0;
-            const hasToken = state.token.length > 0;
-            btnSend.disabled = !hasText || !hasToken || state.isLoading;
+            var ta  = document.getElementById('messageInput');
+            var btn = document.getElementById('btnSend');
+            if (!ta || !btn) return;
+            var _prev = btn.disabled;
+            btn.disabled = !ta.value.trim() || state.isLoading;
+            if (_prev !== btn.disabled)
+                console.log('[DBG:updateSendButton] disabled', _prev, '->', btn.disabled, '| value.len=' + ta.value.length + ' isLoading=' + state.isLoading);
         }
-        
-        // Auto-resize textarea
+
+        // Auto-resize textarea — always re-queries the live DOM node.
         function autoResize() {
-            messageInput.style.height = 'auto';
-            messageInput.style.height = Math.min(messageInput.scrollHeight, 120) + 'px';
+            var ta = document.getElementById('messageInput');
+            if (!ta) return;
+            ta.style.height = 'auto';
+            ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
+        }
+
+        // ── Composer binding ─────────────────────────────────────────────────
+        // Named handlers so removeEventListener can deduplicate on re-bind.
+        function _onComposerInput() {
+            console.log('[DBG:_onComposerInput] fired, value.len=' + this.value.length);
+            autoResize();
+            updateSendButton();
+        }
+        function _onComposerKeydown(e) {
+            console.log('[DBG:_onComposerKeydown] fired, key=' + e.key + ' shiftKey=' + e.shiftKey);
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        }
+        function _onComposerSend() {
+            console.log('[DBG:_onComposerSend] click fired');
+            sendMessage();
+        }
+
+        // Re-queries DOM, removes old listeners, attaches fresh ones.
+        // Safe to call multiple times (navigate to Chat, init, etc.).
+        function initComposerBindings() {
+            console.group('[DBG:initComposerBindings] called');
+
+            // --- DOM inventory ---
+            var allTA  = document.querySelectorAll('textarea');
+            var allBtn = document.querySelectorAll('#btnSend');
+            console.log('[DBG] textarea count:', allTA.length);
+            allTA.forEach(function(t, i) {
+                console.log('[DBG] textarea[' + i + ']', {
+                    id: t.id, className: t.className,
+                    isConnected: t.isConnected, offsetParent: t.offsetParent,
+                    disabled: t.disabled, hasFocus: (t === document.activeElement)
+                });
+            });
+            console.log('[DBG] #btnSend count:', allBtn.length);
+            allBtn.forEach(function(b, i) {
+                console.log('[DBG] btnSend[' + i + ']', {
+                    id: b.id, className: b.className,
+                    isConnected: b.isConnected, offsetParent: b.offsetParent,
+                    disabled: b.disabled
+                });
+            });
+
+            var ta  = document.getElementById('messageInput');
+            var btn = document.getElementById('btnSend');
+            if (!ta || !btn) {
+                console.error('[DBG:initComposerBindings] messageInput or btnSend not found — bindings skipped');
+                console.groupEnd();
+                return;
+            }
+
+            console.log('[DBG] selected ta:', {
+                tagName: ta.tagName, id: ta.id, className: ta.className,
+                isConnected: ta.isConnected, offsetParent: ta.offsetParent, disabled: ta.disabled
+            });
+            console.log('[DBG] selected btn:', {
+                tagName: btn.tagName, id: btn.id, className: btn.className,
+                isConnected: btn.isConnected, offsetParent: btn.offsetParent, disabled: btn.disabled
+            });
+
+            // Deduplicate: remove before re-adding (no-op if not yet attached).
+            ta.removeEventListener('input',   _onComposerInput);
+            ta.removeEventListener('keydown', _onComposerKeydown);
+            btn.removeEventListener('click',  _onComposerSend);
+
+            ta.addEventListener('input',   _onComposerInput);
+            ta.addEventListener('keydown', _onComposerKeydown);
+            btn.addEventListener('click',  _onComposerSend);
+
+            // Sync button state with current content.
+            btn.disabled = !ta.value.trim() || state.isLoading;
+            console.log('[DBG:initComposerBindings] done — btn.disabled=' + btn.disabled);
+            console.groupEnd();
+
+            // --- Node-replacement check (500ms after binding) ---
+            var _snapTA  = ta;
+            var _snapBtn = btn;
+            setTimeout(function() {
+                var liveTA  = document.getElementById('messageInput');
+                var liveBtn = document.getElementById('btnSend');
+                if (liveTA !== _snapTA)
+                    console.error('[DBG] !! textarea REPLACED after binding! old:', _snapTA, '→ new:', liveTA);
+                else
+                    console.log('[DBG] textarea node STABLE at +500ms, disabled=' + liveTA.disabled);
+                if (liveBtn !== _snapBtn)
+                    console.error('[DBG] !! btnSend REPLACED after binding! old:', _snapBtn, '→ new:', liveBtn);
+                else
+                    console.log('[DBG] btnSend node STABLE at +500ms, disabled=' + liveBtn.disabled);
+            }, 500);
         }
         
         // Add message from history (no animation, no _originalText)
@@ -2021,8 +3921,15 @@ def generate_chat_html() -> str:
         
         // Send message
         async function sendMessage() {
+            console.log('[DBG:sendMessage] called, messageInput.value="' + messageInput.value.substring(0, 40) + '"');
+            console.log('[DBG:sendMessage] state.token present=' + !!state.token + ' isLoading=' + state.isLoading);
             const text = messageInput.value.trim();
-            if (!text || !state.token || state.isLoading) return;
+            if (!text) { console.warn('[DBG:sendMessage] aborted — empty text'); return; }
+            if (!state.token) {
+                showTokenModal();
+                return;
+            }
+            if (state.isLoading) return;
             
             state.isLoading = true;
             updateSendButton();
@@ -4186,20 +6093,12 @@ def generate_chat_html() -> str:
             URL.revokeObjectURL(url);
         }
         
-        // Event listeners
-        messageInput.addEventListener('input', () => {
-            autoResize();
-            updateSendButton();
-        });
-        
-        messageInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-            }
-        });
-        
-        btnSend.addEventListener('click', sendMessage);
+        // ── Composer bindings (textarea + send button) ───────────────────────
+        // initComposerBindings() is defined above and uses named handler refs
+        // so it can be called again on navigation without duplicating listeners.
+        initComposerBindings();
+
+        // ── Other button listeners ────────────────────────────────────────────
         btnClear.addEventListener('click', clearChat);
         btnExport.addEventListener('click', exportChat);
         btnToken.addEventListener('click', clearToken);

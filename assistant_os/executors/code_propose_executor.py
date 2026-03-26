@@ -27,6 +27,22 @@ For CODE_CREATE: file may not exist yet; context-only mode is used.
 Files larger than _MAX_FILE_BYTES are read partially (first N bytes + truncation
 notice) rather than rejected, so large-file proposals can still be generated.
 
+Contract analysis (M30)
+-----------------------
+Before proposing any change Claude is instructed to infer:
+  - The current return type / contract of the target function/method/class.
+  - Which call sites in the file consume that return value and how.
+  - Whether the proposed change preserves backward compatibility.
+
+Three new output fields encode the result:
+  contract_assumptions  : str   — what Claude observed about the current API contract
+  caller_risk           : str   — "safe" | "review_required" | "breaking"
+  caller_risk_notes     : str   — which callers are affected and why
+
+Automatic risk escalation:
+  caller_risk == "breaking"        → risk_level forced to "high"
+  caller_risk == "review_required" → risk_level raised to at least "medium"
+
 Response parsing
 ----------------
 Claude is instructed to return ONLY a JSON object.  The parser strips markdown
@@ -42,11 +58,34 @@ from typing import Callable, Optional
 
 # File size cap for context inclusion.  Larger files are partially read rather
 # than rejected, so the proposal can reference the beginning of the file.
-_MAX_FILE_BYTES: int = 16_384  # 16 KB
+_MAX_FILE_BYTES: int = 65_536  # 64 KB
 
 _SYSTEM_PROMPT = """\
 You are a code change planning assistant embedded in a developer tool.
-Analyze the requested change and respond with ONLY a JSON object — no other text.
+Your primary responsibility is to propose changes that are SAFE — meaning they
+respect the existing contracts of the code and do not silently break callers.
+
+CONTRACT ANALYSIS (required before every proposal):
+Whenever file content is provided, you MUST examine it and:
+1. Identify the target symbol (function / method / class) being changed.
+2. Determine its CURRENT contract:
+   - What does it return? (exact type and shape — e.g. None on success,
+     (int, dict) tuple on error, bool, list, etc.)
+   - What exceptions does it raise?
+   - What invariants does it maintain?
+3. Find EVERY call site for that symbol inside the provided file content.
+   Note exactly how each caller consumes the return value:
+   e.g. `if result:`, `status, body = result`, `result.get("key")`, etc.
+4. Decide caller_risk:
+   - "safe"            — your proposed change is fully backward-compatible with
+                         all identified callers.
+   - "review_required" — change is likely compatible but callers should be
+                         inspected before applying (e.g. new optional param,
+                         semantic shift without type change).
+   - "breaking"        — your change would cause one or more existing callers
+                         to fail, raise an exception, or produce wrong results.
+
+Respond with ONLY a JSON object — no other text.
 
 Required JSON schema:
 {
@@ -55,15 +94,24 @@ Required JSON schema:
   "write_intent_summary": "Short description: e.g. 'Modifies auth.py to fix token validation'",
   "patch_preview": "Unified diff showing key changes (- old lines, + new lines)",
   "operation_types": ["modify"],
-  "risk_level": "low"
+  "risk_level": "low",
+  "contract_assumptions": "What you observed about the current contract (return type, usage pattern)",
+  "caller_risk": "safe",
+  "caller_risk_notes": "Which callers are affected and how, or 'No callers found in file' if none"
 }
 
 Rules:
 - affected_files: relative paths only, at most 5 files
-- operation_types: use "modify" for changes to existing files, "create" for new files
+- operation_types: use "modify" for existing files, "create" for new files
   NEVER include "delete", "rename", or "move"
-- risk_level: "low" for minor changes, "medium" for significant, "high" for major refactors
-- patch_preview: use unified diff format (--- a/file / +++ b/file / @@ ... @@ / - / +)
+- risk_level: "low" | "medium" | "high"
+  MANDATORY ESCALATION — you MUST follow these rules:
+  * If caller_risk == "breaking"        → risk_level MUST be "high"
+  * If caller_risk == "review_required" → risk_level MUST be at least "medium"
+- contract_assumptions: ALWAYS fill in — even if "No file provided" or "New file, no prior contract"
+- caller_risk: ALWAYS one of "safe" | "review_required" | "breaking"
+- caller_risk_notes: be specific — name which callers are affected; if safe, explain why
+- patch_preview: unified diff format (--- a/file / +++ b/file / @@ ... @@ / - / +)
 - If the change cannot be safely proposed: {"error": "reason — do not include other fields"}
 - Respond with ONLY the JSON object, no markdown, no explanation, no code fences
 """
@@ -135,13 +183,43 @@ def _build_propose_prompt(
     context: str,
     allowed_write_scope: list,
 ) -> str:
-    """Build the user-turn prompt for proposal generation."""
+    """
+    Build the user-turn prompt for proposal generation.
+
+    M30: When file content is available for CODE_FIX, prepends an explicit
+    contract analysis directive so Claude scans callers before proposing
+    changes that could silently break them.
+    """
     parts: list[str] = []
 
     if action == "CODE_FIX":
-        parts.append("Generate a fix proposal for the following code change request.")
+        if file_content is not None:
+            parts.append(
+                "Generate a fix proposal for the following change request.\n\n"
+                "REQUIRED — perform contract analysis FIRST:\n"
+                "1. Identify the function/method/class the change will modify.\n"
+                "2. Determine its current return type and contract "
+                "(e.g. None on success, tuple on error, bool, etc.).\n"
+                "3. Scan the file for every call site of that symbol and note how "
+                "callers consume the return value.\n"
+                "4. Set caller_risk to 'breaking' if your patch would cause any "
+                "caller to fail, 'review_required' if callers need inspection, "
+                "or 'safe' if fully backward-compatible.\n"
+                "Then produce the JSON proposal."
+            )
+        else:
+            parts.append(
+                "Generate a fix proposal for the following code change request.\n"
+                "(No file content available — set contract_assumptions to "
+                "'File not provided' and caller_risk to 'review_required'.)"
+            )
     else:
-        parts.append("Generate a creation proposal for the following new code request.")
+        # CODE_CREATE — new file, no existing callers to check
+        parts.append(
+            "Generate a creation proposal for the following new code request.\n"
+            "Since this is new code, set contract_assumptions to describe the "
+            "intended contract for the new symbol, and set caller_risk to 'safe'."
+        )
 
     if target_file:
         parts.append(f"Target file: `{target_file}`")
@@ -155,8 +233,6 @@ def _build_propose_prompt(
     if file_content is not None:
         ext = os.path.splitext(target_file)[1].lstrip(".") if target_file else ""
         parts.append(f"Current file content:\n```{ext}\n{file_content}\n```")
-    elif action == "CODE_FIX":
-        parts.append("(File content not available — generate proposal from context only.)")
 
     return "\n\n".join(parts)
 
@@ -208,6 +284,7 @@ def _parse_proposal_json(text: str) -> Optional[dict]:
 _VALID_RISK_LEVELS = frozenset({"low", "medium", "high"})
 _CANONICAL_OPS = frozenset({"create", "modify", "delete", "rename", "move"})
 _BLOCKED_OPS = frozenset({"delete", "rename", "move"})
+_VALID_CALLER_RISKS = frozenset({"safe", "review_required", "breaking"})
 
 
 def _validate_and_normalise(raw: dict, target_file: str, action: str) -> dict:
@@ -218,6 +295,10 @@ def _validate_and_normalise(raw: dict, target_file: str, action: str) -> dict:
     - Removes blocked operation types (delete/rename/move).
     - Normalises risk_level to a known value.
     - Surfaces Claude's own error field as ok=False.
+    - M30: extracts contract_assumptions / caller_risk / caller_risk_notes and
+      applies automatic risk escalation:
+        caller_risk == "breaking"        → risk_level forced to "high"
+        caller_risk == "review_required" → risk_level raised to at least "medium"
     """
     if raw.get("error"):
         return {"ok": False, "error": str(raw["error"])}
@@ -229,9 +310,24 @@ def _validate_and_normalise(raw: dict, target_file: str, action: str) -> dict:
     if not op_types:
         op_types = ["create" if action == "CODE_CREATE" else "modify"]
 
-    # risk_level
+    # risk_level — start from Claude's suggestion
     risk = str(raw.get("risk_level", "medium")).lower()
     if risk not in _VALID_RISK_LEVELS:
+        risk = "medium"
+
+    # M30: caller_risk — normalise and apply escalation
+    caller_risk = str(raw.get("caller_risk", "")).lower().strip()
+    if caller_risk not in _VALID_CALLER_RISKS:
+        # If the field is absent or unrecognised, default conservatively
+        caller_risk = "review_required" if action == "CODE_FIX" else "safe"
+
+    caller_risk_notes = str(raw.get("caller_risk_notes", "")).strip()
+    contract_assumptions = str(raw.get("contract_assumptions", "")).strip()
+
+    # Automatic risk escalation based on caller compatibility
+    if caller_risk == "breaking":
+        risk = "high"
+    elif caller_risk == "review_required" and risk == "low":
         risk = "medium"
 
     # affected_files — default to target_file if missing
@@ -247,6 +343,10 @@ def _validate_and_normalise(raw: dict, target_file: str, action: str) -> dict:
         "patch_preview": str(raw.get("patch_preview", "(preview not available)")).strip(),
         "operation_types": op_types,
         "risk_level": risk,
+        # M30: contract analysis fields
+        "contract_assumptions": contract_assumptions,
+        "caller_risk": caller_risk,
+        "caller_risk_notes": caller_risk_notes,
     }
 
 
