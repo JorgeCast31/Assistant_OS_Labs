@@ -2,6 +2,29 @@
 # Assistant OS - .gitignore
 # =============================================================================
 
+# ----- Frontend build/cache -----
+ui/.next/
+ui/out/
+ui/.turbo/
+ui/.vercel/
+
+# ----- Python tooling cache -----
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+
+# ----- Local databases / sqlite -----
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# ----- OS / temp -----
+*.tmp
+*.temp
+
 # ----- Secrets & Environment -----
 .env
 .env.local
