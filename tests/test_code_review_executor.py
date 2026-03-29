@@ -80,63 +80,63 @@ class _RaisingClient:
 class TestReadTargetFile:
 
     def test_empty_target_file_returns_none_none(self, tmp_path):
-        content, error = _read_target_file(str(tmp_path), "")
+        content, error, _start_line = _read_target_file(str(tmp_path), "")
         assert content is None
         assert error is None
 
     def test_empty_workspace_returns_none_none(self, tmp_path):
-        content, error = _read_target_file("", "src/foo.py")
+        content, error, _start_line = _read_target_file("", "src/foo.py")
         assert content is None
         assert error is None
 
     def test_reads_existing_file(self, tmp_path):
         f = tmp_path / "foo.py"
         f.write_text("def hello(): pass\n")
-        content, error = _read_target_file(str(tmp_path), "foo.py")
+        content, error, _start_line = _read_target_file(str(tmp_path), "foo.py")
         assert error is None
         assert "def hello" in content
 
     def test_nested_path_reads_correctly(self, tmp_path):
         (tmp_path / "src").mkdir()
         (tmp_path / "src" / "bar.py").write_text("x = 1\n")
-        content, error = _read_target_file(str(tmp_path), "src/bar.py")
+        content, error, _start_line = _read_target_file(str(tmp_path), "src/bar.py")
         assert error is None
         assert "x = 1" in content
 
     def test_nonexistent_file_returns_error(self, tmp_path):
-        content, error = _read_target_file(str(tmp_path), "does_not_exist.py")
+        content, error, _start_line = _read_target_file(str(tmp_path), "does_not_exist.py")
         assert content is None
         assert "not found" in error.lower()
 
     def test_directory_path_returns_error(self, tmp_path):
         (tmp_path / "subdir").mkdir()
-        content, error = _read_target_file(str(tmp_path), "subdir")
+        content, error, _start_line = _read_target_file(str(tmp_path), "subdir")
         assert content is None
         assert error is not None
 
     def test_file_too_large_returns_error(self, tmp_path):
         big = tmp_path / "big.py"
         big.write_bytes(b"x" * (_MAX_FILE_BYTES + 1))
-        content, error = _read_target_file(str(tmp_path), "big.py")
+        content, error, _start_line = _read_target_file(str(tmp_path), "big.py")
         assert content is None
         assert "too large" in error.lower()
 
     def test_file_exactly_at_limit_is_accepted(self, tmp_path):
         ok_file = tmp_path / "ok.py"
         ok_file.write_bytes(b"a" * _MAX_FILE_BYTES)
-        content, error = _read_target_file(str(tmp_path), "ok.py")
+        content, error, _start_line = _read_target_file(str(tmp_path), "ok.py")
         assert error is None
         assert content is not None
 
     def test_path_traversal_rejected(self, tmp_path):
-        content, error = _read_target_file(str(tmp_path), "../outside.py")
+        content, error, _start_line = _read_target_file(str(tmp_path), "../outside.py")
         assert content is None
         assert "traversal" in error.lower()
 
     def test_utf8_file_read_correctly(self, tmp_path):
         f = tmp_path / "unicode.py"
         f.write_text("# café y ñoño\npass\n", encoding="utf-8")
-        content, error = _read_target_file(str(tmp_path), "unicode.py")
+        content, error, _start_line = _read_target_file(str(tmp_path), "unicode.py")
         assert error is None
         assert "café" in content
 

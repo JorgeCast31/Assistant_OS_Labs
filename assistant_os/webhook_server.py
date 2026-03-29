@@ -54,7 +54,6 @@ from .contracts import (
 )
 from .summary import summarize
 from .context_store import store_pending_plan, get_pending_plan, remove_pending_plan
-from .chat_ui import generate_chat_html
 from .chat_core import process_chat_input
 from .chat_renderer import render_chat_response
 from . import chat_db
@@ -515,10 +514,9 @@ def _wrap_work_result(dr: "DomainResult", context_id: str) -> dict:
         "domain": dr["domain"],
         "message": dr["message"],
         "data": data,
-        # "type" stays at top level for summary.py and chat_ui.py backward compat.
-        # It mirrors the legacy type string stored in data["type"] when present,
-        # otherwise falls back to result_type (for handlers that didn't set a
-        # legacy type separately from result_type).
+        # "type" stays at top level for backward compat with summary.py consumers.
+        # Mirrors the legacy type string stored in data["type"] when present,
+        # otherwise falls back to result_type.
         "type": data.get("type") or dr["result_type"],
     }
     if dr.get("warnings"):
@@ -1652,9 +1650,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
         self._send_json_response(status, error)
 
     def do_GET(self) -> None:
-        """Handle GET requests (health, chat UI, chat history, sheets status)."""
+        """Handle GET requests (health, chat history, sheets status)."""
         path = self._get_path_without_query()
-        
+
         if path == "/health":
             self._send_json_response(200, {
                 "status": "ok",
@@ -1663,7 +1661,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "notion_token_set": bool(NOTION_TOKEN),
             })
             return
-        
+
         if path == "/auth/check":
             # Validate token without doing anything else
             auth_error = self._check_auth()
@@ -1676,11 +1674,20 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     "message": "Token is valid"
                 })
             return
-        
+
+        # The legacy HTML UI (/ and /chat) was retired when the Next.js UI
+        # in ui/ became the primary interface.  Return 410 Gone so callers
+        # get a clear signal instead of a silent 404.
         if path == "/" or path == "/chat":
-            self._handle_chat_ui()
+            status, error = _make_json_error(
+                410,
+                "The built-in HTML UI has been retired. "
+                "Use the Next.js UI in ui/ (npm run dev) instead.",
+                "Gone",
+            )
+            self._send_json_response(status, error)
             return
-        
+
         if path == "/chat/history":
             self._handle_chat_history()
             return
@@ -1827,22 +1834,6 @@ class WebhookHandler(BaseHTTPRequestHandler):
             return
         self._send_json_response(200, {"ok": True})
 
-    # ─────────────────────────────────────────────────────────────────────────
-
-    def _handle_chat_ui(self) -> None:
-        """Serve the chat UI HTML page."""
-        html = generate_chat_html()
-        body = html.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        # Prevent caching to avoid stale UI/auth issues
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Pragma", "no-cache")
-        self.send_header("Expires", "0")
-        self.end_headers()
-        self.wfile.write(body)
-    
     def _handle_chat_history(self) -> None:
         """Handle GET /chat/history endpoint - retrieve conversation history."""
         remote = self._get_remote_addr()
@@ -2506,10 +2497,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         # --- BACKEND IS KING: Process through chat_core ---
         # action_raw is passed as-is; parse_action() in chat_core validates it.
-        # M23 diagnostic: log incoming session state + action before dispatching
         incoming_action = action_raw.get("type") if isinstance(action_raw, dict) else None
         _log.info(
-            "[M23][RECV] action=%s pending_flow_in=%s context_id=%s text=%r",
+            "chat_recv: action=%s pending_flow=%s context_id=%s text=%r",
             incoming_action or "None",
             session.get("pending_flow") or "None",
             (session.get("context_id") or "")[:8],
@@ -2520,10 +2510,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
             text, session, action=action_raw
         )
 
-        # Logging: trace_id, intent, pending_flow, action_types
         ui_action_types = [a.get("type", "") for a in response.get("ui_actions", [])]
         _log.info(
-            "[M23][RESP] trace_id=%s intent=%s/%s mode=%s pending_flow_out=%s ui_actions=%s",
+            "chat_resp: trace=%s  intent=%s/%s  mode=%s  pending_flow=%s  ui_actions=%s",
             response.get("trace_id", "N/A")[:8],
             response["domain"], response["intent"],
             response["mode"],

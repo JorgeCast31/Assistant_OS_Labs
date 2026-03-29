@@ -7,7 +7,7 @@
  * Auth headers are resolved at request time (never cached as module-level consts).
  */
 import { NextRequest, NextResponse } from 'next/server'
-import { getWebhookBaseUrl, getWebhookHeaders, logWebhookAuth } from '@/lib/server/webhook-auth'
+import { getWebhookBaseUrl, getWebhookHeaders } from '@/lib/server/webhook-auth'
 
 // Force dynamic evaluation — never statically optimise this route handler.
 export const dynamic = 'force-dynamic'
@@ -22,8 +22,6 @@ async function proxyToWebhook(
   const base    = getWebhookBaseUrl()
   const url     = `${base}${path}`
   const headers = getWebhookHeaders()
-
-  logWebhookAuth(`chat/sessions/[id] ${method}`, url)
 
   let upstream: Response
   try {

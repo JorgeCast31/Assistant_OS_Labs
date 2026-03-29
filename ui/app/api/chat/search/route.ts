@@ -5,7 +5,7 @@
  * Auth headers are resolved at request time (never cached as module-level consts).
  */
 import { NextRequest, NextResponse } from 'next/server'
-import { getWebhookBaseUrl, getWebhookHeaders, logWebhookAuth } from '@/lib/server/webhook-auth'
+import { getWebhookBaseUrl, getWebhookHeaders } from '@/lib/server/webhook-auth'
 
 // Force dynamic evaluation — never statically optimise this route handler.
 export const dynamic = 'force-dynamic'
@@ -14,8 +14,6 @@ export async function GET(req: NextRequest) {
   const q    = req.nextUrl.searchParams.get('q') ?? ''
   const base = getWebhookBaseUrl()
   const url  = `${base}/chat/search?q=${encodeURIComponent(q)}`
-
-  logWebhookAuth('chat/search GET', url)
 
   let upstream: Response
   try {

@@ -1309,7 +1309,7 @@ def _call_review_executor(
             "line_end": line_end,
         })
     except Exception as exc:
-        _log.error("[M28] _call_review_executor error: %s", exc)
+        _log.error("review_executor call failed: %s", exc)
         return {"ok": False, "error": f"Error llamando al executor: {exc}"}
 
 
@@ -1345,7 +1345,7 @@ def _call_propose_executor(
             "allowed_write_scope": scope,
         })
     except Exception as exc:
-        _log.error("[M28] _call_propose_executor error: %s", exc)
+        _log.error("propose_executor call failed: %s", exc)
         return {"ok": False, "error": f"Error llamando al executor: {exc}"}
 
 
@@ -1534,7 +1534,7 @@ def _handle_file_index_request(
             content = fh.read(524_288)
         total_lines = content.count("\n") + 1
     except OSError as exc:
-        _log.warning("[M29] cannot read file for index: %s", exc)
+        _log.warning("file_index: cannot read %r: %s", target_file, exc)
         return None
 
     try:
@@ -1542,10 +1542,10 @@ def _handle_file_index_request(
         lang = detect_lang(target_file)
         symbols = extract_index(content, lang)
     except Exception as exc:
-        _log.warning("[M29] index extraction failed: %s", exc)
+        _log.warning("file_index: extraction failed for %r: %s", target_file, exc)
         return None
 
-    _log.info("[M29] file index  file=%r  symbols=%d  lines=%d", target_file, len(symbols), total_lines)
+    _log.debug("file_index: %r  symbols=%d  lines=%d", target_file, len(symbols), total_lines)
     return make_chat_core_response(
         domain="CODE",
         intent="file_index",
@@ -1598,19 +1598,6 @@ def _call_review_and_respond(
     lr      = _extract_line_range_from_prompt(text)
     line_start, line_end = (lr[0], lr[1]) if lr else (None, None)
 
-    # [M29.5][parse] — what was extracted from the user prompt (temporal)
-    _log.info(
-        "[M29.5][parse] op=%s  raw_files=%s  symbol=%r  range=%s  "
-        "repo_path=%s  file_count=%d",
-        operation, _extract_code_files(text), symbol, lr,
-        bool(repo_path), len(resolved_files),
-    )
-    # [M29.5][resolve] — contract passed to executor (temporal)
-    _log.info(
-        "[M29.5][resolve] resolved=%s  symbol=%r  start=%s  end=%s",
-        resolved_files, symbol, line_start, line_end,
-    )
-
     exec_result = _call_review_executor(
         operation, text, resolved_files, repo_path=repo_path,
         symbol_name=symbol or "",
@@ -1618,10 +1605,6 @@ def _call_review_and_respond(
         line_end=line_end,
     )
     if exec_result.get("ok"):
-        _log.info(
-            "[M29.5][render] intent=responded  domain=CODE  op=%s  symbol=%r  files=%d",
-            operation, symbol, len(resolved_files),
-        )
         return make_chat_core_response(
             domain="CODE",
             intent="responded",
@@ -1644,7 +1627,7 @@ def _call_review_and_respond(
     raw_error = exec_result.get("error", "Error desconocido")
     err = _classify_executor_error(raw_error)
     _log.warning(
-        "[M29.5][render] intent=%s  domain=CODE  op=%s  symbol=%r  files=%d  raw_error=%s",
+        "code_review error: kind=%s  op=%s  symbol=%r  files=%d  error=%s",
         err["kind"], operation, symbol, len(resolved_files), raw_error[:80],
     )
 
@@ -1855,7 +1838,7 @@ def _resolve_code_context(
     form_target = (form_payload.get("target_file") or "").strip()
     if form_target and form_target not in files:
         files = [form_target] + list(files)
-        _log.info("[M29] target_file from form: %r", form_target)
+        _log.debug("code_propose: target_file from form: %r", form_target)
 
     if not repo_path and text:
         # Parse "repo_path: /path, base_branch: main" from human-readable text
@@ -2055,7 +2038,7 @@ def _resolve_code_preview(
             },
         )
     # Executor failed — fall back to queued with error note
-    _log.warning("[M28] propose executor failed: %s", exec_result.get("error"))
+    _log.warning("propose_executor failed: %s", exec_result.get("error"))
     return make_chat_core_response(
         domain="CODE",
         intent="queued",
@@ -2112,7 +2095,7 @@ def process_chat_input(
     if action is not None:
         parsed, err = parse_action(action)
         if err:
-            _log.warning("[M23][chat_core] malformed action: %s", err)
+            _log.warning("process_chat_input: malformed action: %s", err)
             return make_chat_core_response(
                 domain="*",
                 intent="error",
@@ -2121,13 +2104,13 @@ def process_chat_input(
                 audit={"error_message": f"Malformed action: {err}"},
             )
         if parsed and parsed["type"] in STRUCTURED_ACTION_TYPES:
-            _log.info(
-                "[M23][chat_core] structured_action=%s pending_flow=%s",
+            _log.debug(
+                "structured_action=%s pending_flow=%s",
                 parsed["type"], session.get("pending_flow") or "None",
             )
             return _process_structured_action(parsed, session, text)
         # Unknown / unsupported type (e.g. "chip") — fall through to text flow
-        _log.debug("[M23][chat_core] action type %r not structured, falling through to text", action.get("type"))
+        _log.debug("action type %r not structured, falling through to text", action.get("type"))
 
     # Require at least some text for the text-based path
     if not text:
@@ -2183,15 +2166,6 @@ def process_chat_input(
     # guesses a different domain (e.g. ENERGY) at low confidence (M26-B).
     if _op in _WORK_MUTATION_OPS:
         domain = "WORK"
-
-    # [M29.5][classify] — routing decision summary (temporal, removable)
-    _log.info(
-        "[M29.5][classify] prompt=%r  domain=%s  op=%s  conf=%.2f  "
-        "work_query=%s  reason=%s",
-        text[:60], domain, _op, confidence,
-        is_work_query(text, domain) if domain != "CODE" else False,
-        classify_result.get("reason", ""),
-    )
 
     # WORK_QUERY takes priority UNLESS the classifier has already determined
     # this is a CODE operation (M23) OR a WORK mutation (M26-B).
