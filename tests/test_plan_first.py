@@ -93,8 +93,14 @@ class TestShouldAutoExecute(unittest.TestCase):
         
         self.assertFalse(should_auto_execute(plan))
 
-    def test_fin_expense_medium_risk_does_not_auto_execute(self):
-        """FIN_EXPENSE with risk_level=medium should not auto-execute."""
+    def test_fin_expense_medium_risk_auto_executes(self):
+        """
+        M0.6: FIN_EXPENSE with risk_level=medium DOES auto-execute.
+
+        _create_plan_from_intent sets requires_confirmation=False for FIN_EXPENSE
+        ("Single expense auto-executes"). The whitelist was updated in M0.6 to
+        reflect this design intent. This test validates the corrected behavior.
+        """
         plan = make_plan(
             domain="FIN",
             action=ACTION_FIN_EXPENSE,
@@ -102,8 +108,8 @@ class TestShouldAutoExecute(unittest.TestCase):
             risk_level=RISK_MEDIUM,
             requires_confirmation=False,
         )
-        
-        self.assertFalse(should_auto_execute(plan))
+
+        self.assertTrue(should_auto_execute(plan))
 
     def test_unlisted_low_risk_action_does_not_auto_execute(self):
         """

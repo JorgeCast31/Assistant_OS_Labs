@@ -448,12 +448,23 @@ def make_plan(
 # labeled as low-risk. Every action that should skip confirmation must be
 # explicitly listed here with its expected risk level.
 #
-# Current safe auto-executes:
-#   WORK_QUERY / RISK_LOW  — read-only Notion query, no side effects
+# Every entry here corresponds exactly to a case in _create_plan_from_intent
+# where requires_confirmation=False is set intentionally for auto-execution.
+# This whitelist is the single source of truth that PolicyDecision.execution_mode
+# and should_auto_execute() both consult.
+#
+# Auto-execute rules:
+#   WORK_QUERY / RISK_LOW    — read-only Notion query, no side effects
+#   WORK_UPDATE / RISK_LOW   — Phase 1 is read-only preview; no mutation occurs
+#   FIN_EXPENSE / RISK_MEDIUM — single expense auto-executes per design intent
+#   CODE_EXPLAIN / RISK_LOW  — read-only: no side effects
+#   CODE_REVIEW / RISK_LOW   — read-only: no side effects
 _AUTO_EXECUTE_WHITELIST: frozenset[tuple[str, str]] = frozenset({
     (ACTION_WORK_QUERY,   RISK_LOW),
-    (ACTION_CODE_EXPLAIN, RISK_LOW),   # Read-only: no side effects
-    (ACTION_CODE_REVIEW,  RISK_LOW),   # Read-only: no side effects
+    (ACTION_WORK_UPDATE,  RISK_LOW),    # Phase 1: read-only preview, no mutation side effects
+    (ACTION_FIN_EXPENSE,  RISK_MEDIUM), # Single expense auto-executes by design
+    (ACTION_CODE_EXPLAIN, RISK_LOW),    # Read-only: no side effects
+    (ACTION_CODE_REVIEW,  RISK_LOW),    # Read-only: no side effects
 })
 
 
@@ -569,8 +580,9 @@ def determine_execution_mode(
     Decision rules (in priority order):
     1. missing_fields present → "clarify" (cannot build a valid plan)
     2. (action, risk_level) in _AUTO_EXECUTE_WHITELIST → "auto"
-    3. requires_confirmation → "confirm"
-    4. ACTION_UNKNOWN / ACTION_CLASSIFY → "blocked"
+    3. ACTION_UNKNOWN / ACTION_CLASSIFY / ACTION_COMMAND → "blocked"
+       (no registered pipeline; fall through to plan_generated in orchestrator)
+    4. requires_confirmation → "confirm"
     5. default → "confirm" (safe conservative fallback)
 
     This function is the single source of truth for execution_mode.
@@ -583,7 +595,7 @@ def determine_execution_mode(
     if not requires_confirmation and (action, risk_level) in _AUTO_EXECUTE_WHITELIST:
         return EXECUTION_MODE_AUTO
 
-    if action in (ACTION_UNKNOWN, ACTION_CLASSIFY):
+    if action in (ACTION_UNKNOWN, ACTION_CLASSIFY, ACTION_COMMAND):
         return EXECUTION_MODE_BLOCKED
 
     return EXECUTION_MODE_CONFIRM

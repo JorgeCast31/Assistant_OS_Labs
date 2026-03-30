@@ -421,5 +421,81 @@ class TestRouteByClassificationIntegration(unittest.TestCase):
         self.assertEqual(output_type, "plan_confirmation_required")
 
 
+# ---------------------------------------------------------------------------
+# M0.6 — Whitelist alignment: WORK_UPDATE and FIN_EXPENSE
+# ---------------------------------------------------------------------------
+
+class TestWhitelistAlignment(unittest.TestCase):
+    """
+    M0.6: Verify that the whitelist accurately reflects all auto-execute actions.
+
+    WORK_UPDATE (RISK_LOW) and FIN_EXPENSE (RISK_MEDIUM) are set to
+    requires_confirmation=False by _create_plan_from_intent. They must be
+    in _AUTO_EXECUTE_WHITELIST so that determine_execution_mode() returns "auto"
+    and the orchestrator routes them through the pipeline without user confirmation.
+    """
+
+    def test_work_update_risk_low_is_auto(self):
+        """WORK_UPDATE Phase 1 is read-only preview — must auto-execute."""
+        mode = determine_execution_mode(ACTION_WORK_UPDATE, RISK_LOW, False)
+        self.assertEqual(mode, EXECUTION_MODE_AUTO)
+
+    def test_fin_expense_risk_medium_is_auto(self):
+        """Single FIN_EXPENSE auto-executes by design."""
+        mode = determine_execution_mode(ACTION_FIN_EXPENSE, RISK_MEDIUM, False)
+        self.assertEqual(mode, EXECUTION_MODE_AUTO)
+
+    def test_work_update_risk_low_auto_consistent_with_should_auto_execute(self):
+        """determine_execution_mode and should_auto_execute must agree for WORK_UPDATE."""
+        plan = make_plan("WORK", ACTION_WORK_UPDATE, "update task", risk_level=RISK_LOW,
+                         requires_confirmation=False)
+        mode = determine_execution_mode(ACTION_WORK_UPDATE, RISK_LOW, False)
+        self.assertEqual(mode == EXECUTION_MODE_AUTO, should_auto_execute(plan))
+
+    def test_fin_expense_auto_consistent_with_should_auto_execute(self):
+        """determine_execution_mode and should_auto_execute must agree for FIN_EXPENSE."""
+        plan = make_plan("FIN", ACTION_FIN_EXPENSE, "expense $50", risk_level=RISK_MEDIUM,
+                         requires_confirmation=False)
+        mode = determine_execution_mode(ACTION_FIN_EXPENSE, RISK_MEDIUM, False)
+        self.assertEqual(mode == EXECUTION_MODE_AUTO, should_auto_execute(plan))
+
+    def test_work_update_requires_confirmation_overrides_whitelist(self):
+        """Even a whitelisted WORK_UPDATE must not auto-execute if requires_confirmation=True."""
+        mode = determine_execution_mode(ACTION_WORK_UPDATE, RISK_LOW, requires_confirmation=True)
+        self.assertNotEqual(mode, EXECUTION_MODE_AUTO)
+
+    def test_work_update_risk_medium_not_auto(self):
+        """Only (WORK_UPDATE, RISK_LOW) is whitelisted — RISK_MEDIUM is not."""
+        mode = determine_execution_mode(ACTION_WORK_UPDATE, RISK_MEDIUM, False)
+        self.assertNotEqual(mode, EXECUTION_MODE_AUTO)
+
+    def test_fin_expense_risk_high_not_auto(self):
+        """Only (FIN_EXPENSE, RISK_MEDIUM) is whitelisted — RISK_HIGH is not."""
+        mode = determine_execution_mode(ACTION_FIN_EXPENSE, RISK_HIGH, False)
+        self.assertNotEqual(mode, EXECUTION_MODE_AUTO)
+
+
+# ---------------------------------------------------------------------------
+# M0.6 — ACTION_COMMAND must be blocked
+# ---------------------------------------------------------------------------
+
+class TestCommandActionBlocked(unittest.TestCase):
+    """
+    M0.6: ACTION_COMMAND has no registered pipeline. Returning "confirm" for it
+    would produce plan_confirmation_required (wrong). It must be "blocked" so the
+    orchestrator falls through to plan_generated (informational routing).
+    """
+
+    def test_action_command_is_blocked(self):
+        mode = determine_execution_mode(ACTION_COMMAND, RISK_MEDIUM, False)
+        self.assertEqual(mode, EXECUTION_MODE_BLOCKED)
+
+    def test_action_command_blocked_in_build(self):
+        pd = build_policy_decision(
+            "code something", ACTION_COMMAND, "CODE", RISK_MEDIUM, False, 0.5
+        )
+        self.assertEqual(pd["execution_mode"], EXECUTION_MODE_BLOCKED)
+
+
 if __name__ == "__main__":
     unittest.main()
