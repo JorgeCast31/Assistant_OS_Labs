@@ -74,7 +74,12 @@ class TestEnsureUniquePath(unittest.TestCase):
     def tearDown(self):
         """Limpiar directorio temporal."""
         if self.test_dir.exists():
-            shutil.rmtree(self.test_dir)
+            try:
+                shutil.rmtree(self.test_dir)
+            except PermissionError:
+                # Workaround: NTFS/Windows mount desde Linux sandbox no permite rmtree.
+                # Las aserciones del test ya completaron antes de este punto.
+                pass
     
     def test_path_not_exists_unchanged(self):
         """Si no existe, retorna el mismo path."""
@@ -189,7 +194,12 @@ class TestCodeAgent(unittest.TestCase):
         """Limpiar archivos generados por este test."""
         for f in self._created_files:
             if f.exists():
-                f.unlink(missing_ok=True)
+                try:
+                    f.unlink(missing_ok=True)
+                except PermissionError:
+                    # Workaround: NTFS/Windows mount desde Linux sandbox no permite unlink.
+                    # Las aserciones del test ya completaron antes de este punto.
+                    pass
     
     def _unique_task(self, base: str) -> str:
         """Genera un task name único para evitar colisiones."""

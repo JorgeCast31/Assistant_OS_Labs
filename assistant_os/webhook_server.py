@@ -536,25 +536,23 @@ def _adapt_result_to_response(dr: "DomainResult", context_id: str) -> dict:
     Convert a DomainResult from orchestrator.handle_request into the legacy Response shape.
 
     This is the sole transport adapter between the kernel and the HTTP layer.
-    Dispatches by domain first, then by result_type for non-domain cases.
+
+    Dispatch priority:
+    1. Cross-domain result_types (plan_confirmation_required, plan_generated) — checked
+       FIRST regardless of domain, because these are kernel-level states that must not be
+       intercepted by domain-specific wrappers.
+    2. Domain-specific cases (WORK, FIN) — only reached for fully-executed domain results.
+    3. Fallback: unknown domain/result_type.
+
+    Invariant: result_type is the authoritative semantic signal. Domain is secondary.
     """
     domain = dr.get("domain", "UNKNOWN")
     result_type = dr.get("result_type", "")
 
-    if domain == "WORK":
-        return _wrap_work_result(dr, context_id)
-
-    if domain == "FIN":
-        data = dr.get("data", {})
-        return {
-            "context_id": context_id,
-            "agent": "fin",
-            "status": "ok" if dr["ok"] else "error",
-            "output": data,
-            "error": dr.get("error"),
-            "ts": now_iso(),
-        }
-
+    # --- Cross-domain result_types: checked before any domain-specific dispatch ---
+    # plan_confirmation_required is produced exclusively by core/orchestrator.py when
+    # requires_confirmation=True. It is never produced by domain pipelines.
+    # Checking domain first would silently swallow the pending-confirmation semantic.
     if result_type == RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED:
         return {
             "context_id": context_id,
@@ -572,6 +570,21 @@ def _adapt_result_to_response(dr: "DomainResult", context_id: str) -> dict:
             "status": "ok",
             "output": dr.get("data", {}),
             "error": None,
+            "ts": now_iso(),
+        }
+
+    # --- Domain-specific dispatch: only for fully-executed domain results ---
+    if domain == "WORK":
+        return _wrap_work_result(dr, context_id)
+
+    if domain == "FIN":
+        data = dr.get("data", {})
+        return {
+            "context_id": context_id,
+            "agent": "fin",
+            "status": "ok" if dr["ok"] else "error",
+            "output": data,
+            "error": dr.get("error"),
             "ts": now_iso(),
         }
 
