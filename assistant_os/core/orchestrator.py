@@ -28,6 +28,9 @@ from ..contracts import (
     ACTION_UNKNOWN,
     RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED,
     RESULT_TYPE_PLAN_GENERATED,
+    EXECUTION_MODE_AUTO,
+    EXECUTION_MODE_CONFIRM,
+    EXECUTION_MODE_CLARIFY,
 )
 
 
@@ -78,7 +81,11 @@ def handle_request(
     action = plan.get("action", ACTION_UNKNOWN)
 
     # Stage 3 — Policy: determine execution_mode.
+    # policy.execution_mode is the authoritative dispatch signal from this point.
+    # plan.requires_confirmation is NOT read here — it feeds into policy as input
+    # and is preserved in the plan data for downstream consumers (e.g. UI, audit).
     policy = build_policy(req, intent, plan)
+    execution_mode = policy.get("execution_mode", EXECUTION_MODE_CONFIRM)
 
     # Stage 4 — Domain registry dispatch.
     #
@@ -87,17 +94,18 @@ def handle_request(
     plan_for_exec = dict(plan)
     plan_for_exec["raw_text"] = text
 
-    # Plans that require user confirmation are pre-execution gates.
-    # They must not be dispatched to a pipeline — only the confirmation
-    # endpoint (_execute_confirmed_plan) triggers actual execution after
-    # the user approves. Route directly to the confirmation response.
-    if not plan.get("requires_confirmation"):
+    # execution_mode == "auto": policy determined this action is safe to execute
+    # immediately. Only actions in _AUTO_EXECUTE_WHITELIST reach this path.
+    if execution_mode == EXECUTION_MODE_AUTO:
         pipeline = get_pipeline(action_domain(action))
         if pipeline:
             return pipeline(plan_for_exec, context_id)
+        # Defensive: whitelisted action but no registered pipeline → fall through.
 
-    # No pipeline dispatch: requires confirmation or unregistered domain.
-    if plan.get("requires_confirmation"):
+    # execution_mode == "confirm" or "clarify": user must approve before execution.
+    # "clarify" means required info is missing; treated as pending confirmation
+    # until a dedicated clarify response type is introduced.
+    if execution_mode in (EXECUTION_MODE_CONFIRM, EXECUTION_MODE_CLARIFY):
         return make_domain_result(
             ok=True,
             result_type=RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED,
@@ -110,6 +118,8 @@ def handle_request(
             },
         )
 
+    # execution_mode == "blocked" (or auto with no pipeline): unregistered domain
+    # or unsupported action. Return the plan for informational routing.
     domain = plan.get("domain", "UNKNOWN")
     message = (
         f"Dominio detectado: {domain}. "
