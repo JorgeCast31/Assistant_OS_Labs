@@ -372,7 +372,7 @@ def _summarize_work(output: dict) -> tuple[str, dict]:
 
     # Guarantee details["type"] is always a non-empty string.
     # When output has no "type" key (e.g. raw work_query results from the handler),
-    # output_type is "". Fall back to "work_result" so chat_ui can always read it.
+    # output_type is "". Fall back to "work_result" so consumers can always read it.
     effective_type = output_type or "work_result"
 
     details = {

@@ -32,21 +32,3 @@ export function getWebhookHeaders(): { 'Content-Type': string; 'X-Assistant-Toke
   }
 }
 
-/**
- * Log auth metadata to the server console.
- * Prints token length and 4-char prefix so you can verify the right secret
- * is loaded without exposing the full value.
- *
- * Remove all [AUTH][…] calls once the auth issues are confirmed resolved.
- */
-export function logWebhookAuth(label: string, targetUrl: string): void {
-  const token  = process.env.ASSISTANT_TOKEN ?? ''
-  const prefix = token.length >= 4 ? token.slice(0, 4) + '…' : '(empty)'
-  console.log(
-    `[AUTH][${label}] → ${targetUrl}` +
-    ` | hasToken=${token.length > 0}` +
-    ` | tokenLen=${token.length}` +
-    ` | header=X-Assistant-Token` +
-    ` | prefix=${prefix}`,
-  )
-}

@@ -54,24 +54,35 @@ _log = logging.getLogger(__name__)
 _MAX_FILE_BYTES: int = 65_536  # 64 KB
 
 _SYSTEM_PROMPT = """\
-You are an expert code analyst embedded in a developer assistant.
+Eres un analista de código experto integrado en un asistente de desarrollo.
 
-Your role:
-- For CODE_EXPLAIN requests: describe what the code does, its structure, key \
-patterns, and any non-obvious behaviours.  Be concise and developer-friendly.
-- For CODE_REVIEW requests: identify bugs, design issues, security concerns, \
-and concrete improvement suggestions.  Prioritise actionable findings.
+Tu función:
+- Para solicitudes CODE_EXPLAIN: describe qué hace el código, su estructura, \
+los patrones clave y los comportamientos no obvios. Sé conciso y orientado al desarrollador.
+- Para solicitudes CODE_REVIEW: identifica bugs, problemas de diseño, riesgos \
+de seguridad y sugerencias de mejora concretas. Prioriza los hallazgos accionables.
 
-Guidelines:
-- Use bullet points for lists of findings or features.
-- Keep responses under 400 words unless the file is large and complex.
-- Do not repeat the code back verbatim.
-- CRITICAL: When file content is provided in the prompt, base your analysis \
-EXCLUSIVELY on that real code. Do NOT produce generic advice or assume anything \
-not present in the provided content. Reference specific line numbers, function \
-names, and patterns from the actual code.
-- If no file content is provided (only a file path or user question), \
-say so explicitly and respond based on what you can infer.
+Reglas de idioma:
+- Responde SIEMPRE en español, excepto lo siguiente:
+  - Nombres de funciones, clases, variables e identificadores: en su forma original.
+  - Nombres de archivos, rutas y ramas git: en su forma original.
+  - Bloques de código, diffs y fragmentos de código: sin traducir.
+  - Términos técnicos de uso habitual en inglés por desarrolladores (commit, token,
+    endpoint, API, framework, pipeline, etc.): pueden permanecer en inglés cuando
+    sea natural.
+- Tono técnico y profesional.
+
+Directrices adicionales:
+- Usa listas con viñetas para hallazgos o características.
+- Mantén las respuestas en menos de 400 palabras salvo que el archivo sea grande \
+y complejo.
+- No repitas el código textualmente.
+- CRÍTICO: Cuando se proporcione contenido de archivo en el prompt, basa tu \
+análisis EXCLUSIVAMENTE en ese código real. NO produzcas consejos genéricos ni \
+asumas nada que no esté en el contenido proporcionado. Referencia números de \
+línea específicos, nombres de funciones y patrones del código real.
+- Si no se proporciona contenido de archivo (solo una ruta o pregunta), \
+indícalo explícitamente y responde basándote en lo que puedas inferir.
 """
 
 
@@ -322,14 +333,6 @@ def build_claude_review_executor(
         line_start: Optional[int] = inp.get("line_start")
         line_end: Optional[int]   = inp.get("line_end")
 
-        # [M29.5][executor] — what the executor received
-        _log.info(
-            "[M29.5][executor] action=%s  file=%r  workspace=%r  symbol=%r  "
-            "line_start=%s  line_end=%s",
-            action, target_file, workspace[:40] if workspace else "",
-            symbol_name or None, line_start, line_end,
-        )
-
         # Step 1: read file — supports targeted extraction (symbol / line range)
         file_content, read_error, ctx_start_line = _read_target_file(
             workspace, target_file,
@@ -338,7 +341,7 @@ def build_claude_review_executor(
             line_end=line_end,
         )
         if read_error:
-            _log.warning("[M29.5][executor] read_error: %s", read_error)
+            _log.warning("review_executor: read_error: %s", read_error)
             return {"ok": False, "error": read_error}
 
         # Step 2: build prompt with extraction annotation
@@ -349,19 +352,9 @@ def build_claude_review_executor(
             line_end=line_end,
         )
 
-        # [M29.5][prompt] — what will actually be sent to Claude
-        _log.info(
-            "[M29.5][prompt] has_content=%s  content_chars=%d  symbol=%r  start_line=%s",
-            file_content is not None,
-            len(file_content) if file_content else 0,
-            symbol_name or None,
-            ctx_start_line,
-        )
-
         # Step 3: call Claude
-        _log.info(
-            "[M29.5][executor] calling Claude  action=%s  file=%r  symbol=%r  "
-            "start_line=%s  prompt_chars=%d",
+        _log.debug(
+            "review_executor: action=%s  file=%r  symbol=%r  start_line=%s  prompt_chars=%d",
             action, target_file, symbol_name or None, ctx_start_line, len(prompt),
         )
         try:

@@ -99,3 +99,5 @@ seeds/*.json
 # ----- Misc -----
 Thumbs.db
 *.bak
+.claude/
+assistant_os/.claude/
