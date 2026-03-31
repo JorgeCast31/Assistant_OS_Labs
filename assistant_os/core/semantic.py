@@ -7,8 +7,10 @@ describes what the user wants at the semantic level.
 Also applies HTTP-layer routing hints (forced_operation) so the rest of
 the kernel sees a consistent intent regardless of origin.
 
-classify_text is lazy-imported from webhook_server so that test patches
-applied to assistant_os.webhook_server.classify_text remain effective.
+classify_text is lazy-imported from classifier (its real owner) so that
+test patches applied to assistant_os.classifier.classify_text remain
+effective.  The function is re-exported by webhook_server as a
+compatibility alias, but the kernel must not depend on the HTTP layer.
 """
 
 from __future__ import annotations
@@ -46,7 +48,7 @@ def classify(req: CanonicalRequest, forced_operation: str = "") -> dict:
         intent dict — keys: operation, confidence, reason, and classifier
         metadata. Mutated in-place if forced_operation is provided.
     """
-    from ..webhook_server import classify_text
+    from ..classifier import classify_text
 
     text = req["text"]
     classify_request: ClassifyRequest = {"text": text}
