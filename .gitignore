@@ -3,7 +3,6 @@
 # =============================================================================
 
 # ----- Frontend build/cache -----
-ui/.next/
 ui/out/
 ui/.turbo/
 ui/.vercel/
@@ -38,10 +37,8 @@ secrets/
 client_secret*.json
 assistant_os/memory/context_store.json
 var/
-ui/node_modules/
 node_modules/
 .next/
-assistant_os/memory/chat_sessions.db
 
 # ----- Python -----
 __pycache__/
@@ -101,3 +98,21 @@ Thumbs.db
 *.bak
 .claude/
 assistant_os/.claude/
+
+# Claude / artifacts
+CHAT.md
+FINAL_REPORT.md
+PHASE1_BASELINE.md
+TASK_*.md
+WORKLOG.md
+agent_contract.md
+
+# accidental root files
+chat_core.py
+code_api.py
+webhook_server.py
+
+# Logs de ejecución Claude / debug
+*.trace
+*.debug
+*.dump
