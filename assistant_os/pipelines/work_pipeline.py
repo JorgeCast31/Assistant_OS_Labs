@@ -4,8 +4,11 @@ WORK Domain Pipeline v1
 Entry point: execute(plan, context_id) -> DomainResult
 
 Dispatches to the appropriate WORK execution helper based on plan action.
-All patchable names (check_notion_available, query_work_db, etc.) are
-lazy-imported from webhook_server so test patches remain effective.
+All patchable integration names are lazy-imported from
+``integrations.work_gateway`` — the non-HTTP aggregation layer introduced in
+M0.8.  Prior to M0.8 these were imported from ``webhook_server`` (HTTP layer).
+Test patches should target ``assistant_os.integrations.work_gateway.*`` for
+the pipeline execution path.
 """
 
 from __future__ import annotations
@@ -77,14 +80,14 @@ def execute(plan: dict, context_id: str) -> DomainResult:
 
 # ---------------------------------------------------------------------------
 # Execution helpers
-# All patchable integration names are lazy-imported from webhook_server so
-# that test patches applied to assistant_os.webhook_server.* remain effective.
+# All patchable integration names are lazy-imported from work_gateway so
+# that test patches applied to assistant_os.integrations.work_gateway.* fire.
 # ---------------------------------------------------------------------------
 
 
 def _work_query_execute(plan: dict, context_id: str) -> DomainResult:
     """Execute a WORK query and return DomainResult (no transport wrapping)."""
-    from ..webhook_server import (
+    from ..integrations.work_gateway import (
         check_notion_available,
         get_notion_status,
         format_work_query_response,
@@ -156,7 +159,7 @@ def _work_update_preview_execute(plan: dict, context_id: str, text: str) -> Doma
     - Pre-populates selected_notion_page_ids so the user just confirms
     - Preview lists the affected task titles
     """
-    from ..webhook_server import (
+    from ..integrations.work_gateway import (
         check_notion_available,
         get_notion_status,
         get_editable_field_options,
@@ -166,8 +169,9 @@ def _work_update_preview_execute(plan: dict, context_id: str, text: str) -> Doma
         store_pending_plan,
         generate_update_preview,
         query_work_db,
-        ACTION_WORK_UPDATE_BULK as _ACTION_WORK_UPDATE_BULK,
     )
+    # ACTION_WORK_UPDATE_BULK is already imported at module top-level from contracts.
+    # No lazy-import needed — it is a constant, not a patchable integration call.
 
     filters = plan.get("filters", {})
     changes = filters.get("changes", [])
@@ -305,7 +309,7 @@ def _work_update_preview_execute(plan: dict, context_id: str, text: str) -> Doma
         )
 
         synced_plan = dict(plan)
-        synced_plan["action"] = _ACTION_WORK_UPDATE_BULK
+        synced_plan["action"] = ACTION_WORK_UPDATE_BULK
         synced_plan["requires_confirmation"] = True
         synced_plan["risk_level"] = bulk_risk
         synced_plan["matches"] = enriched_bulk
@@ -576,7 +580,7 @@ def _work_update_preview_execute(plan: dict, context_id: str, text: str) -> Doma
         preview_text = generate_update_preview(changes, "") if changes else f"Actualizar {len(matches)} tareas"
 
         synced_plan = dict(plan)
-        synced_plan["action"] = _ACTION_WORK_UPDATE_BULK
+        synced_plan["action"] = ACTION_WORK_UPDATE_BULK
         synced_plan["requires_confirmation"] = True
         synced_plan["matches"] = enriched_matches
         synced_plan["selected_notion_page_ids"] = []
@@ -624,7 +628,7 @@ def _work_update_bulk_execute(plan: dict, context_id: str) -> DomainResult:
 
     Returns DomainResult (no transport wrapping).
     """
-    from ..webhook_server import get_editable_field_options
+    from ..integrations.work_gateway import get_editable_field_options
     from ..tools.notion.update_page_tool import UpdatePageTool
 
     matches = plan.get("matches", [])
@@ -708,7 +712,7 @@ def _work_create_execute(plan: dict, context_id: str) -> DomainResult:
     Builds a WorkCreateRequest from plan filters, calls CreatePageTool,
     and returns a DomainResult. No transport wrapping.
     """
-    from ..webhook_server import check_notion_available, get_notion_status
+    from ..integrations.work_gateway import check_notion_available, get_notion_status
     from ..tools.notion.create_page_tool import CreatePageTool
 
     filters = plan.get("filters", {})
@@ -784,7 +788,7 @@ def _work_delete_execute(plan: dict, context_id: str) -> DomainResult:
     plan["filters"]["delete_all"] controls whether all tasks are deleted.
     plan["filters"]["keywords"]   controls keyword-based filtering when not delete_all.
     """
-    from ..webhook_server import check_notion_available, get_notion_status, query_work_db
+    from ..integrations.work_gateway import check_notion_available, get_notion_status, query_work_db
     from ..integrations.notion import archive_pages
 
     filters = plan.get("filters", {})
@@ -882,7 +886,7 @@ def _work_update_execute(plan: dict, context_id: str) -> DomainResult:
     Validates proposed_changes against real Notion options and applies changes
     to the target page via UpdatePageTool. No transport wrapping.
     """
-    from ..webhook_server import check_notion_available, get_notion_status, get_editable_field_options
+    from ..integrations.work_gateway import check_notion_available, get_notion_status, get_editable_field_options
     from ..tools.notion.update_page_tool import UpdatePageTool
 
     filters = plan.get("filters", {})

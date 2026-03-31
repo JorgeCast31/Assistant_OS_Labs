@@ -48,10 +48,10 @@ def _req(text: str) -> dict:
 
 class TestOrchestratorAutoExecute(unittest.TestCase):
 
-    @patch("assistant_os.webhook_server.check_notion_available", return_value=True)
-    @patch("assistant_os.webhook_server.query_work_db",
+    @patch("assistant_os.integrations.work_gateway.check_notion_available", return_value=True)
+    @patch("assistant_os.integrations.work_gateway.query_work_db",
            return_value={"ok": True, "items": [], "total": 0})
-    @patch("assistant_os.webhook_server.classify_text",
+    @patch("assistant_os.classifier.classify_text",
            return_value={
                "domain": "WORK", "operation": "WORK_QUERY", "confidence": 0.95,
                "alternatives": [], "needs_confirmation": False, "reason": "test",
@@ -64,10 +64,10 @@ class TestOrchestratorAutoExecute(unittest.TestCase):
         self.assertEqual(result["result_type"], RESULT_TYPE_WORK_QUERY)
         self.assertNotEqual(result["result_type"], RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED)
 
-    @patch("assistant_os.webhook_server.check_notion_available", return_value=True)
-    @patch("assistant_os.webhook_server.query_work_db",
+    @patch("assistant_os.integrations.work_gateway.check_notion_available", return_value=True)
+    @patch("assistant_os.integrations.work_gateway.query_work_db",
            return_value={"ok": True, "items": [], "total": 0})
-    @patch("assistant_os.webhook_server.classify_text",
+    @patch("assistant_os.classifier.classify_text",
            return_value={
                "domain": "WORK", "operation": "WORK_QUERY", "confidence": 0.95,
                "alternatives": [], "needs_confirmation": False, "reason": "test",
@@ -86,7 +86,7 @@ class TestOrchestratorAutoExecute(unittest.TestCase):
 
 class TestOrchestratorConfirmRequired(unittest.TestCase):
 
-    @patch("assistant_os.webhook_server.classify_text",
+    @patch("assistant_os.classifier.classify_text",
            return_value={
                "domain": "WORK", "operation": "WORK_CREATE", "confidence": 0.9,
                "alternatives": [], "needs_confirmation": True, "reason": "test",
@@ -98,7 +98,7 @@ class TestOrchestratorConfirmRequired(unittest.TestCase):
         result = handle_request(req)
         self.assertEqual(result["result_type"], RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED)
 
-    @patch("assistant_os.webhook_server.classify_text",
+    @patch("assistant_os.classifier.classify_text",
            return_value={
                "domain": "WORK", "operation": "WORK_CREATE", "confidence": 0.9,
                "alternatives": [], "needs_confirmation": True, "reason": "test",
@@ -110,7 +110,7 @@ class TestOrchestratorConfirmRequired(unittest.TestCase):
         result = handle_request(req)
         self.assertIn("plan", result.get("data", {}))
 
-    @patch("assistant_os.webhook_server.classify_text",
+    @patch("assistant_os.classifier.classify_text",
            return_value={
                "domain": "WORK", "operation": "WORK_CREATE", "confidence": 0.9,
                "alternatives": [], "needs_confirmation": True, "reason": "test",
@@ -137,10 +137,10 @@ class TestOrchestratorPolicyIsAuthoritative(unittest.TestCase):
     """
 
     @patch("assistant_os.core.policy.build_policy")
-    @patch("assistant_os.webhook_server.check_notion_available", return_value=True)
-    @patch("assistant_os.webhook_server.query_work_db",
+    @patch("assistant_os.integrations.work_gateway.check_notion_available", return_value=True)
+    @patch("assistant_os.integrations.work_gateway.query_work_db",
            return_value={"ok": True, "items": [], "total": 0})
-    @patch("assistant_os.webhook_server.classify_text",
+    @patch("assistant_os.classifier.classify_text",
            return_value={
                "domain": "WORK", "operation": "WORK_QUERY", "confidence": 0.95,
                "alternatives": [], "needs_confirmation": False, "reason": "test",
@@ -160,7 +160,7 @@ class TestOrchestratorPolicyIsAuthoritative(unittest.TestCase):
         self.assertEqual(result["result_type"], RESULT_TYPE_WORK_QUERY)
 
     @patch("assistant_os.core.policy.build_policy")
-    @patch("assistant_os.webhook_server.classify_text",
+    @patch("assistant_os.classifier.classify_text",
            return_value={
                "domain": "WORK", "operation": "WORK_QUERY", "confidence": 0.95,
                "alternatives": [], "needs_confirmation": False, "reason": "test",
@@ -179,7 +179,7 @@ class TestOrchestratorPolicyIsAuthoritative(unittest.TestCase):
         self.assertEqual(result["result_type"], RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED)
 
     @patch("assistant_os.core.policy.build_policy")
-    @patch("assistant_os.webhook_server.classify_text",
+    @patch("assistant_os.classifier.classify_text",
            return_value={
                "domain": "WORK", "operation": "WORK_QUERY", "confidence": 0.9,
                "alternatives": [], "needs_confirmation": False, "reason": "test",
