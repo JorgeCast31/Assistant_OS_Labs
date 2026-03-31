@@ -393,7 +393,7 @@ class TestRouteByClassificationIntegration(unittest.TestCase):
     """
 
     @patch("assistant_os.webhook_server.check_notion_available", return_value=True)
-    @patch("assistant_os.classifier.classify_text",
+    @patch("assistant_os.webhook_server.classify_text",
            return_value={"domain": "WORK", "operation": "WORK_QUERY", "confidence": 0.95,
                          "alternatives": [], "needs_confirmation": False, "reason": "test",
                          "type": "", "cognitive_load": "", "impact": "", "next_action": ""})
@@ -407,7 +407,7 @@ class TestRouteByClassificationIntegration(unittest.TestCase):
         # Verify the response is a successful work_query result, not a confirmation prompt.
         self.assertEqual(result.get("output", {}).get("result_type"), "work_query")
 
-    @patch("assistant_os.classifier.classify_text",
+    @patch("assistant_os.webhook_server.classify_text",
            return_value={"domain": "WORK", "operation": "WORK_CREATE", "confidence": 0.9,
                          "alternatives": [], "needs_confirmation": True, "reason": "test",
                          "type": "", "cognitive_load": "", "impact": "", "next_action": ""})
