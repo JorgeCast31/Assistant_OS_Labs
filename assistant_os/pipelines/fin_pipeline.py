@@ -4,8 +4,9 @@ FIN Domain Pipeline v1
 Entry point: execute(plan, context_id) -> DomainResult
 
 Dispatches to the appropriate FIN execution helper based on plan action.
-Patchable names (parse_expense) are lazy-imported from webhook_server so
-test patches remain effective.
+``parse_expense`` is lazy-imported from ``fin_expense`` — its authoritative
+owner.  Prior to M0.8 it was imported from ``webhook_server`` (HTTP layer).
+Test patches should target ``assistant_os.fin_expense.parse_expense``.
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ def execute(plan: dict, context_id: str) -> DomainResult:
 
 def _fin_expense_execute(plan: dict) -> DomainResult:
     """Execute a FIN expense parse and return DomainResult (no transport wrapping)."""
-    from ..webhook_server import parse_expense
+    from ..fin_expense import parse_expense
 
     text = plan.get("raw_text", "")
     expense_result = parse_expense(text)

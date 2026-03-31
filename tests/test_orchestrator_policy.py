@@ -48,8 +48,8 @@ def _req(text: str) -> dict:
 
 class TestOrchestratorAutoExecute(unittest.TestCase):
 
-    @patch("assistant_os.webhook_server.check_notion_available", return_value=True)
-    @patch("assistant_os.webhook_server.query_work_db",
+    @patch("assistant_os.integrations.work_gateway.check_notion_available", return_value=True)
+    @patch("assistant_os.integrations.work_gateway.query_work_db",
            return_value={"ok": True, "items": [], "total": 0})
     @patch("assistant_os.classifier.classify_text",
            return_value={
@@ -64,8 +64,8 @@ class TestOrchestratorAutoExecute(unittest.TestCase):
         self.assertEqual(result["result_type"], RESULT_TYPE_WORK_QUERY)
         self.assertNotEqual(result["result_type"], RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED)
 
-    @patch("assistant_os.webhook_server.check_notion_available", return_value=True)
-    @patch("assistant_os.webhook_server.query_work_db",
+    @patch("assistant_os.integrations.work_gateway.check_notion_available", return_value=True)
+    @patch("assistant_os.integrations.work_gateway.query_work_db",
            return_value={"ok": True, "items": [], "total": 0})
     @patch("assistant_os.classifier.classify_text",
            return_value={
@@ -137,8 +137,8 @@ class TestOrchestratorPolicyIsAuthoritative(unittest.TestCase):
     """
 
     @patch("assistant_os.core.policy.build_policy")
-    @patch("assistant_os.webhook_server.check_notion_available", return_value=True)
-    @patch("assistant_os.webhook_server.query_work_db",
+    @patch("assistant_os.integrations.work_gateway.check_notion_available", return_value=True)
+    @patch("assistant_os.integrations.work_gateway.query_work_db",
            return_value={"ok": True, "items": [], "total": 0})
     @patch("assistant_os.classifier.classify_text",
            return_value={

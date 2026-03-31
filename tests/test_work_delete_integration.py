@@ -227,8 +227,8 @@ class TestNotionDeleteFunctions(unittest.TestCase):
 class TestWorkDeleteExecution(unittest.TestCase):
     """Tests for the canonical delete execution path (_work_delete_execute in work_pipeline)."""
 
-    @patch('assistant_os.webhook_server.check_notion_available', return_value=False)
-    @patch('assistant_os.webhook_server.get_notion_status')
+    @patch('assistant_os.integrations.work_gateway.check_notion_available', return_value=False)
+    @patch('assistant_os.integrations.work_gateway.get_notion_status')
     def test_delete_fails_without_notion(self, mock_status, mock_available):
         """Delete returns ok=False DomainResult when Notion is unavailable."""
         from assistant_os.pipelines.work_pipeline import _work_delete_execute
@@ -250,7 +250,7 @@ class TestWorkDeleteExecution(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["type"], "NotionUnavailable")
 
-    @patch('assistant_os.webhook_server.check_notion_available', return_value=True)
+    @patch('assistant_os.integrations.work_gateway.check_notion_available', return_value=True)
     def test_delete_fails_without_criteria(self, mock_available):
         """Delete with no keywords and no delete_all returns ok=False with ValidationError."""
         from assistant_os.pipelines.work_pipeline import _work_delete_execute
