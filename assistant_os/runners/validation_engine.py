@@ -10,6 +10,7 @@ Evaluates the accumulated execution state and emits a final decision:
 Decision tree (in priority order):
   1. Test timed out or explicitly failed          → failed
   2. Runner reported an error or hard failure     → failed
+  2.5 Sandbox execution completed (exit_code=0)  → success
   3. Spec requirement unmet + strict mode         → failed
   4. Spec requirement unmet + review allowed      → needs_review
   5. Tests passed                                 → success
@@ -80,6 +81,19 @@ class ValidationEngine:
         if result.status == RunnerExecutionStatus.FAILED:
             reasons.append("Execution failed at an earlier phase.")
             return self._result("failed", reasons)
+
+        # ------------------------------------------------------------------
+        # 2.5. Sandbox execution completed successfully
+        # ------------------------------------------------------------------
+        if (
+            result.sandbox_metadata is not None
+            and result.sandbox_metadata.get("status") == "completed"
+            and result.sandbox_metadata.get("exit_code") == 0
+        ):
+            reasons.append("Sandbox code execution completed successfully.")
+            if result.modified_files:
+                reasons.append(f"{len(result.modified_files)} file(s) modified.")
+            return self._result("success", reasons)
 
         # ------------------------------------------------------------------
         # 3 & 4. Spec requirement violations

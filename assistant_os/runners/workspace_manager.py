@@ -33,10 +33,46 @@ _RUNNER_BASE: Path = Path(__file__).resolve().parent.parent.parent / "var" / "ru
 # Located one level up from executions/ so it always exists independently.
 _PREFLIGHT_FAILURES_LOG: Path = _RUNNER_BASE.parent / "preflight_failures.log"
 
-# Patterns excluded when copying the repo into workspace.
+# Patterns always excluded when copying the repo into workspace.
 # .git is always excluded: it is large, contains sensitive history,
 # and Slice 2 operations work on files only — not git internals.
-_WORKSPACE_IGNORE = shutil.ignore_patterns(".git", ".git/*")
+_WORKSPACE_IGNORE_BASE = shutil.ignore_patterns(".git", ".git/*")
+
+
+def _make_copy_ignore(repo_path: Path, execution_dir: Path):
+    """Return a copytree ignore callable that excludes .git and prevents recursive
+    self-copy when repo_path contains the runner execution base directory.
+
+    Without this guard, using the project root as repo_path causes shutil.copytree
+    to recurse into var/runner/executions/ and try to copy the destination into
+    itself — either hanging or raising path-too-long errors on Windows.
+
+    Strategy: if the execution_dir is inside repo_path, identify the first
+    path component of execution_dir relative to repo_path and add it to the
+    ignore patterns for that specific source directory only.
+    """
+    base_ignore = _WORKSPACE_IGNORE_BASE
+
+    try:
+        rel = execution_dir.resolve().relative_to(repo_path.resolve())
+        # execution_dir is inside repo_path — get the top-level dir to ignore.
+        top = rel.parts[0]
+    except ValueError:
+        # execution_dir is outside repo_path — no extra ignore needed.
+        return base_ignore
+
+    # Build a callable ignore that blocks the identified top-level directory
+    # only when encountered directly under repo_path (src == repo_path).
+    repo_resolved_str = str(repo_path.resolve())
+
+    def _ignore(src: str, names: list) -> set:
+        ignored = set(base_ignore(src, names))
+        if Path(src).resolve() == Path(repo_resolved_str).resolve():
+            if top in names:
+                ignored.add(top)
+        return ignored
+
+    return _ignore
 
 
 @dataclass
@@ -123,11 +159,14 @@ def prepare_workspace(request: RunnerExecutionRequest) -> PreparedWorkspace:
     _append_log(log_file, f"preflight passed for execution {request.execution_id!r}")
     _append_log(log_file, f"copying repo from {request.repo_path!r} (excluding .git)")
 
-    # Copy repo into workspace/ — .git is explicitly excluded.
+    # Copy repo into workspace/ — .git and runner artifacts are excluded.
+    # _make_copy_ignore also prevents recursive self-copy when repo_path contains
+    # the execution directory (e.g. using the project root as repo_path).
+    copy_ignore = _make_copy_ignore(Path(request.repo_path), execution_dir)
     try:
         if workspace_dir.exists():
             shutil.rmtree(workspace_dir)
-        shutil.copytree(request.repo_path, str(workspace_dir), ignore=_WORKSPACE_IGNORE)
+        shutil.copytree(request.repo_path, str(workspace_dir), ignore=copy_ignore)
     except (OSError, shutil.Error) as exc:
         _append_log(log_file, f"ERROR: repo copy failed: {exc}")
         raise WorkspacePreparationError(
