@@ -1,5 +1,5 @@
 """
-Data models for Runner execution — Slice 4.
+Data models for Runner execution — Slice 4 / M1B.
 """
 
 from __future__ import annotations
@@ -7,7 +7,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from ..sandbox.authorized_plan import AuthorizedPlan
 
 
 class RunnerExecutionStatus(str, Enum):
@@ -36,6 +39,11 @@ class RunnerExecutionRequest:
     validation_spec: Optional[Any] = None
     workspace_spec: Optional[Any] = None
     metadata: Optional[Dict[str, Any]] = field(default=None)
+    # M1B governance fields — optional for backward compatibility.
+    # When authorized_plan is set, RunnerService delegates execution to RunnerAPI (Docker).
+    # When code is set alongside authorized_plan, the sandbox execution is triggered.
+    authorized_plan: Optional["AuthorizedPlan"] = field(default=None, repr=False)
+    code: Optional[str] = field(default=None, repr=False)
 
 
 @dataclass
@@ -98,3 +106,6 @@ class RunnerExecutionResult:
     report_json_path: Optional[str] = None
     report_md_path: Optional[str] = None
     notification_path: Optional[str] = None
+    # M1B governance fields — populated when RunnerAPI (Docker) was invoked.
+    authorized_plan_info: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    sandbox_metadata: Optional[Dict[str, Any]] = field(default=None, repr=False)
