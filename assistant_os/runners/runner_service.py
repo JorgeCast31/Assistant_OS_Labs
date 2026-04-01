@@ -1,8 +1,8 @@
 """
-RunnerService — Slice 4.
+RunnerService — Slice 4 / M1B.
 
 Orchestrates the full Runner pipeline:
-    preflight → workspace → apply → test → validate → report → notify → result
+    preflight → workspace → apply → sandbox (RunnerAPI/Docker) → test → validate → report → notify → result
 
 Design notes:
   - Only pre-workspace failures return early (no artifacts dir to write to).
@@ -10,6 +10,9 @@ Design notes:
     loop always closes through validation → report → notify.
   - All phases after workspace are wrapped individually so a failure in
     (e.g.) report cannot destroy the test result already captured.
+  - M1B: when request.authorized_plan and request.code are both set, a Phase 2.5
+    sandbox execution via RunnerAPI (Docker) is inserted after apply and before test.
+    The sandbox uses an isolated _sandbox/ sub-directory, not the workspace root.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from .apply_engine import ApplyEngine
 from .errors import (
@@ -42,20 +45,59 @@ from .test_engine import TestEngine
 from .validation_engine import ValidationEngine
 from .workspace_manager import PreparedWorkspace, _append_log, log_preflight_failure, prepare_workspace
 
+if TYPE_CHECKING:
+    from ..sandbox.audit_store import AuditStore
+    from ..sandbox.execution_registry import ExecutionRegistry
+    from ..sandbox.runner_api import RunnerAPI
+
 logger = logging.getLogger(__name__)
+
+# Path to the persistent audit log for all sandbox executions.
+# Sibling of executions/ under var/runner/.
+_AUDIT_STORE_PATH: Path = (
+    Path(__file__).resolve().parent.parent.parent / "var" / "runner" / "audit.jsonl"
+)
 
 
 class RunnerService:
-    """Orchestrator for the full Runner pipeline (Slice 4)."""
+    """Orchestrator for the full Runner pipeline (Slice 4 / M1B).
+
+    Parameters
+    ----------
+    runner_api : RunnerAPI instance for Docker-based sandbox execution.
+                 If None, a default RunnerAPI (ContainerBackend) is created.
+    registry   : ExecutionRegistry for lifecycle tracking.
+                 If None, a new registry is created per-service instance.
+    audit_store: Persistent AuditStore.
+                 If None, an AuditStore writing to _AUDIT_STORE_PATH is created.
+
+    All three parameters accept None to enable easy test injection while
+    giving production code sensible defaults on construction.
+    """
+
+    def __init__(
+        self,
+        runner_api: Optional["RunnerAPI"] = None,
+        registry: Optional["ExecutionRegistry"] = None,
+        audit_store: Optional["AuditStore"] = None,
+    ) -> None:
+        from ..sandbox.runner_api import RunnerAPI as _RunnerAPI  # noqa: PLC0415
+        from ..sandbox.execution_registry import ExecutionRegistry as _Registry  # noqa: PLC0415
+        from ..sandbox.audit_store import AuditStore as _AuditStore  # noqa: PLC0415
+
+        self._runner_api: RunnerAPI = runner_api or _RunnerAPI()
+        self._registry: ExecutionRegistry = registry or _Registry()
+        self._audit_store: AuditStore = audit_store or _AuditStore(_AUDIT_STORE_PATH)
 
     def run(self, request: RunnerExecutionRequest) -> RunnerExecutionResult:
-        """Execute the complete Slice 4 pipeline for *request*.
+        """Execute the complete pipeline for *request*.
 
         Flow:
             1. Preflight validation.
             2. Workspace preparation.
             3. Apply changes (if request.changes).
-            4. Run tests (if request.test_spec and apply succeeded).
+            2.5. Sandbox execution via RunnerAPI/Docker (if authorized_plan + code present).
+            4. Run tests (if request.test_spec and apply/sandbox succeeded).
             5. Validate final state.
             6. Build report.
             7. Notify.
@@ -102,7 +144,73 @@ class RunnerService:
                 logger.exception("Unexpected error during apply phase")
 
         # ------------------------------------------------------------------
-        # Phase 3: test (skipped if apply failed)
+        # Phase 2.5: sandbox execution via RunnerAPI (Docker)
+        #
+        # Triggered when BOTH authorized_plan and code are present on the request.
+        # Uses an isolated _sandbox/ sub-directory so the repo workspace is
+        # never touched by WorkspaceModel.cleanup() inside RunnerAPI.
+        # Errors are captured in apply_error to flow through validation/report/notify.
+        # ------------------------------------------------------------------
+        authorized_plan_info: Optional[Dict[str, Any]] = None
+        sandbox_metadata: Optional[Dict[str, Any]] = None
+
+        if apply_error is None and request.authorized_plan is not None and request.code is not None:
+            _append_log(log_file, "phase: SANDBOX_EXEC_START")
+            # Isolated workspace for Docker execution — separate from the repo workspace.
+            sandbox_ws = Path(workspace.artifacts_path) / "_sandbox"
+            sandbox_ws.mkdir(parents=True, exist_ok=True)
+
+            # Capture governance summary for metadata.json.
+            ap = request.authorized_plan
+            authorized_plan_info = {
+                "execution_id": ap.execution_id,
+                "plan_id": ap.plan_id,
+                "policy_id": ap.policy_id,
+                "authorized_plan_hash": ap.authorized_plan_hash,
+                "capability_scope": list(ap.capability_scope),
+                "runtime_profile": ap.runtime_profile,
+            }
+
+            try:
+                sandbox_exec = self._runner_api.execute(
+                    code=request.code,
+                    workspace=str(sandbox_ws),
+                    authorized_plan=request.authorized_plan,
+                    registry=self._registry,
+                    audit_log=self._audit_store,
+                )
+                if sandbox_exec.metadata is not None:
+                    sandbox_metadata = sandbox_exec.metadata.to_dict()
+
+                if sandbox_exec.ok:
+                    _append_log(
+                        log_file,
+                        f"phase: SANDBOX_EXEC_DONE exit=0 duration={sandbox_exec.duration_ms}ms",
+                    )
+                else:
+                    # Determine most informative error string.
+                    if sandbox_exec.timed_out:
+                        apply_error = "Sandbox execution timed out"
+                    elif sandbox_exec.error:
+                        apply_error = f"Sandbox error: {sandbox_exec.error}"
+                    else:
+                        stderr_excerpt = (sandbox_exec.stderr or "")[:200]
+                        apply_error = (
+                            f"Sandbox execution failed (exit {sandbox_exec.exit_code})"
+                            + (f": {stderr_excerpt}" if stderr_excerpt else "")
+                        )
+                    _append_log(log_file, f"phase: SANDBOX_EXEC_FAILED → {apply_error}")
+
+            except ValueError as exc:
+                apply_error = f"Sandbox validation error: {exc}"
+                _append_log(log_file, f"phase: SANDBOX_EXEC_FAILED → {exc}")
+            except Exception as exc:
+                apply_error = f"Sandbox internal error: {exc}"
+                _append_log(log_file, f"phase: SANDBOX_EXEC_FAILED → internal error: {exc}")
+                logger.exception("Unexpected error during sandbox execution phase")
+
+        # ------------------------------------------------------------------
+        # Phase 3: test (skipped if apply or sandbox failed)
         # ------------------------------------------------------------------
         test_result: Optional[TestExecutionResult] = None
         test_error: Optional[str] = None
@@ -146,6 +254,8 @@ class RunnerService:
             test_result=test_result,
             error=error_message,
             summary=summary,
+            authorized_plan_info=authorized_plan_info,
+            sandbox_metadata=sandbox_metadata,
         )
 
         # ------------------------------------------------------------------
@@ -317,6 +427,9 @@ class RunnerService:
                 "report_json_path": result.report_json_path,
                 "report_md_path": result.report_md_path,
                 "notification_path": result.notification_path,
+                # M1B governance fields — present when RunnerAPI (Docker) was invoked.
+                "authorized_plan": result.authorized_plan_info,
+                "sandbox_execution": result.sandbox_metadata,
             }
         )
 

@@ -11,6 +11,7 @@ Zero new dependencies — uses only the standard library + the existing Runner.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import logging.handlers
@@ -20,10 +21,11 @@ import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from ..executors.runner_backed_executor import RunnerBackedExecutor
 from ..runners.runner_models import RunnerExecutionRequest
+from ..sandbox.authorized_plan import AuthorizedPlan, KNOWN_POLICY_IDS
 
 # ---------------------------------------------------------------------------
 # Configuration (from environment / .env loaded by caller)
@@ -117,7 +119,60 @@ def _build_request_snapshot(body: Dict[str, Any]) -> Dict[str, Any]:
         "source":          body.get("source", "unknown"),
         "mode":            body.get("mode", "code_execution"),
         "metadata":        body.get("metadata") or None,
+        # M1B governance fields — preserved so reruns carry the same policy binding.
+        "plan_id":          body.get("plan_id") or None,
+        "policy_id":        body.get("policy_id") or None,
+        "capability_scope": body.get("capability_scope") or None,
+        "code":             body.get("code") or None,
     }
+
+
+def _build_authorized_plan(
+    execution_id: str,
+    body: Dict[str, Any],
+) -> AuthorizedPlan:
+    """Build and return an AuthorizedPlan for every execution from code_api.
+
+    The plan is ALWAYS constructed so that every execution entering this path
+    carries a real governance binding (policy_id, plan_id, capability_scope).
+
+    Fields
+    ------
+    plan_id         : from body if provided, else auto-generated.
+    policy_id       : from body if valid, else "default".
+    capability_scope: from body if non-empty list, else ["code_execute"].
+    authorized_plan_hash: SHA-256 of the canonicalised plan identity dict.
+                          Deterministic: same inputs → same hash, which makes
+                          reruns traceable back to the original plan content.
+    """
+    plan_id = str(body.get("plan_id") or "").strip() or f"plan_{uuid.uuid4().hex[:12]}"
+
+    raw_policy = str(body.get("policy_id") or "default").strip()
+    policy_id = raw_policy if raw_policy in KNOWN_POLICY_IDS else "default"
+
+    capability_scope: List[str] = body.get("capability_scope") or []
+    if not isinstance(capability_scope, list) or not capability_scope:
+        capability_scope = ["code_execute"]
+
+    # Deterministic hash over the plan identity fields — NOT over secret values.
+    plan_content = {
+        "execution_id": execution_id,
+        "plan_id": plan_id,
+        "policy_id": policy_id,
+        "capability_scope": sorted(capability_scope),
+        "repo_path": str(body.get("repo_path", "")),
+    }
+    authorized_plan_hash = hashlib.sha256(
+        json.dumps(plan_content, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+    return AuthorizedPlan(
+        execution_id=execution_id,
+        plan_id=plan_id,
+        authorized_plan_hash=authorized_plan_hash,
+        policy_id=policy_id,
+        capability_scope=capability_scope,
+    )
 
 
 def _patch_metadata(execution_id: str, fields: Dict[str, Any]) -> None:
@@ -150,7 +205,16 @@ def handle_execute(body: Dict[str, Any]) -> Dict[str, Any]:
         logger.warning("VALIDATION_FAILED execution_id=%s error=%s", execution_id, err)
         return _error_response(err, execution_id=execution_id)
 
-    # Build RunnerExecutionRequest
+    # Build AuthorizedPlan — every execution from code_api carries a governance binding.
+    authorized_plan = _build_authorized_plan(execution_id, body)
+    logger.info(
+        "AUTHORIZED_PLAN execution_id=%s plan_id=%s policy_id=%s",
+        execution_id, authorized_plan.plan_id, authorized_plan.policy_id,
+    )
+
+    # Build RunnerExecutionRequest — authorized_plan and code are M1B fields.
+    # code triggers Docker sandbox execution in RunnerService (Phase 2.5).
+    code: Optional[str] = body.get("code") or None
     request = RunnerExecutionRequest(
         execution_id=execution_id,
         repo_path=body["repo_path"],
@@ -162,6 +226,8 @@ def handle_execute(body: Dict[str, Any]) -> Dict[str, Any]:
             "mode": body.get("mode", "code_execution"),
             **(body.get("metadata") or {}),
         },
+        authorized_plan=authorized_plan,
+        code=code,
     )
 
     # Execute
