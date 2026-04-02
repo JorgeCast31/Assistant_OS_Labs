@@ -56,7 +56,10 @@ stubbed — _propose_executor has zero effect on ApplyChangeTool.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+import uuid
 from typing import Callable, Optional
 
 from ..contracts import (
@@ -439,6 +442,37 @@ def _build_code_preview(plan: dict, payload: dict) -> DomainResult:
     lines += ["", "¿Confirmo la aplicación?"]
     message = "\n".join(lines)
 
+    # ------------------------------------------------------------------
+    # Persist the apply-plan in context_store so the confirm flow can
+    # retrieve it.  This is the bridge between preview and apply:
+    #   preview → store_pending_plan(apply-plan) → user confirms →
+    #   _execute_confirmed_plan retrieves apply-plan → code_pipeline
+    #   executes with phase="apply" → builds AuthorizedPlan → runner.
+    #
+    # The apply-plan clones the original plan and injects:
+    #   domain_payload.phase    = "apply"
+    #   domain_payload.proposal = the full CodeProposalEnvelope
+    #
+    # A new context_id is generated for the apply step so the single-use
+    # contract of context_store is preserved per phase.
+    # ------------------------------------------------------------------
+    apply_context_id: str = ""
+    if preview_applicable:
+        from ..context_store import store_pending_plan
+        apply_payload = dict(payload)
+        apply_payload["phase"] = "apply"
+        apply_payload["proposal"] = envelope
+        apply_plan = dict(plan)
+        apply_plan["domain_payload"] = apply_payload
+
+        apply_context_id = str(uuid.uuid4())
+        store_pending_plan(
+            context_id=apply_context_id,
+            plan=apply_plan,
+            operation=action,
+            raw_text=plan.get("raw_text", ""),
+        )
+
     return make_domain_result(
         ok=True,
         result_type=RESULT_TYPE_CODE_PREVIEW,
@@ -466,6 +500,8 @@ def _build_code_preview(plan: dict, payload: dict) -> DomainResult:
             # Risk + confirmation gate
             "risk_level": risk,
             "requires_confirmation": True,
+            # Apply-phase confirm handle (empty string when preview is not applicable)
+            "apply_context_id": apply_context_id,
             # Degradation metadata
             "preview_degraded": preview_degraded,
             "preview_warnings": preview_warnings,
@@ -544,16 +580,57 @@ def _check_proposal_applicability(proposal: dict) -> str | None:
 
 
 def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainResult:
-    """Apply a confirmed proposal after all integrity checks pass."""
-    from ..tools.claude_code.apply_change_tool import ApplyChangeTool
+    """Apply a confirmed proposal through the exclusive audited runner path.
+
+    Execution flow (no fallback, no ApplyChangeTool):
+      single-use check
+      → semantic pre-gate (_check_proposal_applicability)
+      → _build_authorized_plan_from_kernel   ← governance binding
+      → _build_runner_execution_request      ← pure translation
+      → RunnerBackedExecutor.execute()       ← audited runner path
+      → map RunnerExecutionResult → DomainResult
+
+    Rules
+    -----
+    - AuthorizedPlan is built only AFTER all checks pass.
+    - execution_id == plan_id (single kernel-issued identity).
+    - No file mutation in preview.  Only this function mutates.
+    - On RunnerBackedExecutor exception: return error, do NOT mark proposal used.
+    - On RunnerBackedExecutor return (any status): mark proposal used, map result.
+    """
+    from ..executors.runner_backed_executor import RunnerBackedExecutor
 
     action = plan.get("action", "")
-    workspace: str = payload.get("workspace", "")
+    proposal_id = proposal.get("proposal_id", "")
 
-    # Semantic pre-gate: structural checks before mechanical ApplyChangeTool guards
+    # ------------------------------------------------------------------
+    # Guard 1 — Single-use enforcement
+    # Prevents double-application of the same proposal regardless of runner
+    # outcome.  Checked BEFORE building AuthorizedPlan to fail fast.
+    # ------------------------------------------------------------------
+    if proposal_id and proposal_id in _applied_proposals:
+        return make_domain_result(
+            ok=False,
+            result_type=RESULT_TYPE_CODE_APPLY,
+            domain="CODE",
+            message="Esta propuesta ya fue aplicada (single-use violation).",
+            data={
+                "proposal_id": proposal_id,
+                "action": action,
+                "guard_failure": "ProposalAlreadyApplied",
+            },
+            error={
+                "type": "ProposalAlreadyApplied",
+                "message": f"Proposal {proposal_id!r} has already been applied.",
+            },
+        )
+
+    # ------------------------------------------------------------------
+    # Guard 2 — Semantic pre-gate
+    # Structural checks before any executor call.
+    # ------------------------------------------------------------------
     applicability_error = _check_proposal_applicability(proposal)
     if applicability_error:
-        proposal_id = proposal.get("proposal_id", "")
         return make_domain_result(
             ok=False,
             result_type=RESULT_TYPE_CODE_APPLY,
@@ -567,46 +644,96 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
             error={"type": "NotApplicable", "message": applicability_error},
         )
 
-    # Inject the pipeline-scoped applied-proposals set for single-use tracking
-    tool_result = ApplyChangeTool(applied_proposals=_applied_proposals).execute({
-        "proposal": proposal,
-        "workspace": workspace,
-        "context_id": plan.get("trace_id", ""),
-    })
+    # ------------------------------------------------------------------
+    # Build AuthorizedPlan — governance binding.
+    # Only constructed AFTER all checks pass, BEFORE any mutation.
+    # execution_id == plan_id (kernel plan is the single authority).
+    # ------------------------------------------------------------------
+    authorized_plan = _build_authorized_plan_from_kernel(plan)
 
-    proposal_id = proposal.get("proposal_id", "")
+    # ------------------------------------------------------------------
+    # Build RunnerExecutionRequest — pure translation, no execution.
+    # ------------------------------------------------------------------
+    request = _build_runner_execution_request(plan, proposal, authorized_plan)
 
-    if not tool_result.ok:
+    # ------------------------------------------------------------------
+    # Execute — exclusively via RunnerBackedExecutor (audited runner).
+    # No fallback.  If this raises, the proposal is NOT marked used so
+    # the caller can retry after fixing the infrastructure issue.
+    # ------------------------------------------------------------------
+    try:
+        runner_result = RunnerBackedExecutor().execute(request)
+    except Exception as exc:
         return make_domain_result(
             ok=False,
             result_type=RESULT_TYPE_CODE_APPLY,
             domain="CODE",
-            message=f"Error al aplicar el cambio: {tool_result.error.message}",
+            message="Runner raised an unexpected exception.",
             data={
                 "proposal_id": proposal_id,
                 "action": action,
-                "guard_failure": tool_result.error.code,
+                "guard_failure": "RunnerException",
+                "audit_summary": {
+                    "action": action,
+                    "files_changed": 0,
+                    "execution_source": "runner",
+                    "execution_id": authorized_plan.execution_id,
+                    "plan_id": authorized_plan.plan_id,
+                    "policy_id": authorized_plan.policy_id,
+                    "capability_scope": authorized_plan.capability_scope,
+                },
             },
-            error={"type": tool_result.error.code, "message": tool_result.error.message},
+            error={"type": "RunnerException", "message": str(exc)},
         )
 
-    applied = tool_result.data.get("applied_files", [])
-    created = tool_result.data.get("created_files", [])
-    modified = tool_result.data.get("modified_files", [])
-    apply_mode: str = tool_result.data.get("apply_mode", "stub")
+    # Mark proposal used AFTER runner dispatch (regardless of runner outcome).
+    # This prevents retry on partial applies that may have modified the workspace.
+    if proposal_id:
+        _applied_proposals.add(proposal_id)
+
+    # ------------------------------------------------------------------
+    # Map RunnerExecutionResult → DomainResult
+    # ------------------------------------------------------------------
+    execution_id = runner_result.execution_id
+    final_status = runner_result.final_status or ""
+    modified = runner_result.modified_files or []
+
+    audit_summary = {
+        "action": action,
+        "files_changed": len(modified),
+        "execution_source": "runner",
+        "execution_id": authorized_plan.execution_id,
+        "plan_id": authorized_plan.plan_id,
+        "policy_id": authorized_plan.policy_id,
+        "capability_scope": authorized_plan.capability_scope,
+    }
+
+    if runner_result.error or final_status == "failed":
+        error_msg = runner_result.error or f"Runner failed with status: {final_status}"
+        return make_domain_result(
+            ok=False,
+            result_type=RESULT_TYPE_CODE_APPLY,
+            domain="CODE",
+            message=f"Aplicación fallida: {error_msg}",
+            data={
+                "proposal_id": proposal_id,
+                "action": action,
+                "execution_id": execution_id,
+                "status": final_status,
+                "guard_failure": "RunnerFailed",
+                "audit_summary": audit_summary,
+            },
+            error={"type": "RunnerFailed", "message": error_msg},
+        )
 
     lines = [
-        "CODE · aplicado",
-        "✓ Cambios aplicados",
+        "CODE · aplicado vía runner auditado",
+        f"✓ Ejecución auditada: {execution_id}",
         f"Archivos modificados: {len(modified)}",
-        f"Archivos creados: {len(created)}",
     ]
-    if created:
-        lines.append(f"  Creados: {', '.join(created)}")
     if modified:
         lines.append(f"  Modificados: {', '.join(modified)}")
-    if apply_mode == "stub":
-        lines.append("(modo stub — ningún archivo fue escrito en disco)")
+    lines.append(f"Status: {final_status or 'success'}")
 
     return make_domain_result(
         ok=True,
@@ -615,31 +742,173 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
         message="\n".join(lines),
         data={
             "type": "code_apply",
-            # UI smoke-test flags
             "apply_ready": True,
             "single_use": True,
-            # Executor mode — "stub" until a real apply executor is wired
-            "apply_mode": apply_mode,
-            # Proposal identity
+            "execution_id": execution_id,
+            "status": final_status or "success",
             "proposal_id": proposal_id,
             "action": action,
-            # Applied file lists
-            "applied_files": applied,
-            "created_files": created,
             "modified_files": modified,
-            # Structured audit record for traceability
-            "audit_summary": {
-                "proposal_id": proposal_id,
-                "action": action,
-                "applied_count": len(applied),
-                "created_count": len(created),
-                "modified_count": len(modified),
-                "apply_mode": apply_mode,
-                "workspace": workspace,
-            },
+            "created_files": [],
+            "applied_files": modified,
+            "report_json_path": runner_result.report_json_path,
+            "report_md_path": runner_result.report_md_path,
+            "audit_summary": audit_summary,
         },
         trace_id=plan.get("trace_id"),
         plan_id=plan.get("plan_id"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# AuthorizedPlan factory (apply path only)
+#
+# AuthorizedPlan is constructed HERE — inside the pipeline, after the user
+# has confirmed the proposal.  It is NEVER constructed during the preview
+# phase.  execution_id == plan_id so the kernel plan is the single authority.
+# ---------------------------------------------------------------------------
+
+_ACTION_CAPABILITY_SCOPE: dict[str, list[str]] = {
+    ACTION_CODE_FIX:    ["code_fix"],
+    ACTION_CODE_CREATE: ["code_create"],
+}
+
+
+def _build_authorized_plan_from_kernel(plan: dict) -> "AuthorizedPlan":
+    """
+    Build an AuthorizedPlan from the kernel ExecutionPlan.
+
+    Rules
+    -----
+    execution_id  = plan["plan_id"]  — kernel plan is the single identity source.
+    plan_id       = plan["plan_id"]  — same value; no separate execution UUID.
+    policy_id     = "default"        — governed by orchestrator, not code_api.
+    capability_scope = action-derived (code_fix | code_create | code_execute).
+    authorized_plan_hash = SHA-256 of the canonicalized plan identity so every
+                           execution is traceable back to the kernel plan content.
+    """
+    from ..sandbox.authorized_plan import AuthorizedPlan
+
+    plan_id = plan.get("plan_id") or str(uuid.uuid4())
+    action = plan.get("action", "")
+    workspace = (plan.get("domain_payload") or {}).get("workspace", "")
+
+    capability_scope = _ACTION_CAPABILITY_SCOPE.get(action, ["code_execute"])
+
+    plan_identity = {
+        "plan_id": plan_id,
+        "action": action,
+        "workspace": workspace,
+        "capability_scope": sorted(capability_scope),
+    }
+    authorized_plan_hash = hashlib.sha256(
+        json.dumps(plan_identity, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+
+    ap = AuthorizedPlan(
+        execution_id=plan_id,
+        plan_id=plan_id,
+        authorized_plan_hash=authorized_plan_hash,
+        policy_id="default",
+        capability_scope=capability_scope,
+    )
+    ap.validate()
+    return ap
+
+
+# ---------------------------------------------------------------------------
+# RunnerExecutionRequest bridge (apply path only)
+#
+# _build_runner_execution_request translates a confirmed CodeProposalEnvelope
+# into a RunnerExecutionRequest.  Pure translation — no execution, no IO.
+#
+# Changes format
+# --------------
+# "file_replace" is used when the proposal carries full file content (real
+# executor path, e.g. Claude Code agent produces full file content).
+# None is used when only a patch diff is available (stub executor) — the
+# runner still runs (workspace, validation, report, audit) but Phase 2
+# (ApplyEngine) is skipped, so modified_files == [].  This is intentionally
+# honest: stub execution = no filesystem mutation, but the governance binding
+# and audit trail ARE real.
+#
+# Validation rules (enforced here, before RunnerService sees the request):
+# - paths must be relative (no leading /, no ..)
+# - content must not be empty for file_replace
+# - changes list may be None (Phase 2 skip) but never empty list
+# ---------------------------------------------------------------------------
+
+
+def _extract_file_replace_changes(proposal: dict) -> list | None:
+    """
+    Extract file_replace changes from a CodeProposalEnvelope.
+
+    Returns
+    -------
+    list  : [{op: "file_replace", path: str, content: str}, ...] when the
+            proposal carries full file content (real executor path).
+    None  : when only a patch diff is available (stub executor).  RunnerService
+            skips Phase 2 (apply) but still produces an audited execution record.
+
+    Validation
+    ----------
+    Rejects absolute paths and path-traversal entries so that ApplyEngine
+    never receives unsafe inputs from this path.
+    """
+    raw = proposal.get("changes")
+    if not raw or not isinstance(raw, list):
+        return None
+
+    valid = []
+    for c in raw:
+        if not isinstance(c, dict):
+            continue
+        path = c.get("path", "")
+        content = c.get("content")
+        # Reject empty paths, absolute paths, and traversal
+        if not path or path.startswith("/") or path.startswith("\\") or ".." in path.split("/"):
+            continue
+        # Reject missing or empty content
+        if content is None or content == "":
+            continue
+        valid.append({"op": "file_replace", "path": path, "content": content})
+
+    return valid or None
+
+
+def _build_runner_execution_request(
+    plan: dict,
+    proposal: dict,
+    authorized_plan: "AuthorizedPlan",
+) -> "RunnerExecutionRequest":
+    """
+    Translate a confirmed CodeProposalEnvelope + AuthorizedPlan into a
+    RunnerExecutionRequest.  Pure translation — no execution, no IO.
+
+    execution_id    = authorized_plan.execution_id (== kernel plan_id).
+    repo_path       = domain_payload["workspace"].
+    changes         = file_replace list from proposal (or None for stub path).
+    authorized_plan = the governance binding built from the kernel plan.
+    """
+    from ..runners.runner_models import RunnerExecutionRequest
+
+    payload = plan.get("domain_payload") or {}
+    workspace = payload.get("workspace", "")
+    action = plan.get("action", "")
+
+    changes = _extract_file_replace_changes(proposal)
+
+    return RunnerExecutionRequest(
+        execution_id=authorized_plan.execution_id,
+        repo_path=workspace,
+        changes=changes,
+        metadata={
+            "source": "assistant_os",
+            "domain": "CODE",
+            "action": action,
+            "plan_id": authorized_plan.plan_id,
+        },
+        authorized_plan=authorized_plan,
     )
 
 

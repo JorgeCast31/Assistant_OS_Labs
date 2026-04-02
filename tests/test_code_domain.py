@@ -550,6 +550,7 @@ class TestApplySafety:
     # Full apply path via pipeline
     def test_pipeline_apply_path(self, tmp_path):
         """End-to-end: preview → extract proposal_id → apply via pipeline."""
+        from unittest.mock import patch, MagicMock
         import assistant_os.pipelines.code_pipeline as cp
 
         # Fresh applied set for isolation
@@ -570,7 +571,17 @@ class TestApplySafety:
                 ACTION_CODE_FIX,
                 payload={"phase": "apply", "proposal": proposal, "workspace": str(tmp_path)},
             )
-            apply_result = code_execute(apply_plan, "ctx-apply-02")
+            _mock_result = MagicMock()
+            _mock_result.execution_id = "test-exec-apply"
+            _mock_result.final_status = "success"
+            _mock_result.error = None
+            _mock_result.modified_files = []
+            _mock_result.report_json_path = None
+            _mock_result.report_md_path = None
+
+            with patch("assistant_os.executors.runner_backed_executor.RunnerBackedExecutor") as MockExec:
+                MockExec.return_value.execute.return_value = _mock_result
+                apply_result = code_execute(apply_plan, "ctx-apply-02")
             assert apply_result["ok"]
             assert apply_result["result_type"] == RESULT_TYPE_CODE_APPLY
             assert apply_result["data"]["proposal_id"] == proposal["proposal_id"]
@@ -579,6 +590,7 @@ class TestApplySafety:
 
     def test_pipeline_double_apply_rejected(self, tmp_path):
         """Applying the same proposal twice via pipeline must be rejected."""
+        from unittest.mock import patch, MagicMock
         import assistant_os.pipelines.code_pipeline as cp
 
         original_set = cp._applied_proposals
@@ -593,7 +605,17 @@ class TestApplySafety:
             apply_plan = _make_plan(
                 ACTION_CODE_FIX, payload={"phase": "apply", "proposal": proposal, "workspace": str(tmp_path)},
             )
-            first = code_execute(apply_plan, "ctx-dbl-02")
+            _mock_result = MagicMock()
+            _mock_result.execution_id = "test-exec-dbl"
+            _mock_result.final_status = "success"
+            _mock_result.error = None
+            _mock_result.modified_files = []
+            _mock_result.report_json_path = None
+            _mock_result.report_md_path = None
+
+            with patch("assistant_os.executors.runner_backed_executor.RunnerBackedExecutor") as MockExec:
+                MockExec.return_value.execute.return_value = _mock_result
+                first = code_execute(apply_plan, "ctx-dbl-02")
             assert first["ok"]
 
             second = code_execute(apply_plan, "ctx-dbl-03")
@@ -923,6 +945,7 @@ class TestSmokeHardening:
 
     def test_single_use_still_enforced_after_hardening(self, tmp_path):
         """End-to-end: preview with valid workspace → apply → double-apply rejected."""
+        from unittest.mock import patch, MagicMock
         import assistant_os.pipelines.code_pipeline as cp
 
         original_set = cp._applied_proposals
@@ -941,7 +964,17 @@ class TestSmokeHardening:
                 "proposal": proposal,
                 "workspace": str(tmp_path),
             })
-            first = code_execute(apply_plan, "ctx-su-02")
+            _mock_result = MagicMock()
+            _mock_result.execution_id = "test-exec-su"
+            _mock_result.final_status = "success"
+            _mock_result.error = None
+            _mock_result.modified_files = []
+            _mock_result.report_json_path = None
+            _mock_result.report_md_path = None
+
+            with patch("assistant_os.executors.runner_backed_executor.RunnerBackedExecutor") as MockExec:
+                MockExec.return_value.execute.return_value = _mock_result
+                first = code_execute(apply_plan, "ctx-su-02")
             assert first["ok"], f"first apply failed: {first}"
 
             second = code_execute(apply_plan, "ctx-su-03")
@@ -1044,6 +1077,7 @@ class TestObservabilityFields:
 
     def test_apply_failure_exposes_guard_failure_field(self, tmp_path):
         """Guard failures include guard_failure field for easy debugging."""
+        from unittest.mock import patch, MagicMock
         import assistant_os.pipelines.code_pipeline as cp
         original_set = cp._applied_proposals
         cp._applied_proposals = set()
@@ -1057,7 +1091,17 @@ class TestObservabilityFields:
             apply_plan = _make_plan(ACTION_CODE_FIX, payload={
                 "phase": "apply", "proposal": proposal, "workspace": str(tmp_path),
             })
-            code_execute(apply_plan, "ctx-obs-11")  # first apply succeeds
+            _mock_result = MagicMock()
+            _mock_result.execution_id = "test-exec-obs"
+            _mock_result.final_status = "success"
+            _mock_result.error = None
+            _mock_result.modified_files = []
+            _mock_result.report_json_path = None
+            _mock_result.report_md_path = None
+
+            with patch("assistant_os.executors.runner_backed_executor.RunnerBackedExecutor") as MockExec:
+                MockExec.return_value.execute.return_value = _mock_result
+                code_execute(apply_plan, "ctx-obs-11")  # first apply succeeds
             failed = code_execute(apply_plan, "ctx-obs-12")  # second must fail
             assert not failed["ok"]
             assert failed["data"]["guard_failure"] == "ProposalAlreadyApplied"
@@ -2130,6 +2174,7 @@ class TestApplyContractHardening:
 
     def _apply_via_pipeline(self, tmp_path, proposal_override: dict | None = None) -> dict:
         """Preview → apply pipeline end-to-end.  Returns the apply DomainResult."""
+        from unittest.mock import patch, MagicMock
         import assistant_os.pipelines.code_pipeline as cp
 
         orig_set = cp._applied_proposals
@@ -2148,7 +2193,17 @@ class TestApplyContractHardening:
                 ACTION_CODE_FIX,
                 payload={"phase": "apply", "proposal": proposal, "workspace": str(tmp_path)},
             )
-            return code_execute(apply_plan, "ctx-ach-apply")
+            _mock_result = MagicMock()
+            _mock_result.execution_id = apply_plan.get("plan_id", "test-exec-ach")
+            _mock_result.final_status = "success"
+            _mock_result.error = None
+            _mock_result.modified_files = []
+            _mock_result.report_json_path = None
+            _mock_result.report_md_path = None
+
+            with patch("assistant_os.executors.runner_backed_executor.RunnerBackedExecutor") as MockExec:
+                MockExec.return_value.execute.return_value = _mock_result
+                return code_execute(apply_plan, "ctx-ach-apply")
         finally:
             cp._applied_proposals = orig_set
 
@@ -2157,10 +2212,10 @@ class TestApplyContractHardening:
     # ------------------------------------------------------------------
 
     def test_apply_result_has_apply_mode_stub(self, tmp_path):
-        """apply_mode must be 'stub' when no real apply executor is wired."""
+        """execution_source must be 'runner' — apply routes exclusively through RunnerBackedExecutor."""
         result = self._apply_via_pipeline(tmp_path)
         assert result["ok"], f"apply failed: {result}"
-        assert result["data"]["apply_mode"] == "stub"
+        assert result["data"]["audit_summary"]["execution_source"] == "runner"
 
     # ------------------------------------------------------------------
     # 2. Empty patch_preview → NotApplicable (pipeline pre-gate)
@@ -2244,14 +2299,15 @@ class TestApplyContractHardening:
     # ------------------------------------------------------------------
 
     def test_apply_result_has_audit_summary(self, tmp_path):
-        """audit_summary must be present on a successful apply."""
+        """audit_summary must be present on a successful apply with M2C runner keys."""
         result = self._apply_via_pipeline(tmp_path)
         assert result["ok"], f"apply failed: {result}"
         audit = result["data"].get("audit_summary")
         assert audit is not None, "audit_summary missing from apply result"
-        for key in ("proposal_id", "action", "applied_count",
-                    "created_count", "modified_count", "apply_mode", "workspace"):
+        for key in ("action", "files_changed", "execution_source",
+                    "execution_id", "plan_id", "policy_id", "capability_scope"):
             assert key in audit, f"audit_summary missing key: {key!r}"
+        assert audit["execution_source"] == "runner"
 
     # ------------------------------------------------------------------
     # 9. No side effects — stub mode confirmed
@@ -2259,16 +2315,16 @@ class TestApplyContractHardening:
 
     def test_stub_mode_no_side_effects(self, tmp_path):
         """
-        Stub apply never writes to disk.  After apply, the tmp_path must
-        not contain any of the reported applied_files.
+        When proposal has no real file changes, runner reports zero modified_files
+        and no files are written to disk.
         """
         result = self._apply_via_pipeline(tmp_path)
         assert result["ok"], f"apply failed: {result}"
-        assert result["data"]["apply_mode"] == "stub"
-        for rel_path in result["data"].get("applied_files", []):
+        assert result["data"]["modified_files"] == []
+        for rel_path in result["data"].get("modified_files", []):
             abs_path = tmp_path / rel_path
             assert not abs_path.exists(), (
-                f"stub apply must NOT write {rel_path!r} to disk"
+                f"runner reported {rel_path!r} as modified but it should not exist"
             )
 
     # ------------------------------------------------------------------

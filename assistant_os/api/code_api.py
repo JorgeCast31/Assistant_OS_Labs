@@ -189,7 +189,30 @@ def _patch_metadata(execution_id: str, fields: Dict[str, Any]) -> None:
 
 
 def handle_execute(body: Dict[str, Any]) -> Dict[str, Any]:
-    """Core business logic — validate, adapt, run, return structured response.
+    """External adapter for n8n / HTTP clients — validate, authorize, run, return.
+
+    Scope
+    -----
+    This function is the execution entry point for EXTERNAL clients (n8n, CI
+    pipelines, direct HTTP callers).  It is NOT on the chat path.
+
+    The chat path for CODE domain requests flows exclusively through:
+      CanonicalRequest → orchestrator → planner → policy → code_pipeline
+
+    Governance
+    ----------
+    AuthorizedPlan is built here for the external path only.  It carries a
+    governance binding (plan_id, policy_id, capability_scope) derived from the
+    HTTP request body.  This is intentionally separate from the kernel-issued
+    AuthorizedPlan, which is built inside code_pipeline._apply_code_proposal
+    and always carries execution_id == kernel plan_id.
+
+    Residual authority
+    ------------------
+    code_api retains full permission/decision authority for the external path.
+    This is by design: external clients do not go through the kernel orchestrator.
+    No conflict arises because both paths serve different clients and produce
+    independent execution IDs.
 
     Separated from the HTTP layer so it can be tested without a live server.
     """
