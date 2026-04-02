@@ -323,7 +323,7 @@ _BASE_PLAN_KWARGS = dict(
 )
 
 
-@patch("assistant_os.webhook_server.check_notion_available", return_value=True)
+@patch("assistant_os.integrations.work_gateway.check_notion_available", return_value=True)
 class TestWorkQueryOutput(unittest.TestCase):
 
     @patch("assistant_os.webhook_server.query_work_db")
@@ -358,7 +358,7 @@ class TestWorkQueryOutput(unittest.TestCase):
         resp = handler._execute_work_query_from_plan(plan, "ctx-1")
         self.assertIn("No se encontraron", resp["output"]["message"])
 
-    @patch("assistant_os.webhook_server.get_notion_status",
+    @patch("assistant_os.integrations.work_gateway.get_notion_status",
            return_value={"last_error": {"message": "down"}})
     def test_notion_unavailable_returns_error(self, _status, _notion):
         _notion.return_value = False
@@ -477,12 +477,12 @@ class TestWorkDeleteOutput(unittest.TestCase):
         self.assertIsInstance(resp["output"]["data"], dict)
 
 
-@patch("assistant_os.webhook_server.check_notion_available", return_value=True)
-@patch("assistant_os.webhook_server.get_editable_field_options",
+@patch("assistant_os.integrations.work_gateway.check_notion_available", return_value=True)
+@patch("assistant_os.integrations.work_gateway.get_editable_field_options",
        return_value={"ok": True, "options": {"domain": ["Tech"], "project": ["P1"], "status": ["NEXT"]}})
 class TestWorkUpdateSingularOutput(unittest.TestCase):
 
-    @patch("assistant_os.webhook_server.update_work_item")
+    @patch("assistant_os.integrations.work_gateway.update_work_item")
     def test_success_has_canonical_output(self, mock_update, _opts, _notion):
         mock_update.return_value = {"ok": True, "changes_applied": [{"field": "status", "new_value": "NEXT"}]}
         plan = make_plan("WORK", ACTION_WORK_UPDATE, "update",
@@ -519,7 +519,7 @@ class TestWorkUpdateSingularOutput(unittest.TestCase):
         self.assertFalse(resp["output"]["ok"])
         self.assertIsInstance(resp["output"]["data"], dict)
 
-    @patch("assistant_os.webhook_server.update_work_item")
+    @patch("assistant_os.integrations.work_gateway.update_work_item")
     def test_no_valid_changes_is_error(self, mock_update, _opts, _notion):
         # proposed_changes has invalid field → no changes_dict built
         plan = make_plan("WORK", ACTION_WORK_UPDATE, "update",
@@ -547,8 +547,8 @@ class TestWorkUpdateBulkPartialSuccess(unittest.TestCase):
     Failures go to data.failed_items, not top-level error.
     """
 
-    @patch("assistant_os.webhook_server.get_editable_field_options")
-    @patch("assistant_os.webhook_server.update_work_item")
+    @patch("assistant_os.integrations.work_gateway.get_editable_field_options")
+    @patch("assistant_os.integrations.work_gateway.update_work_item")
     def test_partial_success_is_ok_true(self, mock_update, mock_opts):
         mock_opts.return_value = {"ok": True, "options": {"status": ["NEXT", "DONE"]}}
         # page1 succeeds, page2 fails
@@ -577,8 +577,8 @@ class TestWorkUpdateBulkPartialSuccess(unittest.TestCase):
         self.assertEqual(len(data["failed_items"]), 1)
         self.assertEqual(data["failed_items"][0]["notion_page_id"], "p2")
 
-    @patch("assistant_os.webhook_server.get_editable_field_options")
-    @patch("assistant_os.webhook_server.update_work_item")
+    @patch("assistant_os.integrations.work_gateway.get_editable_field_options")
+    @patch("assistant_os.integrations.work_gateway.update_work_item")
     def test_all_succeed_is_ok_true(self, mock_update, mock_opts):
         mock_opts.return_value = {"ok": True, "options": {"status": ["NEXT"]}}
         mock_update.return_value = {"ok": True, "changes_applied": []}
@@ -597,7 +597,7 @@ class TestWorkUpdateBulkPartialSuccess(unittest.TestCase):
         self.assertEqual(resp["output"]["data"]["updated_count"], 1)
         self.assertEqual(resp["output"]["data"]["failed_items"], [])
 
-    @patch("assistant_os.webhook_server.get_editable_field_options")
+    @patch("assistant_os.integrations.work_gateway.get_editable_field_options")
     def test_validation_failure_in_data_not_top_level_error(self, mock_opts):
         """Invalid field value goes to failed_items, not response.error."""
         mock_opts.return_value = {"ok": True, "options": {"status": ["NEXT", "DONE"]}}
@@ -623,7 +623,7 @@ class TestWorkUpdateBulkPartialSuccess(unittest.TestCase):
         self.assertIn("reason", failed)
         self.assertIn("error", failed)
 
-    @patch("assistant_os.webhook_server.get_editable_field_options")
+    @patch("assistant_os.integrations.work_gateway.get_editable_field_options")
     def test_bulk_result_type_and_canonical_fields(self, mock_opts):
         mock_opts.return_value = {"ok": True, "options": {}}
         plan = {
@@ -654,7 +654,7 @@ class TestFailedItemsShape(unittest.TestCase):
         for key in self._REQUIRED_KEYS:
             self.assertIn(key, item, f"failed_item missing key '{key}'")
 
-    @patch("assistant_os.webhook_server.get_editable_field_options")
+    @patch("assistant_os.integrations.work_gateway.get_editable_field_options")
     def test_validation_failure_item_has_5_keys(self, mock_opts):
         mock_opts.return_value = {"ok": True, "options": {"status": ["NEXT"]}}
         plan = {
@@ -670,8 +670,8 @@ class TestFailedItemsShape(unittest.TestCase):
         self.assertEqual(len(failed), 1)
         self._check_failed_item(failed[0])
 
-    @patch("assistant_os.webhook_server.get_editable_field_options")
-    @patch("assistant_os.webhook_server.update_work_item")
+    @patch("assistant_os.integrations.work_gateway.get_editable_field_options")
+    @patch("assistant_os.integrations.work_gateway.update_work_item")
     def test_api_failure_item_has_5_keys(self, mock_update, mock_opts):
         mock_opts.return_value = {"ok": True, "options": {"status": ["NEXT"]}}
         mock_update.return_value = {"ok": False, "error": "API error"}

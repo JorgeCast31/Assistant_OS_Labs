@@ -49,24 +49,26 @@ def _call(plan):
     return WebhookHandler._execute_work_update(handler, plan, _CTX)
 
 
-# Shared patches applied to most tests
+# Shared patches applied to most tests.
+# Targets: assistant_os.integrations.work_gateway.* — the patchable namespace
+# declared in work_pipeline's module docstring (M0.8 architecture).
 _PATCH_NOTION_OK = patch(
-    "assistant_os.webhook_server.check_notion_available", return_value=True
+    "assistant_os.integrations.work_gateway.check_notion_available", return_value=True
 )
 _PATCH_OPTS_EMPTY = patch(
-    "assistant_os.webhook_server.get_editable_field_options",
+    "assistant_os.integrations.work_gateway.get_editable_field_options",
     return_value={"ok": True, "options": {}},
 )
 _PATCH_OPTS_STATUS = patch(
-    "assistant_os.webhook_server.get_editable_field_options",
+    "assistant_os.integrations.work_gateway.get_editable_field_options",
     return_value={"ok": True, "options": {"status": ["INBOX", "NEXT", "DONE", "SCHEDULED", "WAITING"]}},
 )
 _PATCH_UPDATE_OK = patch(
-    "assistant_os.webhook_server.update_work_item",
+    "assistant_os.integrations.work_gateway.update_work_item",
     return_value={"ok": True, "changes_applied": [{"field": "status", "new_value": "NEXT"}]},
 )
 _PATCH_UPDATE_FAIL = patch(
-    "assistant_os.webhook_server.update_work_item",
+    "assistant_os.integrations.work_gateway.update_work_item",
     return_value={"ok": False, "error": "Notion API timeout"},
 )
 
@@ -86,7 +88,7 @@ class TestWorkUpdateMissingPageId(unittest.TestCase):
 
     def test_missing_page_id_does_not_call_notion(self):
         plan = _plan_with(None, [])
-        with patch("assistant_os.webhook_server.check_notion_available") as mock_notion:
+        with patch("assistant_os.integrations.work_gateway.check_notion_available") as mock_notion:
             _call(plan)
         mock_notion.assert_not_called()
 
@@ -96,9 +98,9 @@ class TestWorkUpdateMissingPageId(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestWorkUpdateNotionUnavailable(unittest.TestCase):
-    @patch("assistant_os.webhook_server.get_notion_status",
+    @patch("assistant_os.integrations.work_gateway.get_notion_status",
            return_value={"last_error": {"message": "Token not set"}})
-    @patch("assistant_os.webhook_server.check_notion_available", return_value=False)
+    @patch("assistant_os.integrations.work_gateway.check_notion_available", return_value=False)
     def test_notion_unavailable_returns_error(self, _mock_avail, _mock_status):
         plan = _plan_with("page-001", [{"field": "status", "new_value": "NEXT"}])
         result = _call(plan)
@@ -106,9 +108,9 @@ class TestWorkUpdateNotionUnavailable(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertEqual(result["error"]["type"], "NotionUnavailable")
 
-    @patch("assistant_os.webhook_server.get_notion_status",
+    @patch("assistant_os.integrations.work_gateway.get_notion_status",
            return_value={"last_error": {"message": "Token not set"}})
-    @patch("assistant_os.webhook_server.check_notion_available", return_value=False)
+    @patch("assistant_os.integrations.work_gateway.check_notion_available", return_value=False)
     def test_notion_unavailable_error_message_from_status(self, _mock_avail, _mock_status):
         plan = _plan_with("page-001", [{"field": "status", "new_value": "NEXT"}])
         result = _call(plan)

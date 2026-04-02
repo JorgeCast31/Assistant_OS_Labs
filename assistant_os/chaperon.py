@@ -324,12 +324,26 @@ def _segment_multi_expense(text: str) -> list[str]:
     return segments if segments else [text]
 
 
+# Explicit currency markers — if none present, a bare number was matched by the
+# M26-A fallback with a default "USD" assignment that should be overridden by
+# inherited_moneda when provided.
+_EXPLICIT_CURRENCY_RE = re.compile(
+    r"\$|US\$|B/\.?|\bd[oó]lares?\b|\bbalboas?\b",
+    re.IGNORECASE,
+)
+
+
 def _build_fin_item(segment: str, inherited_moneda: Optional[str] = None) -> FinItem:
     """Construye un FinItem a partir de un segmento de texto."""
     montos = _extract_montos_with_positions(segment)
-    
+
     if montos:
         monto, moneda, _, _ = montos[0]
+        # M26-A assigns "USD" to bare numbers by default.  If no explicit currency
+        # marker is present in the segment and inherited_moneda is provided, the
+        # inherited value takes precedence over the fallback "USD".
+        if inherited_moneda and not _EXPLICIT_CURRENCY_RE.search(segment):
+            moneda = inherited_moneda
     else:
         # Try to extract just a number (for continuation fragments)
         match = re.search(r"(\d+(?:[.,]\d{1,2})?)", segment)
