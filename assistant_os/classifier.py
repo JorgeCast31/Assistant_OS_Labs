@@ -211,6 +211,7 @@ DOMAIN_KEYWORDS: dict[str, list[tuple[str, float]]] = {
         (r"\bmeta-sistema\b", 4.5),
         (r"\bmeta sistema\b", 4.5),
         (r"\bpriorizaci[oó]n\b", 3.0),
+        (r"\bpriorizar?\b", 2.5),
         (r"\benfocar\b", 2.5),
         (r"\borganizar tareas\b", 2.5),
         (r"\breducir frentes\b", 3.5),
@@ -718,15 +719,26 @@ def classify_text(request: ClassifyRequest) -> Intent:
     # Without this, prompts like "crear tarea revisar autenticacion" (no WORK
     # domain keywords) fall through to domain=ENERGY at 0.5 confidence.
     # chat_core.py has a parallel guard, but classify_text should be self-consistent.
+    #
+    # Guard: WORK_QUERY does NOT override when ENERGY or HEALTH has a real keyword
+    # score — e.g. "priorizar mis tareas" is meta-system (ENERGY), not a task lookup,
+    # and "Ir al gym hoy" is HEALTH, not a task query.
     elif operation in (OP_WORK_CREATE, OP_WORK_UPDATE, OP_WORK_DELETE, OP_WORK_QUERY) \
             and winner != DOMAIN_WORK:
-        alternatives = [a for a in alternatives if a["domain"] != DOMAIN_WORK]
-        alternatives.insert(0, IntentAlternative(domain=winner, confidence=round(confidence * 0.6, 3)))
-        alternatives = alternatives[:2]
-        winner = DOMAIN_WORK
-        confidence = max(confidence, 0.90)
-        needs_conf = False
-        reason_parts.append("override:work_op->WORK")
+        _energy_score = scores.get(DOMAIN_ENERGY, 0.0)
+        _health_score = scores.get(DOMAIN_HEALTH, 0.0)
+        _query_blocked = (
+            operation == OP_WORK_QUERY
+            and (_energy_score >= 2.0 or _health_score >= 2.0)
+        )
+        if not _query_blocked:
+            alternatives = [a for a in alternatives if a["domain"] != DOMAIN_WORK]
+            alternatives.insert(0, IntentAlternative(domain=winner, confidence=round(confidence * 0.6, 3)))
+            alternatives = alternatives[:2]
+            winner = DOMAIN_WORK
+            confidence = max(confidence, 0.90)
+            needs_conf = False
+            reason_parts.append("override:work_op->WORK")
 
     # Complete reason for debugging
     if scores[winner] > 0 and not any("override" in r or "tiebreaker" in r for r in reason_parts):
@@ -921,7 +933,6 @@ OPERATIONAL_WORK_QUERY_PATTERNS = [
     r"\bnext\b",                            # "next"
     r"\bwaiting\b",                         # "waiting"
     r"\bscheduled\b",                       # "scheduled"
-    r"\bhoy\b",                             # "hoy"
     r"\besta\s+semana\b",                   # "esta semana"
 ]
 
@@ -981,8 +992,9 @@ OPERATIONAL_WORK_DELETE_PATTERNS = [
 OPERATIONAL_WORK_UPDATE_PATTERNS = [
     # "pon X en Y" / "ponla en Y" / "ponlo en Y"
     r"\b(pon(?:lo|la|le|er)?|ponla|ponlo)\b.+\b(en|a)\s+\w+",
-    # "cambia X a Y" / "cambialo a Y"
-    r"\bcambia(?:r|lo|la)?\b.+\b(a|de|el|la|su)\b",
+    # "cambia el status/proyecto/tarea a Y" — requires task-field context to avoid
+    # colliding with non-task change phrases like "cambiar rutina de ejercicio"
+    r"\bcambia(?:r|lo|la)?\b.+\b(status|estado|proyecto|project|dominio|domain|tarea[s]?)\b",
     # "mueve X a Y" (not "mueve a papelera" which is delete)
     r"\bmuev(?:e|a|o)(?:la|lo)?\b.+\b(a|al|hacia)\s+(?!papelera)\w+",
     # "pasa X a Y" / "pasala a Y"

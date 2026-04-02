@@ -228,8 +228,8 @@ class TestExecuteWorkUpdateBulk(unittest.TestCase):
         handler = MagicMock(spec=WebhookHandler)
         return WebhookHandler._execute_work_update_bulk(handler, plan, ctx_id)
 
-    @patch("assistant_os.webhook_server.update_work_item", return_value={"ok": True})
-    @patch("assistant_os.webhook_server.get_editable_field_options",
+    @patch("assistant_os.integrations.work_gateway.update_work_item", return_value={"ok": True})
+    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
            return_value={"ok": True, "options": {"status": ["NEXT", "INBOX", "DONE"]}})
     def test_updates_each_selected_page(self, _mock_opts, _mock_update):
         plan = {
@@ -249,8 +249,8 @@ class TestExecuteWorkUpdateBulk(unittest.TestCase):
         self.assertEqual(result["output"]["failed_items"], [])
         self.assertEqual(result["output"]["skipped_items"], [])
 
-    @patch("assistant_os.webhook_server.update_work_item", return_value={"ok": True})
-    @patch("assistant_os.webhook_server.get_editable_field_options",
+    @patch("assistant_os.integrations.work_gateway.update_work_item", return_value={"ok": True})
+    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
            return_value={"ok": True, "options": {}})
     def test_skips_page_ids_not_in_matches(self, _mock_opts, _mock_update):
         plan = {
@@ -265,8 +265,8 @@ class TestExecuteWorkUpdateBulk(unittest.TestCase):
         self.assertEqual(result["output"]["updated_count"], 1)
         self.assertIn("page-ghost", result["output"]["skipped_items"])
 
-    @patch("assistant_os.webhook_server.update_work_item", return_value={"ok": True})
-    @patch("assistant_os.webhook_server.get_editable_field_options",
+    @patch("assistant_os.integrations.work_gateway.update_work_item", return_value={"ok": True})
+    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
            return_value={"ok": True, "options": {"status": ["NEXT", "INBOX"]}})
     def test_marks_invalid_field_value_as_failed(self, _mock_opts, _mock_update):
         plan = {
@@ -284,9 +284,9 @@ class TestExecuteWorkUpdateBulk(unittest.TestCase):
         self.assertEqual(len(result["output"]["failed_items"]), 1)
         self.assertEqual(result["output"]["failed_items"][0]["reason"], "Valor no válido")
 
-    @patch("assistant_os.webhook_server.update_work_item",
+    @patch("assistant_os.integrations.work_gateway.update_work_item",
            return_value={"ok": False, "error": "Notion API error"})
-    @patch("assistant_os.webhook_server.get_editable_field_options",
+    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
            return_value={"ok": True, "options": {}})
     def test_records_notion_api_failure(self, _mock_opts, _mock_update):
         plan = {
@@ -302,8 +302,8 @@ class TestExecuteWorkUpdateBulk(unittest.TestCase):
         self.assertEqual(len(result["output"]["failed_items"]), 1)
         self.assertIn("error", result["output"]["failed_items"][0])
 
-    @patch("assistant_os.webhook_server.update_work_item", return_value={"ok": True})
-    @patch("assistant_os.webhook_server.get_editable_field_options",
+    @patch("assistant_os.integrations.work_gateway.update_work_item", return_value={"ok": True})
+    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
            return_value={"ok": True, "options": {}})
     def test_empty_selection_returns_zero_counts(self, _mock_opts, _mock_update):
         plan = {
@@ -319,8 +319,8 @@ class TestExecuteWorkUpdateBulk(unittest.TestCase):
         self.assertEqual(result["status"], "ok")  # empty selection is not an error
         _mock_update.assert_not_called()
 
-    @patch("assistant_os.webhook_server.update_work_item", return_value={"ok": True})
-    @patch("assistant_os.webhook_server.get_editable_field_options",
+    @patch("assistant_os.integrations.work_gateway.update_work_item", return_value={"ok": True})
+    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
            return_value={"ok": True, "options": {}})
     def test_result_contains_summary_message(self, _mock_opts, mock_update):
         plan = {
@@ -356,8 +356,8 @@ class TestFailedItemsCanonicalShape(unittest.TestCase):
 
     # --- validation failure shape ---
 
-    @patch("assistant_os.webhook_server.update_work_item", return_value={"ok": True})
-    @patch("assistant_os.webhook_server.get_editable_field_options",
+    @patch("assistant_os.integrations.work_gateway.update_work_item", return_value={"ok": True})
+    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
            return_value={"ok": True, "options": {"status": ["NEXT", "INBOX"]}})
     def test_validation_failure_has_all_five_keys(self, _mock_opts, _mock_update):
         plan = {
@@ -370,8 +370,8 @@ class TestFailedItemsCanonicalShape(unittest.TestCase):
         item = result["output"]["failed_items"][0]
         self.assertEqual(set(item.keys()), _CANONICAL_FAILED_KEYS)
 
-    @patch("assistant_os.webhook_server.update_work_item", return_value={"ok": True})
-    @patch("assistant_os.webhook_server.get_editable_field_options",
+    @patch("assistant_os.integrations.work_gateway.update_work_item", return_value={"ok": True})
+    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
            return_value={"ok": True, "options": {"status": ["NEXT", "INBOX"]}})
     def test_validation_failure_error_is_none(self, _mock_opts, _mock_update):
         plan = {
@@ -389,9 +389,9 @@ class TestFailedItemsCanonicalShape(unittest.TestCase):
 
     # --- API failure shape ---
 
-    @patch("assistant_os.webhook_server.update_work_item",
+    @patch("assistant_os.integrations.work_gateway.update_work_item",
            return_value={"ok": False, "error": "Timeout"})
-    @patch("assistant_os.webhook_server.get_editable_field_options",
+    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
            return_value={"ok": True, "options": {}})
     def test_api_failure_has_all_five_keys(self, _mock_opts, _mock_update):
         plan = {
@@ -404,9 +404,9 @@ class TestFailedItemsCanonicalShape(unittest.TestCase):
         item = result["output"]["failed_items"][0]
         self.assertEqual(set(item.keys()), _CANONICAL_FAILED_KEYS)
 
-    @patch("assistant_os.webhook_server.update_work_item",
+    @patch("assistant_os.integrations.work_gateway.update_work_item",
            return_value={"ok": False, "error": "Timeout"})
-    @patch("assistant_os.webhook_server.get_editable_field_options",
+    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
            return_value={"ok": True, "options": {}})
     def test_api_failure_field_value_reason_are_none(self, _mock_opts, _mock_update):
         plan = {
@@ -424,9 +424,9 @@ class TestFailedItemsCanonicalShape(unittest.TestCase):
 
     # --- shape is uniform when both failure types occur in the same call ---
 
-    @patch("assistant_os.webhook_server.update_work_item",
+    @patch("assistant_os.integrations.work_gateway.update_work_item",
            return_value={"ok": False, "error": "API down"})
-    @patch("assistant_os.webhook_server.get_editable_field_options",
+    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
            return_value={"ok": True, "options": {"status": ["NEXT"]}})
     def test_mixed_failures_all_have_canonical_shape(self, _mock_opts, _mock_update):
         """

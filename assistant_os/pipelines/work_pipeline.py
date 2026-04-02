@@ -628,8 +628,7 @@ def _work_update_bulk_execute(plan: dict, context_id: str) -> DomainResult:
 
     Returns DomainResult (no transport wrapping).
     """
-    from ..integrations.work_gateway import get_editable_field_options
-    from ..tools.notion.update_page_tool import UpdatePageTool
+    from ..integrations.work_gateway import get_editable_field_options, update_work_item
 
     matches = plan.get("matches", [])
     selected_ids = plan.get("selected_notion_page_ids", [])
@@ -669,12 +668,8 @@ def _work_update_bulk_execute(plan: dict, context_id: str) -> DomainResult:
             skipped_items.append(page_id)
             continue
 
-        tool_result = UpdatePageTool().execute({
-            "page_id": page_id,
-            "changes": changes_dict,
-            "current_values": {},
-        })
-        if tool_result.ok:
+        update_result = update_work_item(page_id=page_id, changes=changes_dict, current_values={})
+        if update_result["ok"]:
             updated_items.append({"notion_page_id": page_id, "changes_applied": changes_dict})
         else:
             failed_items.append({
@@ -682,7 +677,7 @@ def _work_update_bulk_execute(plan: dict, context_id: str) -> DomainResult:
                 "field": None,
                 "value": None,
                 "reason": None,
-                "error": tool_result.error.message if tool_result.error else "",
+                "error": update_result.get("error") or "",
             })
 
     bulk_message = (
@@ -886,8 +881,9 @@ def _work_update_execute(plan: dict, context_id: str) -> DomainResult:
     Validates proposed_changes against real Notion options and applies changes
     to the target page via UpdatePageTool. No transport wrapping.
     """
-    from ..integrations.work_gateway import check_notion_available, get_notion_status, get_editable_field_options
-    from ..tools.notion.update_page_tool import UpdatePageTool
+    from ..integrations.work_gateway import (
+        check_notion_available, get_notion_status, get_editable_field_options, update_work_item
+    )
 
     filters = plan.get("filters", {})
     page_id = filters.get("notion_page_id")
@@ -973,13 +969,9 @@ def _work_update_execute(plan: dict, context_id: str) -> DomainResult:
             error={"type": "ValidationError", "message": error_msg},
         )
 
-    tool_result = UpdatePageTool().execute({
-        "page_id": page_id,
-        "changes": changes_dict,
-        "current_values": current_values,
-    })
+    update_result = update_work_item(page_id=page_id, changes=changes_dict, current_values=current_values)
 
-    if not tool_result.ok:
+    if not update_result["ok"]:
         return make_domain_result(
             ok=False,
             result_type=RESULT_TYPE_WORK_UPDATE,
@@ -988,7 +980,7 @@ def _work_update_execute(plan: dict, context_id: str) -> DomainResult:
             data={"plan": dict(plan)},
             error={
                 "type": "NotionUpdateError",
-                "message": tool_result.error.message if tool_result.error else "Failed to update task in Notion",
+                "message": update_result.get("error") or "Failed to update task in Notion",
             },
         )
 
@@ -1002,7 +994,7 @@ def _work_update_execute(plan: dict, context_id: str) -> DomainResult:
             "updated": True,
             "notion_page_id": page_id,
             "title": title,
-            "changes_applied": tool_result.data.get("changes_applied", []),
+            "changes_applied": update_result.get("changes_applied", []),
             "plan": dict(plan),
         },
         trace_id=plan.get("trace_id"),

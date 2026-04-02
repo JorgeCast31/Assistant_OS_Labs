@@ -39,6 +39,7 @@ from .notion import (
     get_editable_field_options,
     search_work_items_by_title,
     search_work_items_with_filters,
+    update_work_item,
 )
 from ..context_store import store_pending_plan
 from ..parsers.work_update_parser import generate_update_preview
@@ -52,6 +53,7 @@ __all__ = [
     "get_editable_field_options",
     "search_work_items_by_title",
     "search_work_items_with_filters",
+    "update_work_item",
     "store_pending_plan",
     "generate_update_preview",
 ]
