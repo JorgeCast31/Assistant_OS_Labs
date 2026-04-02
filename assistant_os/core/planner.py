@@ -27,6 +27,10 @@ from ..contracts import (
     make_plan,
     # Operation constants
     OP_WORK_UPDATE,
+    OP_CODE_EXPLAIN,
+    OP_CODE_REVIEW,
+    OP_CODE_FIX,
+    OP_CODE_CREATE,
     # Action constants
     ACTION_WORK_QUERY,
     ACTION_WORK_CREATE,
@@ -36,6 +40,10 @@ from ..contracts import (
     ACTION_WORK_DELETE,
     ACTION_WORK_DELETE_TEST,
     ACTION_FIN_EXPENSE,
+    ACTION_CODE_EXPLAIN,
+    ACTION_CODE_REVIEW,
+    ACTION_CODE_FIX,
+    ACTION_CODE_CREATE,
     ACTION_COMMAND,
     # Risk levels
     RISK_LOW,
@@ -320,6 +328,18 @@ def _create_plan_from_intent(text: str, intent: dict) -> Plan:
         elif operation == "FIN_EXPENSE":
             action = ACTION_FIN_EXPENSE
             reason = f"Classifier: operation={operation}"
+        elif operation == OP_CODE_EXPLAIN:
+            action = ACTION_CODE_EXPLAIN
+            reason = f"Classifier: operation={operation}"
+        elif operation == OP_CODE_REVIEW:
+            action = ACTION_CODE_REVIEW
+            reason = f"Classifier: operation={operation}"
+        elif operation == OP_CODE_FIX:
+            action = ACTION_CODE_FIX
+            reason = f"Classifier: operation={operation}"
+        elif operation == OP_CODE_CREATE:
+            action = ACTION_CODE_CREATE
+            reason = f"Classifier: operation={operation}"
         elif is_work_query(text, domain):
             action = ACTION_WORK_QUERY
             reason = f"Fallback: is_work_query=True for domain={domain}"
@@ -362,6 +382,18 @@ def _create_plan_from_intent(text: str, intent: dict) -> Plan:
     elif action == ACTION_FIN_EXPENSE:
         risk_level = RISK_MEDIUM
         requires_confirmation = False  # Single expense auto-executes
+    elif action == ACTION_CODE_EXPLAIN:
+        risk_level = RISK_LOW
+        requires_confirmation = False  # Read-only: auto-execute
+    elif action == ACTION_CODE_REVIEW:
+        risk_level = RISK_LOW
+        requires_confirmation = False  # Read-only: auto-execute
+    elif action == ACTION_CODE_FIX:
+        risk_level = RISK_MEDIUM
+        requires_confirmation = True   # Mutating: preview → confirm → apply
+    elif action == ACTION_CODE_CREATE:
+        risk_level = RISK_MEDIUM
+        requires_confirmation = True   # Mutating: preview → confirm → apply
     else:
         risk_level = RISK_MEDIUM
         requires_confirmation = False
@@ -470,6 +502,14 @@ def _create_plan_from_intent(text: str, intent: dict) -> Plan:
         preview = generate_update_preview(changes, "")
     elif action == ACTION_FIN_EXPENSE:
         preview = f"Registrar gasto: {text[:50]}..."
+    elif action == ACTION_CODE_EXPLAIN:
+        preview = f"Explicar código: {text[:50]}"
+    elif action == ACTION_CODE_REVIEW:
+        preview = f"Revisar código: {text[:50]}"
+    elif action == ACTION_CODE_FIX:
+        preview = f"Corregir código: {text[:50]}"
+    elif action == ACTION_CODE_CREATE:
+        preview = f"Crear código: {text[:50]}"
     else:
         preview = f"Dominio {domain}: {intent.get('next_action', text[:50])}"
 
