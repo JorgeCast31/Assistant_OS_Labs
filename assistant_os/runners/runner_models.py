@@ -109,3 +109,5 @@ class RunnerExecutionResult:
     # M1B governance fields — populated when RunnerAPI (Docker) was invoked.
     authorized_plan_info: Optional[Dict[str, Any]] = field(default=None, repr=False)
     sandbox_metadata: Optional[Dict[str, Any]] = field(default=None, repr=False)
+    # M2D audit — per-file change detail (path, operation, before_hash, after_hash, diff).
+    changes_detail: Optional[List[Dict[str, Any]]] = field(default=None, repr=False)
