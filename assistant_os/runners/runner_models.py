@@ -111,3 +111,6 @@ class RunnerExecutionResult:
     sandbox_metadata: Optional[Dict[str, Any]] = field(default=None, repr=False)
     # M2D audit — per-file change detail (path, operation, before_hash, after_hash, diff).
     changes_detail: Optional[List[Dict[str, Any]]] = field(default=None, repr=False)
+    # M2F.1 promotion — files copied from sandbox workspace back to original repo.
+    promoted_files: Optional[List[str]] = field(default=None)
+    promotion_status: Optional[str] = None  # "performed" | "skipped" | "failed"
