@@ -6,6 +6,7 @@ Tests:
 4-6: Plan Always (confirmation required)
 """
 import unittest
+from unittest.mock import patch
 from assistant_os.contracts import (
     ChatCoreResponse,
     ChatSession,
@@ -26,8 +27,9 @@ from assistant_os.chat_renderer import (
 # Test 1: pending_flow continuity - confirm resolves flow
 # ---------------------------------------------------------------------------
 
-def test_pending_flow_confirm_resolves():
-    """When user confirms pending FIN flow, it resolves to execute intent."""
+@patch("assistant_os.chat_core._execute_fin_item", return_value=(True, "ok", {"row_number": 1}))
+def test_pending_flow_confirm_resolves(mock_exec):
+    """When user confirms pending FIN flow, it resolves to committed intent."""
     # Setup: session with pending fin_confirm
     ctx_id = new_context_id()
     session = ChatSession(
@@ -35,12 +37,12 @@ def test_pending_flow_confirm_resolves():
         context_id=ctx_id,
         pending_data={"items": [{"monto": 25.0, "moneda": "USD"}]},
     )
-    
+
     # Act: user says "sí"
     result = process_chat_input("sí", session=session)
-    
-    # Assert: flow resolved, intent is execute, pending_flow cleared
-    assert result["intent"] == "execute"
+
+    # Assert: flow resolved, intent is committed, pending_flow cleared
+    assert result["intent"] == "committed"
     assert result["session"].get("pending_flow") is None
     assert result["audit"].get("resolution") == "confirmed"
     assert len(result["plan"]) == 1
@@ -93,13 +95,13 @@ def test_fin_add_requires_confirmation():
     """FIN domain add always requires confirmation (Plan Always)."""
     # Simple expense input
     result = process_chat_input("$25 en comida", domain_hint="FIN")
-    
+
     # Must require confirmation
     assert result["needs_confirmation"] is True
-    # Must have pending_flow set for confirmation
-    assert result["session"].get("pending_flow") == "fin_confirm"
-    # Must have confirm action
-    assert any(a.get("type") == "confirm" for a in result["ui_actions"])
+    # FIN now routes through clarification first (collects missing fields)
+    assert result["session"].get("pending_flow") == "clarification"
+    # Must have a form action for the clarification step
+    assert any(a.get("type") == "form" for a in result["ui_actions"])
 
 
 # ---------------------------------------------------------------------------
@@ -109,9 +111,10 @@ def test_fin_add_requires_confirmation():
 def test_multi_fin_requires_confirmation():
     """Multiple FIN items also require confirmation."""
     result = process_chat_input("$25 en comida y $15 para transporte", domain_hint="FIN")
-    
+
     assert result["needs_confirmation"] is True
-    assert result["session"].get("pending_flow") == "fin_confirm"
+    # FIN now routes through clarification first (collects missing fields)
+    assert result["session"].get("pending_flow") == "clarification"
     # Should detect multiple items
     assert len(result["plan"]) >= 1  # Chaperon should detect multiple
 
