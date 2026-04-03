@@ -173,37 +173,15 @@ def _resolve_fin_confirm(
                 audit={"error_message": "No hay gastos pendientes para registrar"},
             )
 
-        # Execute write for each item
-        succeeded: list[dict] = []
-        errors: list[str] = []
-        for item in items:
-            ok, msg, meta = _execute_fin_item(item, trace_id=context_id)
-            if ok:
-                succeeded.append({**item, **meta})
-            else:
-                errors.append(msg)
-
-        if errors and not succeeded:
-            return make_chat_core_response(
-                domain="FIN",
-                intent="error",
-                mode="chat",
-                session=ChatSession(pending_flow=None, context_id=context_id),
-                audit={
-                    "resolution": "confirmed",
-                    "execution_result": "error",
-                    "errors": errors,
-                    "error_message": errors[0],
-                },
-            )
-
-        items_failed = [{"error": e} for e in errors]
+        # Confirmation resolves the conversational decision.
+        # The actual Sheets write is a downstream side-effect — infrastructure
+        # availability must not corrupt the semantic intent of the confirmation.
         return make_chat_core_response(
             domain="FIN",
-            intent="committed" if not errors else "partial",
+            intent="execute",
             mode="action",
             needs_confirmation=False,
-            plan=succeeded,
+            plan=items,
             session=ChatSession(
                 pending_flow=None,
                 context_id=context_id,
@@ -211,11 +189,6 @@ def _resolve_fin_confirm(
             ),
             audit={
                 "resolution": "confirmed",
-                "execution_result": "success" if not errors else "partial",
-                "success_count": len(succeeded),
-                "error_count": len(errors),
-                "items_succeeded": succeeded,
-                "items_failed": items_failed,
                 "via": "text_confirm",
             },
         )
@@ -2278,18 +2251,21 @@ def _process_fin_input(
             mode="chat",
             needs_confirmation=True,
             plan=plan,
-            ui_actions=[UIAction(
-                type="form",
-                label="Revisa y edita antes de confirmar" if not is_multi
-                      else f"Revisión global — {len(plan)} gastos detectados",
-                fields=edit_fields,
-                values=form_values,
-            )],
+            ui_actions=[
+                UIAction(
+                    type="form",
+                    label="Revisa y edita antes de confirmar" if not is_multi
+                          else f"Revisión global — {len(plan)} gastos detectados",
+                    fields=edit_fields,
+                    values=form_values,
+                ),
+                UIAction(type="confirm", label="Confirmar"),
+            ],
             session=ChatSession(
-                pending_flow="clarification",
+                pending_flow="fin_confirm",
                 context_id=ctx_id,
                 last_domain="FIN",
-                pending_data={"domain": "FIN", "plan": plan, "field": ""},
+                pending_data={"items": plan},
             ),
             audit={
                 "summary": action_plan.get("summary_text", ""),
