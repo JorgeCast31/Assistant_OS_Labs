@@ -28,8 +28,6 @@ ui/.vercel/
 .env
 .env.local
 .env.*.local
-secrets/
-**/secrets/
 *.pem
 *.key
 *service-account*.json
