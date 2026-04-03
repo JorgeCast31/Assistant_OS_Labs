@@ -48,10 +48,27 @@ class WorkspaceModel:
         self.out_dir = self.root / "out"
 
     def prepare(self) -> None:
-        """Create input / output / out sub-directories."""
+        """Create input / output / out sub-directories.
+
+        Permissions are set explicitly (not umask-derived) so that the
+        container process (UID 65534 / nobody) can access the workspace
+        regardless of the host's umask or how the caller created the
+        workspace root (e.g. pytest tmp_path uses 0o700 on Linux).
+
+        Contract:
+          workspace root : 0o755  — traversable by container UID
+          input/         : 0o755  — readable + traversable; container does not write here
+          output/        : 0o777  — container may write scratch data
+          out/           : 0o777  — container writes governed artifact files here
+        """
         self.input_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.out_dir.mkdir(parents=True, exist_ok=True)
+        # Apply explicit permissions after creation so umask cannot restrict access.
+        self.root.chmod(0o755)
+        self.input_dir.chmod(0o755)
+        self.output_dir.chmod(0o777)
+        self.out_dir.chmod(0o777)
 
     def write_code(self, code: str, filename: str = "main.py") -> Path:
         """
@@ -76,6 +93,8 @@ class WorkspaceModel:
             )
         target = self.input_dir / filename
         target.write_text(code, encoding="utf-8")
+        # Explicit read permission for container UID 65534 (nobody), independent of umask.
+        target.chmod(0o644)
         return target
 
     def list_artifacts(self) -> list[str]:
