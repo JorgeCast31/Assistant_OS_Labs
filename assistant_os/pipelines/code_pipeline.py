@@ -754,6 +754,7 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
             "report_json_path": runner_result.report_json_path,
             "report_md_path": runner_result.report_md_path,
             "audit_summary": audit_summary,
+            "changes_detail": runner_result.changes_detail or [],
         },
         trace_id=plan.get("trace_id"),
         plan_id=plan.get("plan_id"),
@@ -841,13 +842,17 @@ def _build_authorized_plan_from_kernel(plan: dict) -> "AuthorizedPlan":
 
 def _extract_file_replace_changes(proposal: dict) -> list | None:
     """
-    Extract file_replace changes from a CodeProposalEnvelope.
+    Extract applicable changes from a CodeProposalEnvelope.
+
+    Supports two ops:
+      file_replace — full file content (real executor or CREATE path).
+      patch        — unified diff applied to an existing file (M2D).
 
     Returns
     -------
-    list  : [{op: "file_replace", path: str, content: str}, ...] when the
-            proposal carries full file content (real executor path).
-    None  : when only a patch diff is available (stub executor).  RunnerService
+    list  : [{op: "file_replace"|"patch", path: str, ...}, ...] when the
+            proposal carries actionable changes.
+    None  : when no changes are present (stub executor path).  RunnerService
             skips Phase 2 (apply) but still produces an audited execution record.
 
     Validation
@@ -864,14 +869,24 @@ def _extract_file_replace_changes(proposal: dict) -> list | None:
         if not isinstance(c, dict):
             continue
         path = c.get("path", "")
-        content = c.get("content")
+        op = c.get("op", "file_replace")  # default for backward compat
         # Reject empty paths, absolute paths, and traversal
         if not path or path.startswith("/") or path.startswith("\\") or ".." in path.split("/"):
             continue
-        # Reject missing or empty content
-        if content is None or content == "":
-            continue
-        valid.append({"op": "file_replace", "path": path, "content": content})
+
+        if op == "file_replace":
+            content = c.get("content")
+            # Reject missing or empty content
+            if content is None or content == "":
+                continue
+            valid.append({"op": "file_replace", "path": path, "content": content})
+
+        elif op == "patch":
+            patch_text = c.get("patch", "")
+            # Reject empty patch texts
+            if not patch_text or not patch_text.strip():
+                continue
+            valid.append({"op": "patch", "path": path, "patch": patch_text})
 
     return valid or None
 

@@ -97,23 +97,51 @@ def test_multiple_changes_in_order(engine, workspace, log_file):
 
 
 # ---------------------------------------------------------------------------
-# patch — skipped gracefully
+# patch — real implementation (M2D)
 # ---------------------------------------------------------------------------
 
 
-def test_patch_skipped_and_not_in_modified(engine, workspace, log_file):
-    changes = [{"op": "patch", "path": "app.py", "patch": "@@ ... @@"}]
+def test_patch_invalid_no_hunks_raises_apply_error(engine, workspace, log_file):
+    """A patch string with no @@ headers is rejected with a structured error."""
+    changes = [{"op": "patch", "path": "app.py", "patch": "this is not a valid diff"}]
+    with pytest.raises(ApplyError, match="no valid hunks"):
+        engine.apply_changes(workspace, changes, log_file)
+
+
+def test_patch_file_not_found_raises_apply_error(engine, workspace, log_file):
+    """Patching a file that does not exist raises ApplyError immediately."""
+    valid_patch = "@@ -1,1 +1,1 @@\n-x = 1\n+x = 99\n"
+    changes = [{"op": "patch", "path": "nonexistent.py", "patch": valid_patch}]
+    with pytest.raises(ApplyError, match="does not exist"):
+        engine.apply_changes(workspace, changes, log_file)
+
+
+def test_patch_empty_patch_field_raises_apply_error(engine, workspace, log_file):
+    """An empty 'patch' field is rejected with a structured error."""
+    changes = [{"op": "patch", "path": "app.py", "patch": ""}]
+    with pytest.raises(ApplyError):
+        engine.apply_changes(workspace, changes, log_file)
+
+
+def test_patch_applies_valid_unified_diff(engine, workspace, log_file):
+    """A well-formed unified diff is applied and the file is updated."""
+    # workspace fixture has app.py with content "x = 1\n"
+    patch_text = "@@ -1,1 +1,1 @@\n-x = 1\n+x = 99\n"
+    changes = [{"op": "patch", "path": "app.py", "patch": patch_text}]
     modified = engine.apply_changes(workspace, changes, log_file)
 
-    assert "app.py" not in modified  # patch was skipped, not applied
+    assert "app.py" in modified
+    assert (workspace / "app.py").read_text() == "x = 99\n"
 
 
-def test_patch_skip_logged(engine, workspace, log_file):
-    changes = [{"op": "patch", "path": "app.py", "patch": "..."}]
+def test_patch_logged_as_patch_event(engine, workspace, log_file):
+    """Successful patch is logged with 'apply: patch' event."""
+    patch_text = "@@ -1,1 +1,1 @@\n-x = 1\n+x = 42\n"
+    changes = [{"op": "patch", "path": "app.py", "patch": patch_text}]
     engine.apply_changes(workspace, changes, log_file)
 
     content = log_file.read_text()
-    assert "patch skipped" in content
+    assert "apply: patch" in content
 
 
 # ---------------------------------------------------------------------------

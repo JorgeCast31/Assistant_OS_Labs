@@ -124,12 +124,13 @@ class RunnerService:
         # Phase 2: apply
         # ------------------------------------------------------------------
         modified_files: List[str] = []
+        changes_detail: List[Dict[str, Any]] = []
         apply_error: Optional[str] = None
 
         if request.changes:
             _append_log(log_file, "phase: APPLY_START")
             try:
-                modified_files = ApplyEngine().apply_changes(
+                modified_files, changes_detail = ApplyEngine().apply_changes_with_audit(
                     workspace_path=workspace_path,
                     changes=request.changes,
                     log_file=log_file,
@@ -256,6 +257,7 @@ class RunnerService:
             summary=summary,
             authorized_plan_info=authorized_plan_info,
             sandbox_metadata=sandbox_metadata,
+            changes_detail=changes_detail if changes_detail else None,
         )
 
         # ------------------------------------------------------------------
@@ -336,6 +338,47 @@ class RunnerService:
             )
         if not request.repo_path or not request.repo_path.strip():
             raise PreflightError("repo_path must not be empty.")
+        # M2D — fast-fail: validate changes before workspace creation.
+        if request.changes:
+            self._validate_changes_preflight(request.changes)
+
+    def _validate_changes_preflight(self, changes: List[Any]) -> None:
+        """Validate *changes* structurally before workspace creation.
+
+        Raises PreflightError immediately (no workspace I/O yet) for:
+        - Unknown op
+        - Missing or absolute path
+        - file_replace with missing content field
+        - patch with empty patch field
+        """
+        _VALID_OPS = frozenset({"file_replace", "patch"})
+        for i, change in enumerate(changes):
+            if not isinstance(change, dict):
+                raise PreflightError(
+                    f"changes[{i}] must be a dict, got {type(change).__name__!r}."
+                )
+            op = change.get("op")
+            if op not in _VALID_OPS:
+                raise PreflightError(
+                    f"changes[{i}]: unknown op {op!r}. Valid ops: {sorted(_VALID_OPS)}."
+                )
+            path = change.get("path", "")
+            if not path or not path.strip():
+                raise PreflightError(f"changes[{i}]: 'path' must not be empty.")
+            if path.startswith("/") or path.startswith("\\"):
+                raise PreflightError(
+                    f"changes[{i}]: path {path!r} must be relative (not absolute)."
+                )
+            if op == "file_replace" and change.get("content") is None:
+                raise PreflightError(
+                    f"changes[{i}]: file_replace for {path!r} missing required 'content' field."
+                )
+            if op == "patch":
+                patch_text = change.get("patch", "")
+                if not patch_text or not patch_text.strip():
+                    raise PreflightError(
+                        f"changes[{i}]: patch op for {path!r} has empty 'patch' field."
+                    )
 
     def _determine_status(
         self,
@@ -430,6 +473,8 @@ class RunnerService:
                 # M1B governance fields — present when RunnerAPI (Docker) was invoked.
                 "authorized_plan": result.authorized_plan_info,
                 "sandbox_execution": result.sandbox_metadata,
+                # M2D audit — per-file change detail.
+                "changes_detail": result.changes_detail,
             }
         )
 
