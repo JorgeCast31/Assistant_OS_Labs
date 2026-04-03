@@ -22,7 +22,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from .apply_engine import ApplyEngine
 from .errors import (
@@ -51,6 +51,63 @@ if TYPE_CHECKING:
     from ..sandbox.runner_api import RunnerAPI
 
 logger = logging.getLogger(__name__)
+
+
+def _promote_changes(
+    workspace_path: Path,
+    repo_root: str,
+    modified_files: List[str],
+    log_file: Path,
+) -> Tuple[List[str], str]:
+    """Copy modified files from sandbox workspace back to original repo.
+
+    Returns (promoted_files, status) where status is one of:
+        "performed" — at least one file was copied successfully
+        "skipped"   — modified_files was empty, nothing to promote
+        "failed"    — all promotion attempts failed
+    """
+    if not modified_files:
+        return [], "skipped"
+
+    repo = Path(repo_root).resolve()
+    ws = workspace_path.resolve()
+    promoted: List[str] = []
+
+    for rel in modified_files:
+        rel_path = Path(rel)
+        # Safety: reject absolute paths and path-traversal components.
+        if rel_path.is_absolute() or ".." in rel_path.parts:
+            _append_log(log_file, f"promote: skipped {rel!r} — path traversal rejected")
+            continue
+
+        src = ws / rel_path
+        dst = repo / rel_path
+
+        # Verify resolved paths stay within their respective roots.
+        try:
+            src.resolve().relative_to(ws)
+            dst.resolve().relative_to(repo)
+        except ValueError:
+            _append_log(log_file, f"promote: skipped {rel!r} — outside boundary")
+            continue
+
+        if not src.is_file():
+            _append_log(log_file, f"promote: skipped {rel!r} — not found in workspace")
+            continue
+
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(src.read_bytes())
+            promoted.append(rel)
+            _append_log(log_file, f"promote: {rel!r} → repo")
+        except OSError as exc:
+            _append_log(log_file, f"promote: failed {rel!r} — {exc}")
+            logger.warning("Promotion failed for %r: %s", rel, exc)
+
+    if not promoted:
+        return [], "failed"
+    return promoted, "performed"
+
 
 # Path to the persistent audit log for all sandbox executions.
 # Sibling of executions/ under var/runner/.
@@ -143,6 +200,30 @@ class RunnerService:
                 apply_error = f"Internal error: {exc}"
                 _append_log(log_file, f"phase: APPLY_FAILED → internal error: {exc}")
                 logger.exception("Unexpected error during apply phase")
+
+        # ------------------------------------------------------------------
+        # Phase 2.1: promote validated workspace files back to original repo
+        # ------------------------------------------------------------------
+        promoted_files: List[str] = []
+        promotion_status: Optional[str] = None
+
+        if apply_error is None and modified_files:
+            _append_log(log_file, "phase: PROMOTE_START")
+            try:
+                promoted_files, promotion_status = _promote_changes(
+                    workspace_path=workspace_path,
+                    repo_root=request.repo_path,
+                    modified_files=modified_files,
+                    log_file=log_file,
+                )
+                _append_log(
+                    log_file,
+                    f"phase: PROMOTE_DONE → {promotion_status} ({len(promoted_files)} files)",
+                )
+            except Exception as exc:
+                promotion_status = "failed"
+                _append_log(log_file, f"phase: PROMOTE_FAILED → {exc}")
+                logger.exception("Unexpected error during promotion phase")
 
         # ------------------------------------------------------------------
         # Phase 2.5: sandbox execution via RunnerAPI (Docker)
@@ -258,6 +339,8 @@ class RunnerService:
             authorized_plan_info=authorized_plan_info,
             sandbox_metadata=sandbox_metadata,
             changes_detail=changes_detail if changes_detail else None,
+            promoted_files=promoted_files if promoted_files else None,
+            promotion_status=promotion_status,
         )
 
         # ------------------------------------------------------------------
@@ -475,6 +558,9 @@ class RunnerService:
                 "sandbox_execution": result.sandbox_metadata,
                 # M2D audit — per-file change detail.
                 "changes_detail": result.changes_detail,
+                # M2F.1 promotion — files copied from workspace back to repo.
+                "promoted_files": result.promoted_files,
+                "promotion_status": result.promotion_status,
             }
         )
 

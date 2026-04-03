@@ -706,6 +706,8 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
         "plan_id": authorized_plan.plan_id,
         "policy_id": authorized_plan.policy_id,
         "capability_scope": authorized_plan.capability_scope,
+        "promoted_files": runner_result.promoted_files or [],
+        "promotion_status": runner_result.promotion_status,
     }
 
     if runner_result.error or final_status == "failed":
@@ -726,6 +728,7 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
             error={"type": "RunnerFailed", "message": error_msg},
         )
 
+    promoted = runner_result.promoted_files or []
     lines = [
         "CODE · aplicado vía runner auditado",
         f"✓ Ejecución auditada: {execution_id}",
@@ -733,6 +736,8 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
     ]
     if modified:
         lines.append(f"  Modificados: {', '.join(modified)}")
+    if promoted:
+        lines.append(f"  Propagados al repo: {', '.join(promoted)}")
     lines.append(f"Status: {final_status or 'success'}")
 
     return make_domain_result(
@@ -755,6 +760,8 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
             "report_md_path": runner_result.report_md_path,
             "audit_summary": audit_summary,
             "changes_detail": runner_result.changes_detail or [],
+            "promoted_files": promoted,
+            "promotion_status": runner_result.promotion_status,
         },
         trace_id=plan.get("trace_id"),
         plan_id=plan.get("plan_id"),
