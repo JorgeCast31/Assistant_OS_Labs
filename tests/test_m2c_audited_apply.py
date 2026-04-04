@@ -439,3 +439,202 @@ class TestRunnerFailureStructuredError:
                 assert key in audit, f"audit_summary missing key {key!r} on failure"
         finally:
             cp._applied_proposals = orig_set
+
+
+# ---------------------------------------------------------------------------
+# Scenario 6: Dispatch hardening — explicit failures (FASE FINAL)
+# ---------------------------------------------------------------------------
+
+
+class TestDispatchHardening:
+    """
+    Contract: every implicit dispatch behaviour is replaced by an explicit error.
+
+    1. plan without plan_id → ExecutionPlanViolation
+    2. phase='apply' without proposal → ExecutionPlanViolation
+    3. proposal.changes present but all entries invalid → InvalidChanges
+    """
+
+    def test_missing_plan_id_returns_execution_plan_violation(self, tmp_path):
+        """execute() with no plan_id must return ExecutionPlanViolation immediately."""
+        plan = _make_plan(ACTION_CODE_FIX, payload={
+            "target_file": "src/foo.py",
+            "workspace": str(tmp_path),
+        })
+        plan.pop("plan_id")  # remove the plan_id entirely
+
+        result = code_execute(plan, "ctx-hard-1a")
+
+        assert not result["ok"]
+        assert result["error"]["type"] == "ExecutionPlanViolation"
+        assert "plan_id" in result["error"]["message"]
+
+    def test_empty_plan_id_returns_execution_plan_violation(self, tmp_path):
+        """execute() with plan_id='' must also return ExecutionPlanViolation."""
+        plan = _make_plan(ACTION_CODE_FIX, payload={
+            "target_file": "src/foo.py",
+            "workspace": str(tmp_path),
+        })
+        plan["plan_id"] = ""
+
+        result = code_execute(plan, "ctx-hard-1b")
+
+        assert not result["ok"]
+        assert result["error"]["type"] == "ExecutionPlanViolation"
+
+    def test_apply_without_proposal_returns_execution_plan_violation(self, tmp_path):
+        """phase='apply' with no proposal must return ExecutionPlanViolation — not preview."""
+        plan = _make_plan(ACTION_CODE_FIX, payload={
+            "phase": "apply",
+            "workspace": str(tmp_path),
+            # proposal intentionally absent
+        })
+
+        result = code_execute(plan, "ctx-hard-2a")
+
+        assert not result["ok"]
+        assert result["error"]["type"] == "ExecutionPlanViolation"
+        assert "proposal" in result["error"]["message"]
+        # Must NOT degrade to a preview result
+        assert result.get("result_type") != "code_preview"
+
+    def test_apply_with_only_invalid_changes_returns_invalid_changes(self, tmp_path):
+        """
+        proposal.changes present but all entries fail validation →
+        InvalidChanges error, NOT a runner call.
+        """
+        import assistant_os.pipelines.code_pipeline as cp
+        orig_set = cp._applied_proposals
+        cp._applied_proposals = set()
+        try:
+            # First build a valid preview to get a real proposal_id / metadata
+            proposal = code_execute(
+                _make_plan(ACTION_CODE_FIX, payload={
+                    "target_file": "src/foo.py",
+                    "workspace": str(tmp_path),
+                }),
+                "ctx-hard-3a",
+            )["data"]["proposal"]
+
+            # Inject a "changes" list whose entries are all invalid:
+            #   - one with an absolute path (rejected by path guard)
+            #   - one with empty content (rejected by content guard)
+            proposal["changes"] = [
+                {"op": "file_replace", "path": "/etc/evil.py", "content": "bad"},
+                {"op": "file_replace", "path": "ok.py", "content": ""},
+            ]
+
+            apply_plan = _make_plan(ACTION_CODE_FIX, payload={
+                "phase": "apply",
+                "proposal": proposal,
+                "workspace": str(tmp_path),
+            })
+
+            with patch(RUNNER_PATCH) as MockRunner:
+                result = code_execute(apply_plan, "ctx-hard-3b")
+
+            assert not result["ok"]
+            assert result["error"]["type"] == "InvalidChanges"
+            assert "no valid changes" in result["error"]["message"]
+            # Runner must NOT have been called
+            MockRunner.assert_not_called()
+        finally:
+            cp._applied_proposals = orig_set
+
+    def test_apply_with_missing_proposal_id_returns_execution_plan_violation(self, tmp_path):
+        """proposal without proposal_id → ExecutionPlanViolation before any runner call."""
+        import assistant_os.pipelines.code_pipeline as cp
+        orig_set = cp._applied_proposals
+        cp._applied_proposals = set()
+        try:
+            proposal = code_execute(
+                _make_plan(ACTION_CODE_FIX, payload={
+                    "target_file": "src/foo.py",
+                    "workspace": str(tmp_path),
+                }),
+                "ctx-hard-4a",
+            )["data"]["proposal"]
+
+            # Remove proposal_id entirely
+            proposal.pop("proposal_id", None)
+
+            apply_plan = _make_plan(ACTION_CODE_FIX, payload={
+                "phase": "apply",
+                "proposal": proposal,
+                "workspace": str(tmp_path),
+            })
+
+            with patch(RUNNER_PATCH) as MockRunner:
+                result = code_execute(apply_plan, "ctx-hard-4b")
+
+            assert not result["ok"]
+            assert result["error"]["type"] == "ExecutionPlanViolation"
+            assert "proposal_id" in result["error"]["message"]
+            MockRunner.assert_not_called()
+        finally:
+            cp._applied_proposals = orig_set
+
+    def test_apply_with_empty_proposal_id_returns_execution_plan_violation(self, tmp_path):
+        """proposal with proposal_id='' → ExecutionPlanViolation before any runner call."""
+        import assistant_os.pipelines.code_pipeline as cp
+        orig_set = cp._applied_proposals
+        cp._applied_proposals = set()
+        try:
+            proposal = code_execute(
+                _make_plan(ACTION_CODE_FIX, payload={
+                    "target_file": "src/foo.py",
+                    "workspace": str(tmp_path),
+                }),
+                "ctx-hard-5a",
+            )["data"]["proposal"]
+
+            proposal["proposal_id"] = ""  # explicitly empty
+
+            apply_plan = _make_plan(ACTION_CODE_FIX, payload={
+                "phase": "apply",
+                "proposal": proposal,
+                "workspace": str(tmp_path),
+            })
+
+            with patch(RUNNER_PATCH) as MockRunner:
+                result = code_execute(apply_plan, "ctx-hard-5b")
+
+            assert not result["ok"]
+            assert result["error"]["type"] == "ExecutionPlanViolation"
+            MockRunner.assert_not_called()
+        finally:
+            cp._applied_proposals = orig_set
+
+    def test_needs_review_final_status_returns_ok_false(self, tmp_path):
+        """Runner final_status='needs_review' must map to ok=False with NeedsReview error."""
+        import assistant_os.pipelines.code_pipeline as cp
+        orig_set = cp._applied_proposals
+        cp._applied_proposals = set()
+        try:
+            proposal = code_execute(
+                _make_plan(ACTION_CODE_FIX, payload={
+                    "target_file": "src/foo.py",
+                    "workspace": str(tmp_path),
+                }),
+                "ctx-hard-6a",
+            )["data"]["proposal"]
+
+            apply_plan = _make_plan(ACTION_CODE_FIX, payload={
+                "phase": "apply",
+                "proposal": proposal,
+                "workspace": str(tmp_path),
+            })
+
+            needs_review_mock = _mock_runner_ok()
+            needs_review_mock.final_status = "needs_review"
+            needs_review_mock.error = None
+
+            with patch(RUNNER_PATCH) as MockExec:
+                MockExec.return_value.execute.return_value = needs_review_mock
+                result = code_execute(apply_plan, "ctx-hard-6b")
+
+            assert not result["ok"], "needs_review must NOT be ok=True"
+            assert result["error"]["type"] == "NeedsReview"
+            assert result["result_type"] == "code_apply"
+        finally:
+            cp._applied_proposals = orig_set

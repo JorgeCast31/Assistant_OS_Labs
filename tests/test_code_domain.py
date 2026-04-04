@@ -1038,6 +1038,7 @@ class TestObservabilityFields:
             assert field in data, f"missing field: {field!r}"
 
     def test_apply_has_apply_ready_flag(self, tmp_path):
+        from unittest.mock import patch, MagicMock
         import assistant_os.pipelines.code_pipeline as cp
         original_set = cp._applied_proposals
         cp._applied_proposals = set()
@@ -1047,16 +1048,29 @@ class TestObservabilityFields:
                 "ctx-obs-06",
             )
             proposal = preview["data"]["proposal"]
-            apply_result = code_execute(
-                _make_plan(ACTION_CODE_FIX, payload={"phase": "apply", "proposal": proposal, "workspace": str(tmp_path)}),
-                "ctx-obs-07",
-            )
+            _m = MagicMock()
+            _m.execution_id = "exec-obs-06"
+            _m.final_status = "success"
+            _m.error = None
+            _m.modified_files = []
+            _m.report_json_path = None
+            _m.report_md_path = None
+            _m.promoted_files = None
+            _m.promotion_status = None
+            _m.changes_detail = None
+            with patch("assistant_os.executors.runner_backed_executor.RunnerBackedExecutor") as MockExec:
+                MockExec.return_value.execute.return_value = _m
+                apply_result = code_execute(
+                    _make_plan(ACTION_CODE_FIX, payload={"phase": "apply", "proposal": proposal, "workspace": str(tmp_path)}),
+                    "ctx-obs-07",
+                )
             assert apply_result["ok"]
             assert apply_result["data"]["apply_ready"] is True
         finally:
             cp._applied_proposals = original_set
 
     def test_apply_has_single_use_flag(self, tmp_path):
+        from unittest.mock import patch, MagicMock
         import assistant_os.pipelines.code_pipeline as cp
         original_set = cp._applied_proposals
         cp._applied_proposals = set()
@@ -1065,12 +1079,24 @@ class TestObservabilityFields:
                 _make_plan(ACTION_CODE_FIX, payload={"target_file": "f.py", "workspace": str(tmp_path)}),
                 "ctx-obs-08",
             )
-            apply_result = code_execute(
-                _make_plan(ACTION_CODE_FIX, payload={
-                    "phase": "apply", "proposal": preview["data"]["proposal"], "workspace": str(tmp_path),
-                }),
-                "ctx-obs-09",
-            )
+            _m = MagicMock()
+            _m.execution_id = "exec-obs-08"
+            _m.final_status = "success"
+            _m.error = None
+            _m.modified_files = []
+            _m.report_json_path = None
+            _m.report_md_path = None
+            _m.promoted_files = None
+            _m.promotion_status = None
+            _m.changes_detail = None
+            with patch("assistant_os.executors.runner_backed_executor.RunnerBackedExecutor") as MockExec:
+                MockExec.return_value.execute.return_value = _m
+                apply_result = code_execute(
+                    _make_plan(ACTION_CODE_FIX, payload={
+                        "phase": "apply", "proposal": preview["data"]["proposal"], "workspace": str(tmp_path),
+                    }),
+                    "ctx-obs-09",
+                )
             assert apply_result["data"]["single_use"] is True
         finally:
             cp._applied_proposals = original_set
@@ -1194,6 +1220,7 @@ class TestPreviewMessageShape:
                 "domain": "CODE",
                 "raw_text": "create new module",
                 "domain_payload": {"target_file": "src/new.py", "workspace": str(tmp_path)},
+                "plan_id": "p-create-type",
             }
             result = code_execute(plan, "ctx-create-type")
         finally:
@@ -1298,6 +1325,7 @@ class TestPreviewMessageConsistency:
                     "target_file": "src/app.py",
                     "workspace": str(tmp_path),
                 },
+                "plan_id": "p-cons",
             }
             return code_execute(plan, "ctx-cons")
         finally:
@@ -1509,6 +1537,7 @@ class TestPreviewDegradationMetadata:
                     "target_file": target_file,
                     "workspace": str(tmp_path),
                 },
+                "plan_id": "p-deg",
             }
             return code_execute(plan, "ctx-deg")
         finally:
@@ -1706,6 +1735,7 @@ class TestPreviewReviewability:
                     "target_file": target_file,
                     "workspace": str(tmp_path),
                 },
+                "plan_id": "p-rev",
             }
             return code_execute(plan, "ctx-rev")
         finally:
@@ -1852,6 +1882,7 @@ class TestPreviewApplicability:
                     "target_file": target_file,
                     "workspace": str(tmp_path),
                 },
+                "plan_id": "p-app",
             }
             return code_execute(plan, "ctx-app")
         finally:
