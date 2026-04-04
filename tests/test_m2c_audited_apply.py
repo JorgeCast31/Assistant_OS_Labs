@@ -95,6 +95,7 @@ class TestConfirmRunnerExecutes:
 
             apply_plan = _make_plan(ACTION_CODE_FIX, payload={
                 "phase": "apply", "proposal": proposal, "workspace": str(tmp_path),
+                "execution_mode": "FULL_EXECUTE",
             })
 
             with patch(RUNNER_PATCH) as MockExec:
@@ -122,6 +123,7 @@ class TestConfirmRunnerExecutes:
 
             apply_plan = _make_plan(ACTION_CODE_FIX, payload={
                 "phase": "apply", "proposal": proposal, "workspace": str(tmp_path),
+                "execution_mode": "FULL_EXECUTE",
             })
 
             with patch(RUNNER_PATCH) as MockExec:
@@ -148,6 +150,7 @@ class TestConfirmRunnerExecutes:
 
             apply_plan = _make_plan(ACTION_CODE_FIX, payload={
                 "phase": "apply", "proposal": proposal, "workspace": str(tmp_path),
+                "execution_mode": "FULL_EXECUTE",
             })
 
             with patch(RUNNER_PATCH) as MockExec:
@@ -279,7 +282,7 @@ class TestExecutionIdEqualsPlanId:
             _build_authorized_plan_from_kernel,
             _build_runner_execution_request,
         )
-        plan = _make_plan(ACTION_CODE_FIX, payload={"workspace": str(tmp_path)})
+        plan = _make_plan(ACTION_CODE_FIX, payload={"workspace": str(tmp_path), "execution_mode": "FULL_EXECUTE"})
         proposal = {"proposal_id": "p1", "changes": []}
         ap = _build_authorized_plan_from_kernel(plan)
         req = _build_runner_execution_request(plan, proposal, ap)
@@ -300,6 +303,7 @@ class TestExecutionIdEqualsPlanId:
 
             apply_plan = _make_plan(ACTION_CODE_FIX, payload={
                 "phase": "apply", "proposal": proposal, "workspace": str(tmp_path),
+                "execution_mode": "FULL_EXECUTE",
             })
             plan_id = apply_plan["plan_id"]
 
@@ -340,6 +344,7 @@ class TestRunnerFailureStructuredError:
 
             apply_plan = _make_plan(ACTION_CODE_FIX, payload={
                 "phase": "apply", "proposal": proposal, "workspace": str(tmp_path),
+                "execution_mode": "FULL_EXECUTE",
             })
 
             with patch(RUNNER_PATCH) as MockExec:
@@ -369,6 +374,7 @@ class TestRunnerFailureStructuredError:
 
             apply_plan = _make_plan(ACTION_CODE_FIX, payload={
                 "phase": "apply", "proposal": proposal, "workspace": str(tmp_path),
+                "execution_mode": "FULL_EXECUTE",
             })
 
             with patch(RUNNER_PATCH) as MockExec:
@@ -396,6 +402,7 @@ class TestRunnerFailureStructuredError:
 
             apply_plan = _make_plan(ACTION_CODE_FIX, payload={
                 "phase": "apply", "proposal": proposal, "workspace": str(tmp_path),
+                "execution_mode": "FULL_EXECUTE",
             })
 
             with patch(RUNNER_PATCH) as MockExec:
@@ -425,6 +432,7 @@ class TestRunnerFailureStructuredError:
 
             apply_plan = _make_plan(ACTION_CODE_FIX, payload={
                 "phase": "apply", "proposal": proposal, "workspace": str(tmp_path),
+                "execution_mode": "FULL_EXECUTE",
             })
 
             with patch(RUNNER_PATCH) as MockExec:
@@ -439,3 +447,86 @@ class TestRunnerFailureStructuredError:
                 assert key in audit, f"audit_summary missing key {key!r} on failure"
         finally:
             cp._applied_proposals = orig_set
+
+
+# ---------------------------------------------------------------------------
+# Scenario 6: ExecutionPlan enforcement (Guard 3)
+# ---------------------------------------------------------------------------
+
+class TestExecutionPlanEnforcement:
+    """execution_mode in domain_payload is the single enforcement source."""
+
+    def test_execution_plan_complete_executes_correctly(self, tmp_path):
+        """Apply with execution_mode in domain_payload routes through runner."""
+        import assistant_os.pipelines.code_pipeline as cp
+        orig_set = cp._applied_proposals
+        cp._applied_proposals = set()
+        try:
+            proposal = code_execute(
+                _make_plan(ACTION_CODE_FIX, payload={
+                    "target_file": "src/foo.py", "workspace": str(tmp_path),
+                }),
+                "ctx-m2c-6a",
+            )["data"]["proposal"]
+
+            apply_plan = _make_plan(ACTION_CODE_FIX, payload={
+                "phase": "apply", "proposal": proposal, "workspace": str(tmp_path),
+                "execution_mode": "FULL_EXECUTE",
+            })
+
+            with patch(RUNNER_PATCH) as MockExec:
+                MockExec.return_value.execute.return_value = _mock_runner_ok()
+                result = code_execute(apply_plan, "ctx-m2c-6b")
+
+            assert result["ok"], f"expected success, got: {result}"
+            assert result["result_type"] == RESULT_TYPE_CODE_APPLY
+            MockExec.return_value.execute.assert_called_once()
+        finally:
+            cp._applied_proposals = orig_set
+
+    def test_execution_plan_missing_execution_mode_fails_explicitly(self, tmp_path):
+        """Apply with no execution_mode in domain_payload raises ExecutionPlanViolation."""
+        import assistant_os.pipelines.code_pipeline as cp
+        orig_set = cp._applied_proposals
+        cp._applied_proposals = set()
+        try:
+            proposal = code_execute(
+                _make_plan(ACTION_CODE_FIX, payload={
+                    "target_file": "src/foo.py", "workspace": str(tmp_path),
+                }),
+                "ctx-m2c-6c",
+            )["data"]["proposal"]
+
+            # No execution_mode in payload — Guard 3 must reject this.
+            apply_plan = _make_plan(ACTION_CODE_FIX, payload={
+                "phase": "apply", "proposal": proposal, "workspace": str(tmp_path),
+            })
+
+            with patch(RUNNER_PATCH) as MockExec:
+                result = code_execute(apply_plan, "ctx-m2c-6d")
+
+            assert not result["ok"]
+            assert result["error"]["type"] == "ExecutionPlanViolation", (
+                f"Expected ExecutionPlanViolation, got: {result['error']}"
+            )
+            MockExec.return_value.execute.assert_not_called()
+        finally:
+            cp._applied_proposals = orig_set
+
+    @pytest.mark.parametrize("mode", ["DRY_RUN", "SAFE_EXECUTE", "FULL_EXECUTE"])
+    def test_execution_plan_mode_governs_runner_request(self, tmp_path, mode):
+        """execution_mode from domain_payload is forwarded to RunnerExecutionRequest."""
+        from assistant_os.pipelines.code_pipeline import (
+            _build_authorized_plan_from_kernel,
+            _build_runner_execution_request,
+        )
+        plan = _make_plan(ACTION_CODE_FIX, payload={
+            "workspace": str(tmp_path),
+            "execution_mode": mode,
+        })
+        proposal = {"proposal_id": "p-mode", "changes": []}
+        ap = _build_authorized_plan_from_kernel(plan)
+        req = _build_runner_execution_request(plan, proposal, ap)
+        assert req.execution_mode == mode, (
+            f"Expected execution_mode={mode!r}, got {req.execution_mode!r}"
+        )

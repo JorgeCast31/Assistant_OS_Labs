@@ -208,6 +208,7 @@ def test_runner_service_applies_changes(sample_repo):
         changes=[
             {"op": "file_replace", "path": "generated.py", "content": "result = 42\n"},
         ],
+        execution_mode="SAFE_EXECUTE",
     )
     result = service.run(request)
 
@@ -223,6 +224,7 @@ def test_runner_service_no_changes_stays_workspace_ready(sample_repo):
         execution_id="s2-noop-001",
         repo_path=str(sample_repo),
         changes=None,
+        execution_mode="SAFE_EXECUTE",
     )
     result = service.run(request)
 
@@ -251,6 +253,7 @@ def test_runner_service_modified_files_in_metadata(sample_repo):
         execution_id="s2-meta-001",
         repo_path=str(sample_repo),
         changes=[{"op": "file_replace", "path": "out.py", "content": "x = 1\n"}],
+        execution_mode="SAFE_EXECUTE",
     )
     result = service.run(request)
 
@@ -265,6 +268,7 @@ def test_runner_service_apply_phases_logged(sample_repo):
         execution_id="s2-log-001",
         repo_path=str(sample_repo),
         changes=[{"op": "file_replace", "path": "t.py", "content": ""}],
+        execution_mode="SAFE_EXECUTE",
     )
     result = service.run(request)
 

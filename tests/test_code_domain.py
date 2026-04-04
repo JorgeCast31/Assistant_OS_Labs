@@ -569,7 +569,8 @@ class TestApplySafety:
             # Step 2: apply (simulate confirmed proposal)
             apply_plan = _make_plan(
                 ACTION_CODE_FIX,
-                payload={"phase": "apply", "proposal": proposal, "workspace": str(tmp_path)},
+                payload={"phase": "apply", "proposal": proposal, "workspace": str(tmp_path),
+                         "execution_mode": "FULL_EXECUTE"},
             )
             _mock_result = MagicMock()
             _mock_result.execution_id = "test-exec-apply"
@@ -603,7 +604,8 @@ class TestApplySafety:
             proposal = code_execute(preview_plan, "ctx-dbl-01")["data"]["proposal"]
 
             apply_plan = _make_plan(
-                ACTION_CODE_FIX, payload={"phase": "apply", "proposal": proposal, "workspace": str(tmp_path)},
+                ACTION_CODE_FIX, payload={"phase": "apply", "proposal": proposal, "workspace": str(tmp_path),
+                                          "execution_mode": "FULL_EXECUTE"},
             )
             _mock_result = MagicMock()
             _mock_result.execution_id = "test-exec-dbl"
@@ -963,6 +965,7 @@ class TestSmokeHardening:
                 "phase": "apply",
                 "proposal": proposal,
                 "workspace": str(tmp_path),
+                "execution_mode": "FULL_EXECUTE",
             })
             _mock_result = MagicMock()
             _mock_result.execution_id = "test-exec-su"
@@ -1048,7 +1051,8 @@ class TestObservabilityFields:
             )
             proposal = preview["data"]["proposal"]
             apply_result = code_execute(
-                _make_plan(ACTION_CODE_FIX, payload={"phase": "apply", "proposal": proposal, "workspace": str(tmp_path)}),
+                _make_plan(ACTION_CODE_FIX, payload={"phase": "apply", "proposal": proposal, "workspace": str(tmp_path),
+                                                     "execution_mode": "FULL_EXECUTE"}),
                 "ctx-obs-07",
             )
             assert apply_result["ok"]
@@ -1068,6 +1072,7 @@ class TestObservabilityFields:
             apply_result = code_execute(
                 _make_plan(ACTION_CODE_FIX, payload={
                     "phase": "apply", "proposal": preview["data"]["proposal"], "workspace": str(tmp_path),
+                    "execution_mode": "FULL_EXECUTE",
                 }),
                 "ctx-obs-09",
             )
@@ -1090,6 +1095,7 @@ class TestObservabilityFields:
             proposal = preview["data"]["proposal"]
             apply_plan = _make_plan(ACTION_CODE_FIX, payload={
                 "phase": "apply", "proposal": proposal, "workspace": str(tmp_path),
+                "execution_mode": "FULL_EXECUTE",
             })
             _mock_result = MagicMock()
             _mock_result.execution_id = "test-exec-obs"
@@ -2191,7 +2197,8 @@ class TestApplyContractHardening:
                 proposal = dict(proposal, **proposal_override)
             apply_plan = _make_plan(
                 ACTION_CODE_FIX,
-                payload={"phase": "apply", "proposal": proposal, "workspace": str(tmp_path)},
+                payload={"phase": "apply", "proposal": proposal, "workspace": str(tmp_path),
+                         "execution_mode": "FULL_EXECUTE"},
             )
             _mock_result = MagicMock()
             _mock_result.execution_id = apply_plan.get("plan_id", "test-exec-ach")

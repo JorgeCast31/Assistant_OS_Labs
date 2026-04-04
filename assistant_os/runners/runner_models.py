@@ -44,6 +44,10 @@ class RunnerExecutionRequest:
     # When code is set alongside authorized_plan, the sandbox execution is triggered.
     authorized_plan: Optional["AuthorizedPlan"] = field(default=None, repr=False)
     code: Optional[str] = field(default=None, repr=False)
+    # Policy enforcement — governs apply and promote in RunnerService.
+    # Required: "DRY_RUN" | "SAFE_EXECUTE" | "FULL_EXECUTE"
+    # Absent (None) → RunnerService raises a contract violation error.
+    execution_mode: Optional[str] = None
 
 
 @dataclass
@@ -111,3 +115,9 @@ class RunnerExecutionResult:
     sandbox_metadata: Optional[Dict[str, Any]] = field(default=None, repr=False)
     # M2D audit — per-file change detail (path, operation, before_hash, after_hash, diff).
     changes_detail: Optional[List[Dict[str, Any]]] = field(default=None, repr=False)
+    # Policy promotion tracking — populated by RunnerService after execution_mode enforcement.
+    promoted_files: List[str] = field(default_factory=list)
+    promotion_status: Optional[str] = None
+    # Rollback — populated when backup ran before promote (FULL_EXECUTE only).
+    backup_path: Optional[str] = None
+    backup_manifest: Optional[Dict[str, str]] = field(default=None, repr=False)

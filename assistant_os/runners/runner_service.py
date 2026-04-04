@@ -20,6 +20,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -121,28 +122,53 @@ class RunnerService:
         workspace_path = Path(workspace.workspace_path)
 
         # ------------------------------------------------------------------
+        # Policy enforcement: execution_mode is the single control source.
+        # Missing execution_mode is a hard contract violation — no fallback.
+        # ------------------------------------------------------------------
+        execution_mode = request.execution_mode
+        if execution_mode is None:
+            _append_log(log_file, "[POLICY] execution_mode=MISSING → contract violation")
+            _policy_error: Optional[str] = (
+                "execution_mode is required (contract violation)"
+            )
+        else:
+            _append_log(log_file, f"[POLICY] execution_mode={execution_mode}")
+            _append_log(
+                log_file,
+                f"[POLICY] apply_allowed={execution_mode in ('SAFE_EXECUTE', 'FULL_EXECUTE')}",
+            )
+            _append_log(
+                log_file,
+                f"[POLICY] promote_allowed={execution_mode == 'FULL_EXECUTE'}",
+            )
+            _policy_error = None
+
+        # ------------------------------------------------------------------
         # Phase 2: apply
         # ------------------------------------------------------------------
         modified_files: List[str] = []
         changes_detail: List[Dict[str, Any]] = []
-        apply_error: Optional[str] = None
+        apply_error: Optional[str] = _policy_error
 
-        if request.changes:
-            _append_log(log_file, "phase: APPLY_START")
-            try:
-                modified_files, changes_detail = ApplyEngine().apply_changes_with_audit(
-                    workspace_path=workspace_path,
-                    changes=request.changes,
-                    log_file=log_file,
-                )
-                _append_log(log_file, "phase: APPLY_DONE")
-            except (ApplyError, PolicyViolationError) as exc:
-                apply_error = str(exc)
-                _append_log(log_file, f"phase: APPLY_FAILED → {exc}")
-            except Exception as exc:
-                apply_error = f"Internal error: {exc}"
-                _append_log(log_file, f"phase: APPLY_FAILED → internal error: {exc}")
-                logger.exception("Unexpected error during apply phase")
+        if apply_error is None:
+            if execution_mode == "DRY_RUN":
+                _append_log(log_file, "phase: APPLY_SKIPPED (DRY_RUN)")
+            elif request.changes:
+                _append_log(log_file, "phase: APPLY_START")
+                try:
+                    modified_files, changes_detail = ApplyEngine().apply_changes_with_audit(
+                        workspace_path=workspace_path,
+                        changes=request.changes,
+                        log_file=log_file,
+                    )
+                    _append_log(log_file, "phase: APPLY_DONE")
+                except (ApplyError, PolicyViolationError) as exc:
+                    apply_error = str(exc)
+                    _append_log(log_file, f"phase: APPLY_FAILED → {exc}")
+                except Exception as exc:
+                    apply_error = f"Internal error: {exc}"
+                    _append_log(log_file, f"phase: APPLY_FAILED → internal error: {exc}")
+                    logger.exception("Unexpected error during apply phase")
 
         # ------------------------------------------------------------------
         # Phase 2.5: sandbox execution via RunnerAPI (Docker)
@@ -211,6 +237,43 @@ class RunnerService:
                 logger.exception("Unexpected error during sandbox execution phase")
 
         # ------------------------------------------------------------------
+        # Phase 2.1: backup + promote (policy-governed)
+        # ------------------------------------------------------------------
+        promoted_files: List[str] = []
+        promotion_status: Optional[str] = None
+        backup_path_str: Optional[str] = None
+        backup_manifest_result: Optional[Dict[str, str]] = None
+
+        if execution_mode != "FULL_EXECUTE":
+            promoted_files = []
+            promotion_status = "skipped_policy"
+        elif not apply_error and modified_files:
+            # Backup repo files BEFORE promote so restore is always possible.
+            backup_dir = Path(workspace.artifacts_path) / "_backup"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            backup_manifest_result = self._backup_files(
+                repo_root=Path(request.repo_path),
+                backup_dir=backup_dir,
+                files=modified_files,
+            )
+            backup_path_str = str(backup_dir)
+            _append_log(
+                log_file,
+                f"[BACKUP] files_backed_up={list(backup_manifest_result.keys())}",
+            )
+            _append_log(log_file, f"[BACKUP] manifest={backup_manifest_result}")
+
+            promoted_files, promotion_status = self._promote_changes(
+                workspace_path=workspace_path,
+                repo_root=Path(request.repo_path),
+                modified_files=modified_files,
+                log_file=log_file,
+            )
+        else:
+            promoted_files = []
+            promotion_status = "skipped"
+
+        # ------------------------------------------------------------------
         # Phase 3: test (skipped if apply or sandbox failed)
         # ------------------------------------------------------------------
         test_result: Optional[TestExecutionResult] = None
@@ -258,6 +321,10 @@ class RunnerService:
             authorized_plan_info=authorized_plan_info,
             sandbox_metadata=sandbox_metadata,
             changes_detail=changes_detail if changes_detail else None,
+            promoted_files=promoted_files,
+            promotion_status=promotion_status,
+            backup_path=backup_path_str,
+            backup_manifest=backup_manifest_result,
         )
 
         # ------------------------------------------------------------------
@@ -380,6 +447,108 @@ class RunnerService:
                         f"changes[{i}]: patch op for {path!r} has empty 'patch' field."
                     )
 
+    def _backup_files(
+        self,
+        repo_root: Path,
+        backup_dir: Path,
+        files: List[str],
+    ) -> Dict[str, str]:
+        """Snapshot repo files into backup_dir before promote.
+
+        Returns a manifest dict: {rel_path: "existing" | "new_file"}.
+        "existing"  — file was present in repo and has been copied to backup_dir.
+        "new_file"  — file did not exist in repo; nothing to copy, but we record it
+                      so restore can delete it if needed.
+
+        Saves manifest.json inside backup_dir for durable recovery.
+        """
+        manifest: Dict[str, str] = {}
+        for rel_path in files:
+            src = repo_root / rel_path
+            if src.exists():
+                dst = backup_dir / rel_path
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                manifest[rel_path] = "existing"
+            else:
+                manifest[rel_path] = "new_file"
+
+        manifest_file = backup_dir / "manifest.json"
+        manifest_file.write_text(
+            json.dumps({"files": manifest}, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return manifest
+
+    def _restore_files(
+        self,
+        repo_root: Path,
+        backup_dir: Path,
+        manifest: Dict[str, str],
+    ) -> List[str]:
+        """Restore repo to pre-promote state using a backup manifest.
+
+        "existing"  — copy file from backup_dir back to repo.
+        "new_file"  — delete file from repo if it exists (it was created by promote).
+
+        Returns the list of relative paths that were successfully restored/deleted.
+        """
+        restored: List[str] = []
+        for rel_path, status in manifest.items():
+            dst = repo_root / rel_path
+            if status == "existing":
+                src = backup_dir / rel_path
+                if src.exists():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dst)
+                    restored.append(rel_path)
+                    logger.debug("restore: RESTORED %r", rel_path)
+                else:
+                    logger.warning("restore: backup src missing for %r — skipping", rel_path)
+            elif status == "new_file":
+                if dst.exists():
+                    dst.unlink()
+                    restored.append(rel_path)
+                    logger.debug("restore: DELETED %r (was new_file)", rel_path)
+        return restored
+
+    def _promote_changes(
+        self,
+        workspace_path: Path,
+        repo_root: Path,
+        modified_files: List[str],
+        log_file: Path,
+    ) -> tuple:
+        """Copy modified files from sandbox workspace back to the original repo.
+
+        Path traversal guard: each destination must resolve inside repo_root.
+        Returns (promoted_files, promotion_status).
+        """
+        promoted: List[str] = []
+        _append_log(log_file, f"phase: PROMOTE_START files={modified_files}")
+        for rel_path in modified_files:
+            src = workspace_path / rel_path
+            dst = repo_root / rel_path
+            try:
+                dst.resolve().relative_to(repo_root.resolve())
+            except ValueError:
+                _append_log(log_file, f"promote: SKIP (traversal) {rel_path!r}")
+                logger.warning("Promote skipped (path traversal): %r", rel_path)
+                continue
+            if not src.exists():
+                _append_log(log_file, f"promote: SKIP (src missing) {rel_path!r}")
+                continue
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                promoted.append(rel_path)
+                _append_log(log_file, f"promote: COPIED {rel_path!r}")
+            except OSError as exc:
+                _append_log(log_file, f"promote: ERROR {rel_path!r} → {exc}")
+                logger.warning("Promote error for %r: %s", rel_path, exc)
+        _append_log(log_file, f"phase: PROMOTE_DONE promoted={promoted}")
+        return promoted, "performed"
+
     def _determine_status(
         self,
         modified_files: List[str],
@@ -475,6 +644,12 @@ class RunnerService:
                 "sandbox_execution": result.sandbox_metadata,
                 # M2D audit — per-file change detail.
                 "changes_detail": result.changes_detail,
+                # Policy promotion tracking.
+                "promoted_files": result.promoted_files,
+                "promotion_status": result.promotion_status,
+                # Rollback backup.
+                "backup_path": result.backup_path,
+                "backup_manifest": result.backup_manifest,
             }
         )
 

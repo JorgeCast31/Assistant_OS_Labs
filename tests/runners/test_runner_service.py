@@ -29,6 +29,7 @@ def test_run_happy_path(service, sample_repo):
     request = RunnerExecutionRequest(
         execution_id="svc-test-001",
         repo_path=str(sample_repo),
+        execution_mode="SAFE_EXECUTE",
     )
     result = service.run(request)
 
@@ -44,6 +45,7 @@ def test_run_creates_workspace_files(service, sample_repo):
     request = RunnerExecutionRequest(
         execution_id="svc-test-002",
         repo_path=str(sample_repo),
+        execution_mode="SAFE_EXECUTE",
     )
     result = service.run(request)
 
@@ -57,6 +59,7 @@ def test_run_writes_final_metadata(service, sample_repo):
     request = RunnerExecutionRequest(
         execution_id="svc-test-003",
         repo_path=str(sample_repo),
+        execution_mode="SAFE_EXECUTE",
     )
     result = service.run(request)
 
@@ -105,6 +108,7 @@ def test_run_result_summary_present(service, sample_repo):
     request = RunnerExecutionRequest(
         execution_id="svc-test-007",
         repo_path=str(sample_repo),
+        execution_mode="SAFE_EXECUTE",
     )
     result = service.run(request)
     assert result.summary != ""
@@ -200,6 +204,7 @@ def test_successful_run_does_not_write_preflight_log(service, sample_repo, monke
     request = RunnerExecutionRequest(
         execution_id="svc-pf-003",
         repo_path=str(sample_repo),
+        execution_mode="SAFE_EXECUTE",
     )
     service.run(request)
 
@@ -217,6 +222,7 @@ def test_test_start_logged_exactly_once(sample_repo):
         execution_id="svc-log-001",
         repo_path=str(sample_repo),
         test_spec={"command": [_PYTHON, "-m", "pytest", "-q"], "timeout_sec": 30},
+        execution_mode="SAFE_EXECUTE",
     )
     result = RunnerService().run(request)
 
@@ -239,6 +245,7 @@ def test_full_loop_changes_and_tests_passing_yields_success(sample_repo):
             {"op": "file_replace", "path": "test_gen.py", "content": "def test_ok():\n    assert True\n"},
         ],
         test_spec={"command": [_PYTHON, "-m", "pytest", "-q"], "timeout_sec": 30},
+        execution_mode="SAFE_EXECUTE",
     )
     result = RunnerService().run(request)
 
@@ -259,6 +266,7 @@ def test_full_loop_failing_tests_yields_failed(sample_repo):
             {"op": "file_replace", "path": "test_bad.py", "content": "def test_fail():\n    assert False\n"},
         ],
         test_spec={"command": [_PYTHON, "-m", "pytest", "-q"], "timeout_sec": 30},
+        execution_mode="SAFE_EXECUTE",
     )
     result = RunnerService().run(request)
 
@@ -277,6 +285,7 @@ def test_full_loop_needs_review_when_allow_review(sample_repo):
         ],
         test_spec=None,
         validation_spec={"require_tests": True, "allow_needs_review": True},
+        execution_mode="SAFE_EXECUTE",
     )
     result = RunnerService().run(request)
 
@@ -289,6 +298,7 @@ def test_full_loop_report_json_has_required_fields(sample_repo):
     request = RunnerExecutionRequest(
         execution_id="s4-rpt-001",
         repo_path=str(sample_repo),
+        execution_mode="SAFE_EXECUTE",
     )
     result = RunnerService().run(request)
 
@@ -303,6 +313,7 @@ def test_full_loop_done_json_has_required_fields(sample_repo):
     request = RunnerExecutionRequest(
         execution_id="s4-ntf-001",
         repo_path=str(sample_repo),
+        execution_mode="SAFE_EXECUTE",
     )
     result = RunnerService().run(request)
 
@@ -318,6 +329,7 @@ def test_full_loop_phases_logged(sample_repo):
     request = RunnerExecutionRequest(
         execution_id="s4-log-001",
         repo_path=str(sample_repo),
+        execution_mode="SAFE_EXECUTE",
     )
     result = RunnerService().run(request)
 
@@ -346,9 +358,186 @@ def test_full_loop_metadata_includes_final_status(sample_repo):
     request = RunnerExecutionRequest(
         execution_id="s4-meta-001",
         repo_path=str(sample_repo),
+        execution_mode="SAFE_EXECUTE",
     )
     result = RunnerService().run(request)
 
     data = json.loads(Path(result.artifacts_path, "metadata.json").read_text())
     assert "final_status" in data
     assert data["final_status"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Policy enforcement: execution_mode governs apply and promote
+# ---------------------------------------------------------------------------
+
+
+def test_policy_dry_run_skips_apply(service, sample_repo):
+    """DRY_RUN: apply_engine NOT called, promotion_status=skipped_policy, repo unchanged."""
+    original_content = (sample_repo / "app.py").read_text()
+    request = RunnerExecutionRequest(
+        execution_id="policy-dry-001",
+        repo_path=str(sample_repo),
+        changes=[{"op": "file_replace", "path": "app.py", "content": "x = CHANGED\n"}],
+        execution_mode="DRY_RUN",
+    )
+    result = service.run(request)
+
+    assert result.modified_files == [], "DRY_RUN must not apply any changes"
+    assert result.promotion_status == "skipped_policy"
+    assert (sample_repo / "app.py").read_text() == original_content, "repo must be unchanged"
+
+
+def test_policy_safe_execute_applies_without_promote(service, sample_repo):
+    """SAFE_EXECUTE: apply_engine called, no promotion, repo unchanged."""
+    original_content = (sample_repo / "app.py").read_text()
+    request = RunnerExecutionRequest(
+        execution_id="policy-safe-001",
+        repo_path=str(sample_repo),
+        changes=[{"op": "file_replace", "path": "app.py", "content": "x = CHANGED\n"}],
+        execution_mode="SAFE_EXECUTE",
+    )
+    result = service.run(request)
+
+    assert "app.py" in result.modified_files, "SAFE_EXECUTE must apply changes to workspace"
+    assert result.promotion_status == "skipped_policy"
+    assert (sample_repo / "app.py").read_text() == original_content, "repo must be unchanged"
+
+
+def test_policy_full_execute_applies_and_promotes(service, sample_repo):
+    """FULL_EXECUTE: apply_engine called, promote executed, repo changed."""
+    request = RunnerExecutionRequest(
+        execution_id="policy-full-001",
+        repo_path=str(sample_repo),
+        changes=[{"op": "file_replace", "path": "app.py", "content": "x = PROMOTED\n"}],
+        execution_mode="FULL_EXECUTE",
+    )
+    result = service.run(request)
+
+    assert "app.py" in result.modified_files, "FULL_EXECUTE must apply changes"
+    assert result.promotion_status == "performed"
+    assert (sample_repo / "app.py").read_text() == "x = PROMOTED\n", "repo must be updated"
+
+
+# ---------------------------------------------------------------------------
+# Rollback: backup + restore
+# ---------------------------------------------------------------------------
+
+
+def test_backup_existing_file_is_copied(service, sample_repo, tmp_path):
+    """_backup_files copies an existing repo file and marks it 'existing'."""
+    backup_dir = tmp_path / "_backup"
+    backup_dir.mkdir()
+    manifest = service._backup_files(
+        repo_root=sample_repo,
+        backup_dir=backup_dir,
+        files=["app.py"],
+    )
+
+    assert manifest["app.py"] == "existing"
+    assert (backup_dir / "app.py").exists()
+    assert (backup_dir / "app.py").read_text() == (sample_repo / "app.py").read_text()
+
+
+def test_backup_new_file_is_marked_not_copied(service, sample_repo, tmp_path):
+    """_backup_files marks a non-existent file as 'new_file' and copies nothing."""
+    backup_dir = tmp_path / "_backup"
+    backup_dir.mkdir()
+    manifest = service._backup_files(
+        repo_root=sample_repo,
+        backup_dir=backup_dir,
+        files=["brand_new.py"],
+    )
+
+    assert manifest["brand_new.py"] == "new_file"
+    assert not (backup_dir / "brand_new.py").exists()
+
+
+def test_backup_writes_manifest_json(service, sample_repo, tmp_path):
+    """_backup_files saves manifest.json inside backup_dir."""
+    backup_dir = tmp_path / "_backup"
+    backup_dir.mkdir()
+    service._backup_files(
+        repo_root=sample_repo,
+        backup_dir=backup_dir,
+        files=["app.py"],
+    )
+
+    manifest_file = backup_dir / "manifest.json"
+    assert manifest_file.exists()
+    data = json.loads(manifest_file.read_text())
+    assert "files" in data
+    assert data["files"]["app.py"] == "existing"
+
+
+def test_restore_existing_restores_content(service, sample_repo, tmp_path):
+    """_restore_files overwrites repo file with the backed-up version."""
+    backup_dir = tmp_path / "_backup"
+    backup_dir.mkdir()
+    original = (sample_repo / "app.py").read_text()
+
+    manifest = service._backup_files(
+        repo_root=sample_repo,
+        backup_dir=backup_dir,
+        files=["app.py"],
+    )
+    # Mutate the repo file (simulating promote)
+    (sample_repo / "app.py").write_text("x = MUTATED\n")
+
+    restored = service._restore_files(
+        repo_root=sample_repo,
+        backup_dir=backup_dir,
+        manifest=manifest,
+    )
+
+    assert "app.py" in restored
+    assert (sample_repo / "app.py").read_text() == original
+
+
+def test_restore_new_file_deletes_it(service, sample_repo, tmp_path):
+    """_restore_files deletes a file that was created by promote (new_file)."""
+    backup_dir = tmp_path / "_backup"
+    backup_dir.mkdir()
+    # Simulate a file that didn't exist before promote but was created by it
+    manifest = {"created_by_promote.py": "new_file"}
+    (backup_dir / "manifest.json").write_text(
+        json.dumps({"files": manifest}), encoding="utf-8"
+    )
+    (sample_repo / "created_by_promote.py").write_text("x = 1\n")
+
+    restored = service._restore_files(
+        repo_root=sample_repo,
+        backup_dir=backup_dir,
+        manifest=manifest,
+    )
+
+    assert "created_by_promote.py" in restored
+    assert not (sample_repo / "created_by_promote.py").exists()
+
+
+def test_full_execute_backup_then_restore_returns_to_original(service, sample_repo):
+    """End-to-end: repo original → FULL_EXECUTE → restore → repo original."""
+    original_content = (sample_repo / "app.py").read_text()
+    request = RunnerExecutionRequest(
+        execution_id="rollback-e2e-001",
+        repo_path=str(sample_repo),
+        changes=[{"op": "file_replace", "path": "app.py", "content": "x = AFTER_PROMOTE\n"}],
+        execution_mode="FULL_EXECUTE",
+    )
+    result = service.run(request)
+
+    # Verify promote happened and backup was created
+    assert result.promotion_status == "performed"
+    assert result.backup_path is not None
+    assert result.backup_manifest is not None
+    assert (sample_repo / "app.py").read_text() == "x = AFTER_PROMOTE\n"
+
+    # Restore using the backup recorded in the result
+    restored = service._restore_files(
+        repo_root=sample_repo,
+        backup_dir=Path(result.backup_path),
+        manifest=result.backup_manifest,
+    )
+
+    assert "app.py" in restored
+    assert (sample_repo / "app.py").read_text() == original_content

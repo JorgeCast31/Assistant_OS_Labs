@@ -462,6 +462,7 @@ def _build_code_preview(plan: dict, payload: dict) -> DomainResult:
         apply_payload = dict(payload)
         apply_payload["phase"] = "apply"
         apply_payload["proposal"] = envelope
+        apply_payload["execution_mode"] = "FULL_EXECUTE"
         apply_plan = dict(plan)
         apply_plan["domain_payload"] = apply_payload
 
@@ -650,6 +651,32 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
     # execution_id == plan_id (kernel plan is the single authority).
     # ------------------------------------------------------------------
     authorized_plan = _build_authorized_plan_from_kernel(plan)
+
+    # ------------------------------------------------------------------
+    # Guard 3 — ExecutionPlan contract: all DIRECT fields must be present.
+    # DIRECT fields: execution_mode, workspace.
+    # - workspace: pre-validated by _validate_workspace in _execute_mutating
+    #              before this function is reached; no second check needed.
+    # - execution_mode: not covered upstream; checked here.
+    # ------------------------------------------------------------------
+    _ep_payload = plan.get("domain_payload") or {}
+    _ep_mode = _ep_payload.get("execution_mode")
+    if not _ep_mode:
+        return make_domain_result(
+            ok=False,
+            result_type=RESULT_TYPE_CODE_APPLY,
+            domain="CODE",
+            message="ExecutionPlan contract violation: domain_payload['execution_mode'] is required.",
+            data={
+                "proposal_id": proposal_id,
+                "action": action,
+                "guard_failure": "MissingExecutionMode",
+            },
+            error={
+                "type": "ExecutionPlanViolation",
+                "message": "domain_payload['execution_mode'] must be set before apply. Got None.",
+            },
+        )
 
     # ------------------------------------------------------------------
     # Build RunnerExecutionRequest — pure translation, no execution.
@@ -897,33 +924,63 @@ def _build_runner_execution_request(
     authorized_plan: "AuthorizedPlan",
 ) -> "RunnerExecutionRequest":
     """
-    Translate a confirmed CodeProposalEnvelope + AuthorizedPlan into a
-    RunnerExecutionRequest.  Pure translation — no execution, no IO.
+    Formal boundary: ExecutionPlan → RunnerExecutionRequest.
+    Pure translation — no execution, no IO, no new decisions.
 
-    execution_id    = authorized_plan.execution_id (== kernel plan_id).
-    repo_path       = domain_payload["workspace"].
-    changes         = file_replace list from proposal (or None for stub path).
-    authorized_plan = the governance binding built from the kernel plan.
+    FIELD MAP
+    ---------
+    Field            Category           Source
+    ---------------  -----------------  ----------------------------------------
+    execution_id     derived            authorized_plan.execution_id == plan["plan_id"]
+    repo_path        direct             domain_payload["workspace"]  (_validate_workspace in _execute_mutating)
+    execution_mode   direct             domain_payload["execution_mode"] (Guard 3 in _apply_code_proposal)
+    changes          derived            proposal["changes"] via _extract_file_replace_changes
+                                        (validates + filters; does NOT alter intent)
+    authorized_plan  derived            _build_authorized_plan_from_kernel — mechanical
+                                        projection of plan identity; adds no new criteria
+    metadata         transport          pipeline constants (source, domain) + plan fields
+                                        (action, plan_id); identifies routing only —
+                                        NOT an operational decision
+    base_commit      omitted_permitted  CODE domain does not pin commits
+    test_spec        omitted_permitted  not used in CODE pipeline
+    validation_spec  omitted_permitted  not used in CODE pipeline
+    workspace_spec   omitted_permitted  not used in CODE pipeline
+    code             omitted_permitted  CODE_FIX/CREATE use file_replace, not inline code
+
+    Pre-conditions (enforced before this function is called)
+    ---------------------------------------------------------
+    domain_payload["workspace"]      _validate_workspace in _execute_mutating
+    domain_payload["execution_mode"] Guard 3 in _apply_code_proposal
     """
     from ..runners.runner_models import RunnerExecutionRequest
 
     payload = plan.get("domain_payload") or {}
-    workspace = payload.get("workspace", "")
+    workspace = payload.get("workspace")    # guard-validated: non-empty guaranteed by caller
     action = plan.get("action", "")
 
     changes = _extract_file_replace_changes(proposal)
 
     return RunnerExecutionRequest(
+        # DIRECT — both guard-validated before this function is called
         execution_id=authorized_plan.execution_id,
         repo_path=workspace,
+        execution_mode=payload.get("execution_mode"),
+        # DERIVED — mechanical extraction / projection, no new criteria
         changes=changes,
-        metadata={
-            "source": "assistant_os",
-            "domain": "CODE",
-            "action": action,
-            "plan_id": authorized_plan.plan_id,
-        },
         authorized_plan=authorized_plan,
+        # TRANSPORT metadata — routing identifiers only, not operational flags
+        metadata={
+            "source": "assistant_os",   # pipeline-of-origin constant
+            "domain": "CODE",            # domain routing constant
+            "action": action,            # from plan
+            "plan_id": authorized_plan.plan_id,  # from plan
+        },
+        # OMITTED PERMITTED — not used in CODE apply path
+        base_commit=None,        # CODE domain does not pin commits
+        test_spec=None,          # not used in CODE pipeline
+        validation_spec=None,    # not used in CODE pipeline
+        workspace_spec=None,     # not used in CODE pipeline
+        code=None,               # CODE_FIX/CREATE use file_replace, not inline code
     )
 
 

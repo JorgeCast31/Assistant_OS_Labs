@@ -397,6 +397,7 @@ class TestPreflightValidation:
             execution_id="m2d-preflight-005",
             repo_path=str(sample_repo),
             changes=[{"op": "file_replace", "path": "out.py", "content": "x = 1\n"}],
+            execution_mode="SAFE_EXECUTE",
         )
         result = service.run(request)
         # Workspace should have been created (workspace_path is set)
@@ -418,6 +419,7 @@ class TestChangesDetailInResult:
             execution_id="m2d-detail-001",
             repo_path=str(sample_repo),
             changes=[{"op": "file_replace", "path": "main.py", "content": "x = 99\n"}],
+            execution_mode="SAFE_EXECUTE",
         )
         result = service.run(request)
 
@@ -435,6 +437,7 @@ class TestChangesDetailInResult:
             execution_id="m2d-detail-002",
             repo_path=str(sample_repo),
             changes=None,
+            execution_mode="SAFE_EXECUTE",
         )
         result = service.run(request)
         assert result.changes_detail is None
@@ -448,6 +451,7 @@ class TestChangesDetailInResult:
             execution_id="m2d-detail-003",
             repo_path=str(sample_repo),
             changes=[{"op": "patch", "path": "main.py", "patch": patch_text}],
+            execution_mode="SAFE_EXECUTE",
         )
         result = service.run(request)
 
