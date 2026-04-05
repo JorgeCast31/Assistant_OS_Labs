@@ -2344,3 +2344,65 @@ class TestApplyContractHardening:
         assert not result["ok"]
         msg = result["error"]["message"]
         assert len(msg) > 20, f"error message too short to be descriptive: {msg!r}"
+
+
+# ---------------------------------------------------------------------------
+# P. FIX 1 — executor_error intent when propose executor fails
+# ---------------------------------------------------------------------------
+
+class TestCodeConfirmExecutorError:
+    """
+    FIX 1: when _resolve_code_preview calls propose executor and it fails,
+    the returned intent must be 'executor_error', not 'queued'.
+    """
+
+    def test_propose_executor_failure_returns_executor_error_intent(self):
+        """ok=False from propose executor → intent='executor_error' (not 'queued')."""
+        from unittest.mock import patch
+        from assistant_os.chat_core import _resolve_code_preview
+
+        pending_data = {
+            "operation": "CODE_FIX",
+            "task": "fix the bug",
+            "repo_path": "/tmp/repo",
+            "base_branch": "main",
+            "files": ["src/foo.py"],
+            "resolved_files": ["src/foo.py"],
+        }
+        session = {"context_id": "ctx-fix-err-01", "pending_flow": "code_preview"}
+
+        with patch(
+            "assistant_os.chat_core._call_propose_executor",
+            return_value={"ok": False, "error": "no changes applicable"},
+        ):
+            result = _resolve_code_preview("confirmar", session, pending_data)
+
+        assert result["intent"] == "executor_error", (
+            f"Expected 'executor_error' but got {result['intent']!r} — "
+            "FIX 1 not applied correctly"
+        )
+
+    def test_propose_executor_failure_not_queued(self):
+        """Regression: failed executor must NOT surface as 'queued'."""
+        from unittest.mock import patch
+        from assistant_os.chat_core import _resolve_code_preview
+
+        pending_data = {
+            "operation": "CODE_FIX",
+            "task": "fix the bug",
+            "repo_path": "/tmp/repo",
+            "base_branch": "main",
+            "files": [],
+            "resolved_files": [],
+        }
+        session = {"context_id": "ctx-fix-err-02", "pending_flow": "code_preview"}
+
+        with patch(
+            "assistant_os.chat_core._call_propose_executor",
+            return_value={"ok": False, "error": "propose_error: timeout"},
+        ):
+            result = _resolve_code_preview("sí", session, pending_data)
+
+        assert result["intent"] != "queued", (
+            "Executor failure must not appear as 'queued' to the user"
+        )

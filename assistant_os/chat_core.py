@@ -2010,11 +2010,11 @@ def _resolve_code_preview(
                 "write_intent_summary": exec_result.get("write_intent_summary", ""),
             },
         )
-    # Executor failed — fall back to queued with error note
+    # Executor ran but failed — surface as executor_error (not queued)
     _log.warning("propose_executor failed: %s", exec_result.get("error"))
     return make_chat_core_response(
         domain="CODE",
-        intent="queued",
+        intent="executor_error",
         mode="chat",
         needs_confirmation=False,
         session=ChatSession(pending_flow=None, context_id=context_id, last_domain="CODE"),
@@ -2026,6 +2026,7 @@ def _resolve_code_preview(
             "files": resolved_files,
             "resolution": "confirmed",
             "propose_error": exec_result.get("error"),
+            "human_msg": "El executor corrió pero no pudo generar cambios aplicables.",
         },
     )
 
