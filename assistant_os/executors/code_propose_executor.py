@@ -445,8 +445,11 @@ def build_claude_propose_executor(
                 max_tokens=_max_tokens,
                 system=_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
+                timeout=45.0,
             )
             raw_text: str = response.content[0].text
+        except _anthropic.APITimeoutError as exc:
+            return {"ok": False, "error": f"Claude API timeout after 45s: {exc}"}
         except _anthropic.AuthenticationError as exc:
             return {"ok": False, "error": f"API authentication failed: {exc}"}
         except _anthropic.RateLimitError as exc:
