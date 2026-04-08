@@ -392,6 +392,19 @@ class TestBuildClauseProposeExecutor:
         assert result["ok"] is False
         assert "risky" in result["error"]
 
+    def test_timeout_error_returns_ok_false(self, tmp_path):
+        """FIX-3: APITimeoutError must surface as ok=False with 'timed out' in message."""
+        import anthropic as _anthropic
+        exc = _anthropic.APITimeoutError.__new__(_anthropic.APITimeoutError)
+        exc.args = ("request timed out",)
+        executor = self._build(client=_RaisingClient(exc))
+        result = executor({
+            "action": "CODE_FIX", "target_file": "", "workspace": str(tmp_path),
+            "context": "fix", "allowed_write_scope": [],
+        })
+        assert result["ok"] is False
+        assert "timed out" in result["error"].lower()
+
     def test_authentication_error_returns_ok_false(self, tmp_path):
         import anthropic as _anthropic
         exc = _anthropic.AuthenticationError.__new__(_anthropic.AuthenticationError)

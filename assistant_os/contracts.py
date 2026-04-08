@@ -285,8 +285,12 @@ ACTION_WORK_UPDATE = "WORK_UPDATE"        # Update existing task in Notion (sing
 ACTION_WORK_UPDATE_BULK = "WORK_UPDATE_BULK"  # Update multiple tasks in Notion (multiple matches)
 ACTION_WORK_DELETE = "WORK_DELETE"        # Delete/archive tasks from work DB
 ACTION_WORK_DELETE_TEST = "WORK_DELETE_TEST"  # Delete/archive tasks from test DB
-ACTION_FIN_EXPENSE = "FIN_EXPENSE"        # Register financial expense
-ACTION_FIN_BATCH = "FIN_BATCH"            # Register multiple expenses
+ACTION_FIN_EXPENSE  = "FIN_EXPENSE"         # Register financial expense
+ACTION_FIN_BATCH    = "FIN_BATCH"           # Register multiple expenses (batch)
+ACTION_FIN_PLAN     = "FIN_PLAN"            # Generate fin plan from text (analysis-only)
+ACTION_FIN_COMMIT   = "FIN_COMMIT"          # Commit (store) one expense to Sheets
+ACTION_FIN_CONFIRM  = "FIN_CONFIRM"         # Confirm and store expense to Sheets
+ACTION_FIN_CHAPERON = "FIN_CHAPERON"        # Run chaperon analysis on text
 # CODE domain action constants
 ACTION_CODE_EXPLAIN = "CODE_EXPLAIN"      # Explain / describe code (read-only)
 ACTION_CODE_REVIEW  = "CODE_REVIEW"       # Review / audit code (read-only)
@@ -460,11 +464,16 @@ def make_plan(
 #   CODE_EXPLAIN / RISK_LOW  — read-only: no side effects
 #   CODE_REVIEW / RISK_LOW   — read-only: no side effects
 _AUTO_EXECUTE_WHITELIST: frozenset[tuple[str, str]] = frozenset({
-    (ACTION_WORK_QUERY,   RISK_LOW),
-    (ACTION_WORK_UPDATE,  RISK_LOW),    # Phase 1: read-only preview, no mutation side effects
-    (ACTION_FIN_EXPENSE,  RISK_MEDIUM), # Single expense auto-executes by design
-    (ACTION_CODE_EXPLAIN, RISK_LOW),    # Read-only: no side effects
-    (ACTION_CODE_REVIEW,  RISK_LOW),    # Read-only: no side effects
+    (ACTION_WORK_QUERY,    RISK_LOW),
+    (ACTION_WORK_UPDATE,   RISK_LOW),     # Phase 1: read-only preview, no mutation side effects
+    (ACTION_FIN_EXPENSE,   RISK_MEDIUM),  # Single expense auto-executes by design
+    (ACTION_FIN_PLAN,      RISK_LOW),     # Analysis-only, no side effects
+    (ACTION_FIN_CHAPERON,  RISK_LOW),     # Analysis-only, no side effects
+    (ACTION_FIN_COMMIT,    RISK_MEDIUM),  # Post-confirmation: user already approved
+    (ACTION_FIN_CONFIRM,   RISK_MEDIUM),  # Post-confirmation: user already approved
+    (ACTION_FIN_BATCH,     RISK_MEDIUM),  # Post-confirmation batch store
+    (ACTION_CODE_EXPLAIN,  RISK_LOW),     # Read-only: no side effects
+    (ACTION_CODE_REVIEW,   RISK_LOW),     # Read-only: no side effects
 })
 
 
@@ -523,6 +532,10 @@ UI_INTENT_MAP: dict[str, str] = {
     ACTION_WORK_TEST_RESET:  "delete",
     ACTION_FIN_EXPENSE:      "expense",
     ACTION_FIN_BATCH:        "expense",
+    ACTION_FIN_PLAN:         "plan",
+    ACTION_FIN_COMMIT:       "commit",
+    ACTION_FIN_CONFIRM:      "confirm",
+    ACTION_FIN_CHAPERON:     "chaperon",
     ACTION_CODE_EXPLAIN:     "explain",
     ACTION_CODE_REVIEW:      "review",
     ACTION_CODE_FIX:         "fix",
@@ -633,7 +646,12 @@ RESULT_TYPE_WORK_UPDATE_BULK    = "work_update_bulk"     # Bulk execution outcom
 RESULT_TYPE_WORK_DELETE         = "work_delete"          # Delete outcome
 
 # Non-WORK domain result types
-RESULT_TYPE_FIN_EXPENSE                = "fin_expense"              # FIN expense parse result
+RESULT_TYPE_FIN_EXPENSE  = "fin_expense"   # FIN expense parse result
+RESULT_TYPE_FIN_BATCH    = "fin_batch"     # FIN batch store result
+RESULT_TYPE_FIN_PLAN     = "fin_plan"      # FIN plan analysis result
+RESULT_TYPE_FIN_COMMIT   = "fin_commit"    # FIN commit (store) result
+RESULT_TYPE_FIN_CONFIRM  = "fin_confirm"   # FIN confirm (store) result
+RESULT_TYPE_FIN_CHAPERON = "fin_chaperon"  # FIN chaperon analysis result
 RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED = "plan_confirmation_required"  # Interpreter: awaiting user confirm
 RESULT_TYPE_PLAN_GENERATED             = "plan_generated"           # Classifier: plan produced, no execution
 

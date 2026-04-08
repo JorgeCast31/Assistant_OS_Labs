@@ -142,6 +142,7 @@ export async function sendChatMessage(
     headers: { 'Content-Type': 'application/json' },
     cache:  'no-store',
     body:   JSON.stringify(body),
+    signal: AbortSignal.timeout(30000),
   })
   if (!res.ok) {
     const json = await res.json().catch(() => ({}))

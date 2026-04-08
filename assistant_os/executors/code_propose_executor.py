@@ -438,24 +438,25 @@ def build_claude_propose_executor(
             action, target_file, file_content, context, allowed_scope
         )
 
-        # Call Claude
+        # Call Claude — 45 s hard timeout to avoid indefinite hangs
+        _CALL_TIMEOUT = 45.0
         try:
             response = client.messages.create(
                 model=_model,
                 max_tokens=_max_tokens,
                 system=_SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": prompt}],
-                timeout=45.0,
+                timeout=_CALL_TIMEOUT,
             )
             raw_text: str = response.content[0].text
-        except _anthropic.APITimeoutError as exc:
-            return {"ok": False, "error": f"Claude API timeout after 45s: {exc}"}
         except _anthropic.AuthenticationError as exc:
             return {"ok": False, "error": f"API authentication failed: {exc}"}
         except _anthropic.RateLimitError as exc:
             return {"ok": False, "error": f"API rate limit exceeded: {exc}"}
         except _anthropic.APIStatusError as exc:
             return {"ok": False, "error": f"Claude API error {exc.status_code}: {exc.message}"}
+        except _anthropic.APITimeoutError as exc:
+            return {"ok": False, "error": f"Claude API timeout after {_CALL_TIMEOUT:.0f}s: {exc}"}
         except Exception as exc:
             return {"ok": False, "error": f"Unexpected error calling Claude: {exc}"}
 

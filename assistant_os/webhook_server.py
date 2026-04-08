@@ -1246,9 +1246,14 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if result[1] is not None:
             self._send_json_response(*result[1])
             return
-        try:
-            data = json.loads(result[0].decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        body = result[0]
+        if body:
+            data, json_err = _safe_parse_json(body)
+            if json_err is not None:
+                status, error = json_err
+                self._send_json_response(status, error)
+                return
+        else:
             data = {}
         if not isinstance(data, dict):
             data = {}
@@ -1283,14 +1288,19 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if result[1] is not None:
             self._send_json_response(*result[1])
             return
-        try:
-            data = json.loads(result[0].decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        body = result[0]
+        if body:
+            data, json_err = _safe_parse_json(body)
+            if json_err is not None:
+                status, error = json_err
+                self._send_json_response(status, error)
+                return
+        else:
             data = {}
         if not isinstance(data, dict):
             data = {}
         kwargs = {}
-        if "title"      in data: kwargs["title"]      = data["title"]
+        if "title"      in data: kwargs["title"]      = str(data["title"])
         if "context_id" in data: kwargs["context_id"] = data["context_id"]
         if "messages"   in data: kwargs["messages"]   = data["messages"]
         session = chat_db.update_session(session_id, **kwargs)
@@ -2079,235 +2089,192 @@ class WebhookHandler(BaseHTTPRequestHandler):
     
     def _handle_fin_plan(self, remote: str) -> None:
         """Handle POST /fin/plan - Plan Always entry point for FIN domain.
-        
-        Every FIN input goes through this endpoint FIRST.
-        Returns an action_plan with N items (one per monto detected).
-        Does NOT write to Sheets - only builds the plan.
+
+        Sprint 2 canonical entry: normalize_request → handle_request → DomainResult.
+        Reads text, optional session_context. Does NOT write to Sheets.
         """
-        # Check auth
         auth_error = self._check_auth()
         if auth_error:
             status, error = auth_error
             self._send_json_response(status, error)
             return
-        
-        # Check content-type
-        content_type = self.headers.get("Content-Type", "")
-        if "application/json" not in content_type:
-            status, error = _make_json_error(400, "Content-Type must be application/json", "BadRequest")
-            self._send_json_response(status, error)
-            return
-        
-        # Read body
+
         result = self._read_body()
         if result[1] is not None:
             status, error = result[1]
             self._send_json_response(status, error)
             return
-        
         body = result[0]
-        
-        # Parse JSON
+
         try:
             data = json.loads(body.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             status, error = _make_json_error(400, f"Invalid JSON: {e}", "BadRequest")
             self._send_json_response(status, error)
             return
-        
-        # Validate request structure
+
         if not isinstance(data, dict):
             status, error = _make_json_error(400, "Request body must be a JSON object", "BadRequest")
             self._send_json_response(status, error)
             return
-        
-        # Validate "text" field (required)
+
         text = data.get("text", "")
         if not isinstance(text, str) or not text.strip():
             status, error = _make_json_error(400, 'Missing required field: "text"', "BadRequest")
             self._send_json_response(status, error)
             return
-        
+
         session_id = data.get("session_id", "")
         session_context = data.get("session_context", {})
-        
-        # Generate plan
-        plan_response = generate_fin_plan(text, session_context)
-        
-        # Log the plan event
+
+        from .contracts import normalize_request, ACTION_FIN_PLAN, RISK_LOW
+        from .core.orchestrator import handle_request as _handle_request
+
+        req = normalize_request(
+            text=text,
+            filters={"session_context": session_context},
+            metadata={
+                "action": ACTION_FIN_PLAN,
+                "domain": "FIN",
+                "risk_level": RISK_LOW,
+                "requires_confirmation": False,
+            },
+        )
+        dr = _handle_request(req)
+
         _log_fin_expense_event(
             remote=remote,
-            ok=plan_response["ok"],
+            ok=dr["ok"],
             action="plan",
             session_id=session_id,
-            text_preview=text[:100] if text else "",
+            text_preview=text[:100],
         )
-        
-        # Build response
-        response_data = {
-            "ok": plan_response["ok"],
-            "kind": plan_response["kind"],
-            "total_items": plan_response["total_items"],
-            "message": plan_response["message"],
-            "items": [
-                {
-                    "id": item["id"],
-                    "draft_expense": dict(item["draft_expense"]),
-                    "missing_fields": item["missing_fields"],
-                    "confidence": item["confidence"],
-                    "raw_segment": item["raw_segment"],
-                }
-                for item in plan_response["items"]
-            ],
-            "needs_clarification": plan_response["needs_clarification"],
-            "clarification_prompt": plan_response["clarification_prompt"],
-            "session_context": plan_response["session_context"],
-        }
-        
-        self._send_json_response(200, response_data)
+
+        plan_data = dr.get("data", {})
+        self._send_json_response(200, {
+            "ok": dr["ok"],
+            "kind": plan_data.get("kind", "fin_plan"),
+            "total_items": plan_data.get("total_items", 0),
+            "message": plan_data.get("message", dr.get("message", "")),
+            "items": plan_data.get("items", []),
+            "needs_clarification": plan_data.get("needs_clarification", False),
+            "clarification_prompt": plan_data.get("clarification_prompt", ""),
+            "session_context": plan_data.get("session_context", {}),
+            "execution_id": dr.get("plan_id"),
+        })
     
     def _handle_fin_commit(self, remote: str) -> None:
         """Handle POST /fin/commit - commit single expense from confirmed plan.
-        
-        This endpoint writes a single expense to Google Sheets.
-        Called once per item after user confirms the plan.
-        Validates dropdown canonicalization before saving.
+
+        Sprint 2 canonical entry: normalize_request → handle_request → DomainResult.
+        Canonicalization (dropdown normalization) is delegated to the pipeline.
         """
         try:
-            self._handle_fin_commit_impl(remote)
+            auth_error = self._check_auth()
+            if auth_error:
+                status, error = auth_error
+                self._send_json_response(status, error)
+                return
+
+            result = self._read_body()
+            if result[1] is not None:
+                status, error = result[1]
+                self._send_json_response(status, error)
+                return
+            body = result[0]
+
+            try:
+                data = json.loads(body.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                status, error = _make_json_error(400, f"Invalid JSON: {e}", "BadRequest")
+                self._send_json_response(status, error)
+                return
+
+            if not isinstance(data, dict):
+                status, error = _make_json_error(400, "Request body must be a JSON object", "BadRequest")
+                self._send_json_response(status, error)
+                return
+
+            expense_data = data.get("expense")
+            if not isinstance(expense_data, dict):
+                status, error = _make_json_error(400, 'Missing required field: "expense"', "BadRequest")
+                self._send_json_response(status, error)
+                return
+
+            session_id = data.get("session_id", "")
+
+            if not check_sheets_available():
+                self._send_json_response(503, {
+                    "ok": False,
+                    "stored": False,
+                    "row_number": None,
+                    "sheet": SHEETS_TAB_NAME,
+                    "message": "Google Sheets integration not available",
+                    "error": "sheets_unavailable",
+                })
+                return
+
+            from .contracts import normalize_request, ACTION_FIN_COMMIT, RISK_MEDIUM
+            from .core.orchestrator import handle_request as _handle_request
+
+            req = normalize_request(
+                text="",
+                filters={"expense": expense_data, "session_id": session_id},
+                metadata={
+                    "action": ACTION_FIN_COMMIT,
+                    "domain": "FIN",
+                    "risk_level": RISK_MEDIUM,
+                    "requires_confirmation": False,
+                },
+            )
+            dr = _handle_request(req)
+
+            commit_data = dr.get("data", {})
+            if dr["ok"]:
+                row_number = commit_data.get("row_number")
+                expense_out = commit_data.get("expense", expense_data)
+                _log_fin_expense_event(
+                    remote=remote,
+                    ok=True,
+                    action="commit",
+                    monto=expense_out.get("monto", 0),
+                    moneda=expense_out.get("moneda", ""),
+                    responsable=expense_out.get("responsable", ""),
+                    session_id=session_id,
+                )
+                self._send_json_response(200, {
+                    "ok": True,
+                    "stored": True,
+                    "row_number": row_number,
+                    "sheet": SHEETS_TAB_NAME,
+                    "message": dr.get("message", f"Gasto guardado en fila {row_number}"),
+                    "error": None,
+                    "execution_id": dr.get("plan_id"),
+                })
+            else:
+                err_msg = dr.get("error", {}).get("message", "Error") if dr.get("error") else "Error"
+                _log_fin_expense_event(
+                    remote=remote,
+                    ok=False,
+                    action="commit_error",
+                    error_message=err_msg,
+                    session_id=session_id,
+                )
+                self._send_json_response(500, {
+                    "ok": False,
+                    "stored": False,
+                    "row_number": None,
+                    "sheet": SHEETS_TAB_NAME,
+                    "message": f"Error al guardar: {err_msg}",
+                    "error": err_msg,
+                    "execution_id": dr.get("plan_id"),
+                })
+
         except Exception as e:
             import traceback
             traceback.print_exc()
             status, error = _make_json_error(500, f"Internal error: {e}", "InternalError")
             self._send_json_response(status, error)
-    
-    def _handle_fin_commit_impl(self, remote: str) -> None:
-        """Implementation of /fin/commit handler."""
-        # Check auth
-        auth_error = self._check_auth()
-        if auth_error:
-            status, error = auth_error
-            self._send_json_response(status, error)
-            return
-        
-        # Check content-type
-        content_type = self.headers.get("Content-Type", "")
-        if "application/json" not in content_type:
-            status, error = _make_json_error(400, "Content-Type must be application/json", "BadRequest")
-            self._send_json_response(status, error)
-            return
-        
-        # Read body
-        result = self._read_body()
-        if result[1] is not None:
-            status, error = result[1]
-            self._send_json_response(status, error)
-            return
-        
-        body = result[0]
-        
-        # Parse JSON
-        try:
-            data = json.loads(body.decode("utf-8"))
-        except (json.JSONDecodeError, UnicodeDecodeError) as e:
-            status, error = _make_json_error(400, f"Invalid JSON: {e}", "BadRequest")
-            self._send_json_response(status, error)
-            return
-        
-        # Validate request structure
-        if not isinstance(data, dict):
-            status, error = _make_json_error(400, "Request body must be a JSON object", "BadRequest")
-            self._send_json_response(status, error)
-            return
-        
-        # Validate "expense" field (required)
-        expense_data = data.get("expense")
-        if not isinstance(expense_data, dict):
-            status, error = _make_json_error(400, 'Missing required field: "expense"', "BadRequest")
-            self._send_json_response(status, error)
-            return
-        
-        session_id = data.get("session_id", "")
-        
-        # Check Sheets availability
-        if not check_sheets_available():
-            response_data: FinCommitResponse = {
-                "ok": False,
-                "stored": False,
-                "row_number": None,
-                "sheet": SHEETS_TAB_NAME,
-                "message": "Google Sheets integration not available",
-                "error": "sheets_unavailable",
-            }
-            self._send_json_response(503, response_data)
-            return
-        
-        # Build ParsedExpense from expense_data (canonicalize values)
-        from .pipelines.fin_normalization import canonicalize_commit_expense
-        parsed = canonicalize_commit_expense(expense_data)
-        
-        # Append to Sheets
-        from .tools.google.append_expense_row_tool import AppendExpenseRowTool
-        tool_result = AppendExpenseRowTool().execute({
-            "fecha": parsed["fecha"],
-            "descripcion": parsed["descripcion"],
-            "factura": parsed.get("factura", ""),
-            "responsable": parsed["responsable"],
-            "monto": parsed["monto"],
-            "moneda": parsed["moneda"],
-            "itbms": parsed["itbms"] if parsed["itbms"] is not None else False,
-            "categoria": parsed["categoria"],
-            "metodo_pago": parsed.get("metodo_pago", "") or "",
-            "notas": parsed.get("notas", ""),
-            "fuente": parsed.get("fuente", "chat"),
-            "link_archivo": parsed.get("link_archivo", ""),
-            "expense_id": session_id,
-        })
-
-        if tool_result.ok:
-            row_number = tool_result.data["row_number"]
-            response_data = {
-                "ok": True,
-                "stored": True,
-                "row_number": row_number,
-                "sheet": SHEETS_TAB_NAME,
-                "message": f"Gasto guardado en fila {row_number}",
-                "error": None,
-            }
-
-            # Log success
-            _log_fin_expense_event(
-                remote=remote,
-                ok=True,
-                action="commit",
-                monto=parsed["monto"],
-                moneda=parsed["moneda"],
-                responsable=parsed["responsable"],
-                session_id=session_id,
-            )
-
-            self._send_json_response(200, response_data)
-        else:
-            err_msg = tool_result.error.message if tool_result.error else "Unknown error"
-            response_data = {
-                "ok": False,
-                "stored": False,
-                "row_number": None,
-                "sheet": SHEETS_TAB_NAME,
-                "message": f"Error al guardar: {err_msg}",
-                "error": err_msg,
-            }
-
-            # Log error
-            _log_fin_expense_event(
-                remote=remote,
-                ok=False,
-                action="commit_error",
-                error_message=err_msg,
-                session_id=session_id,
-            )
-
-            self._send_json_response(500, response_data)
 
     def _handle_fin_sheets_status(self) -> None:
         """Handle GET /fin/sheets/status - return diagnostic info about Sheets integration."""
@@ -2419,7 +2386,17 @@ class WebhookHandler(BaseHTTPRequestHandler):
             })
 
     def _handle_fin_expense(self, remote: str) -> None:
-        """Handle POST /fin/expense - parse expense and auto-store if complete."""
+        """Handle POST /fin/expense — parse expense and auto-store if complete.
+
+        Sprint 2 canonical entry
+        ------------------------
+        Parse step routes through orchestrator structured path:
+            normalize_request() → handle_request() → DomainResult
+
+        Auto-store (AppendExpenseRowTool) remains a transport-layer concern:
+        it is a conditional side effect applied to the parse DomainResult when
+        no missing fields and no confirmation is needed.
+        """
         # Check auth
         auth_error = self._check_auth()
         if auth_error:
@@ -2427,7 +2404,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             _log_fin_expense_event(remote, ok=False, error_message="Unauthorized")
             self._send_json_response(status, error)
             return
-        
+
         # Check content-type
         content_type = self.headers.get("Content-Type", "")
         if "application/json" not in content_type:
@@ -2435,7 +2412,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             _log_fin_expense_event(remote, ok=False, error_message="Invalid content type")
             self._send_json_response(status, error)
             return
-        
+
         # Read body
         result = self._read_body()
         if result[1] is not None:
@@ -2443,9 +2420,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
             _log_fin_expense_event(remote, ok=False, error_message="Failed to read body")
             self._send_json_response(status, error)
             return
-        
+
         body = result[0]
-        
+
         # Parse JSON
         try:
             data = json.loads(body.decode("utf-8"))
@@ -2454,136 +2431,150 @@ class WebhookHandler(BaseHTTPRequestHandler):
             _log_fin_expense_event(remote, ok=False, error_message=f"Invalid JSON: {e}")
             self._send_json_response(status, error)
             return
-        
+
         # Validate request structure
         if not isinstance(data, dict):
             status, error = _make_json_error(400, "Request body must be a JSON object", "BadRequest")
             _log_fin_expense_event(remote, ok=False, error_message="Invalid request format")
             self._send_json_response(status, error)
             return
-        
+
         # Validate "text" field (required)
         if "text" not in data:
             status, error = _make_json_error(400, 'Missing required field: "text"', "BadRequest")
             _log_fin_expense_event(remote, ok=False, error_message="Missing text field")
             self._send_json_response(status, error)
             return
-        
+
         text = data["text"]
         if not isinstance(text, str):
             status, error = _make_json_error(400, '"text" must be a string', "BadRequest")
             _log_fin_expense_event(remote, ok=False, error_message="Text must be string")
             self._send_json_response(status, error)
             return
-        
+
         # Get optional fields
         override = data.get("overrides", data.get("override", {}))  # Accept both "overrides" and "override"
         session_id = data.get("session_id", "")
-        
-        # Build ExpenseRequest
-        expense_request: ExpenseRequest = {
-            "text": text,
-            "override": override if isinstance(override, dict) else {},
-            "session_id": session_id if isinstance(session_id, str) else "",
-        }
-        
-        # Parse expense
-        expense_response = parse_expense(expense_request)
-        
-        # Check if parsing was successful
-        if not expense_response["ok"] or not expense_response["expense"]:
-            response_data = {
-                "ok": False,
-                "stored": False,
-                "status": "error",
-                "message": expense_response["message"],
-                "expense": None,
-                "missing_fields": expense_response.get("missing_fields", []),
-                "sheets_available": check_sheets_available(),
-                "needs_confirmation": False,
-                "row_number": None,
-                "tab_name": SHEETS_TAB_NAME,
-            }
+        safe_override = override if isinstance(override, dict) else {}
+        safe_session_id = session_id if isinstance(session_id, str) else ""
+
+        # ── Canonical entry (parse step) ────────────────────────────────
+        from .contracts import normalize_request, ACTION_FIN_EXPENSE, RISK_MEDIUM
+        from .core.orchestrator import handle_request as _handle_request
+
+        req = normalize_request(
+            text=text,
+            filters={"override": safe_override, "session_id": safe_session_id},
+            metadata={
+                "action": ACTION_FIN_EXPENSE,
+                "domain": "FIN",
+                "risk_level": RISK_MEDIUM,
+                "requires_confirmation": False,
+                "target": "expense parse",
+            },
+        )
+        dr = _handle_request(req)
+        execution_id = dr.get("plan_id")
+        # ── End canonical entry ──────────────────────────────────────────
+
+        parse_data = dr.get("data", {})
+
+        # Parse failed
+        if not dr["ok"]:
             _log_fin_expense_event(
                 remote=remote,
                 ok=False,
                 action="parse",
-                error_message=expense_response["message"],
-                session_id=session_id,
+                error_message=dr.get("message", "Parse failed"),
+                session_id=safe_session_id,
                 text_preview=text,
             )
-            self._send_json_response(400, response_data)
+            self._send_json_response(400, {
+                "ok": False,
+                "stored": False,
+                "status": "error",
+                "message": dr.get("message", "No se pudo parsear el gasto"),
+                "expense": None,
+                "missing_fields": parse_data.get("missing_fields", []),
+                "sheets_available": check_sheets_available(),
+                "needs_confirmation": False,
+                "row_number": None,
+                "tab_name": SHEETS_TAB_NAME,
+                "execution_id": execution_id,
+            })
             return
-        
-        exp = expense_response["expense"]
+
+        exp = parse_data.get("expense")
         sheets_available = check_sheets_available()
-        
-        # If needs confirmation, return pending status without storing
-        if expense_response["needs_confirmation"]:
-            response_data = {
+        needs_confirmation = parse_data.get("needs_confirmation", False)
+        missing_fields = parse_data.get("missing_fields", [])
+        ambiguous_responsables = parse_data.get("ambiguous_responsables", [])
+
+        # Needs confirmation — return parsed data without storing
+        if needs_confirmation:
+            _log_fin_expense_event(
+                remote=remote,
+                ok=True,
+                action="parse",
+                monto=(exp["monto"] or 0.0) if exp else 0.0,
+                moneda=exp["moneda"] if exp else "",
+                categoria=exp["categoria"] if exp else "",
+                responsable=exp["responsable"] if exp else "",
+                needs_confirmation=True,
+                session_id=safe_session_id,
+                text_preview=text,
+            )
+            self._send_json_response(200, {
                 "ok": True,
                 "stored": False,
                 "status": "needs_confirmation",
                 "needs_confirmation": True,
-                "missing_fields": expense_response["missing_fields"],
-                "ambiguous_responsables": expense_response.get("ambiguous_responsables", []),
-                "message": expense_response["message"],
+                "missing_fields": missing_fields,
+                "ambiguous_responsables": ambiguous_responsables,
+                "message": dr.get("message", ""),
                 "expense": exp,
                 "sheets_available": sheets_available,
                 "row_number": None,
                 "tab_name": SHEETS_TAB_NAME,
-            }
+                "execution_id": execution_id,
+            })
+            return
+
+        # All required fields present — auto-store to Sheets
+        if not sheets_available:
+            last_error = get_sheets_last_error()
+            error_type = last_error.get("type", "unknown_error") if last_error else "unknown_error"
+            error_msg = last_error.get("message", "Sheets not configured") if last_error else "Sheets not configured"
             _log_fin_expense_event(
                 remote=remote,
                 ok=True,
                 action="parse",
-                monto=exp["monto"] or 0.0,
-                moneda=exp["moneda"],
-                categoria=exp["categoria"],
-                responsable=exp["responsable"],
-                needs_confirmation=True,
-                session_id=session_id,
+                monto=(exp["monto"] or 0.0) if exp else 0.0,
+                moneda=exp["moneda"] if exp else "",
+                categoria=exp["categoria"] if exp else "",
+                responsable=exp["responsable"] if exp else "",
+                needs_confirmation=False,
+                session_id=safe_session_id,
                 text_preview=text,
+                error_message=error_msg,
             )
-            self._send_json_response(200, response_data)
-            return
-        
-        # All required fields present - auto-store to Sheets
-        if not sheets_available:
-            # Get specific error information
-            last_error = get_sheets_last_error()
-            error_type = last_error.get("type", "unknown_error") if last_error else "unknown_error"
-            error_msg = last_error.get("message", "Sheets not configured") if last_error else "Sheets not configured"
-            
-            response_data = {
+            self._send_json_response(200, {
                 "ok": True,
                 "stored": False,
-                "status": "sheets_unavailable",  # Generic status
-                "error_type": error_type,  # Specific error type
+                "status": "sheets_unavailable",
+                "error_type": error_type,
                 "needs_confirmation": False,
                 "message": f"Expense parsed but could not store: {error_msg}",
                 "expense": exp,
                 "sheets_available": False,
-                "sheets_error": last_error,  # Include full error details
+                "sheets_error": last_error,
                 "row_number": None,
                 "tab_name": SHEETS_TAB_NAME,
-            }
-            _log_fin_expense_event(
-                remote=remote,
-                ok=True,
-                action="parse",
-                monto=exp["monto"] or 0.0,
-                moneda=exp["moneda"],
-                categoria=exp["categoria"],
-                responsable=exp["responsable"],
-                needs_confirmation=False,
-                session_id=session_id,
-                text_preview=text,
-                error_message=error_msg,
-            )
-            self._send_json_response(200, response_data)
+                "execution_id": execution_id,
+            })
             return
-        
+
         # Store to Sheets
         from .tools.google.append_expense_row_tool import AppendExpenseRowTool
         tool_result = AppendExpenseRowTool().execute({
@@ -2599,12 +2590,23 @@ class WebhookHandler(BaseHTTPRequestHandler):
             "notas": exp.get("notas", ""),
             "fuente": exp.get("fuente", "chat"),
             "link_archivo": exp.get("link_archivo", ""),
-            "expense_id": session_id,
+            "expense_id": safe_session_id,
         })
 
         if tool_result.ok:
             row_number = tool_result.data["row_number"]
-            response_data = {
+            _log_fin_expense_event(
+                remote=remote,
+                ok=True,
+                action="stored",
+                monto=exp["monto"] or 0.0,
+                moneda=exp["moneda"],
+                categoria=exp["categoria"],
+                responsable=exp["responsable"],
+                session_id=safe_session_id,
+                text_preview=text,
+            )
+            self._send_json_response(200, {
                 "ok": True,
                 "stored": True,
                 "status": "stored",
@@ -2614,21 +2616,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "message": f"Guardado en Sheets (fila {row_number})",
                 "expense": exp,
                 "sheets_available": True,
-            }
-            _log_fin_expense_event(
-                remote=remote,
-                ok=True,
-                action="stored",
-                monto=exp["monto"] or 0.0,
-                moneda=exp["moneda"],
-                categoria=exp["categoria"],
-                responsable=exp["responsable"],
-                session_id=session_id,
-                text_preview=text,
-            )
-            self._send_json_response(200, response_data)
+                "execution_id": execution_id,
+            })
         else:
-            # Sheets error (e.g., HeaderMismatch, API error)
             err_msg = tool_result.error.message if tool_result.error else "Unknown error"
             last_error = get_sheets_last_error()
             if "Header mismatch" in err_msg:
@@ -2637,8 +2627,15 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 error_type = last_error.get("type", "unknown_error")
             else:
                 error_type = "unknown_error"
-
-            response_data = {
+            _log_fin_expense_event(
+                remote=remote,
+                ok=False,
+                action="sheets_error",
+                error_message=err_msg,
+                session_id=safe_session_id,
+                text_preview=text,
+            )
+            self._send_json_response(500, {
                 "ok": False,
                 "stored": False,
                 "status": "error",
@@ -2650,83 +2647,51 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "sheets_error": last_error,
                 "row_number": None,
                 "tab_name": SHEETS_TAB_NAME,
-            }
-            _log_fin_expense_event(
-                remote=remote,
-                ok=False,
-                action="sheets_error",
-                error_message=err_msg,
-                session_id=session_id,
-                text_preview=text,
-            )
-            self._send_json_response(500, response_data)
+                "execution_id": execution_id,
+            })
     
     def _handle_fin_chaperon(self, remote: str) -> None:
         """Handle POST /fin/chaperon - preprocess text to detect multi-expense or continuation.
-        
-        The Chaperon runs AFTER classifier and BEFORE backend executor.
-        It detects:
-        - Multiple montos in a single message → requires confirmation
-        - Continuation fragments ("y 15 para conejos") → inherits context
-        - Single expense → passthrough to backend
+
+        Sprint 2 canonical entry: normalize_request → handle_request → DomainResult.
+        FIN domain: routes to ACTION_FIN_CHAPERON → fin_pipeline._fin_chaperon_execute.
+        WORK domain: routes to ACTION_WORK_QUERY → work_pipeline.
         """
-        # Check auth
         auth_error = self._check_auth()
         if auth_error:
             status, error = auth_error
             self._send_json_response(status, error)
             return
-        
-        # Check content-type
-        content_type = self.headers.get("Content-Type", "")
-        if "application/json" not in content_type:
-            status, error = _make_json_error(400, "Content-Type must be application/json", "BadRequest")
-            self._send_json_response(status, error)
-            return
-        
-        # Read body
+
         result = self._read_body()
         if result[1] is not None:
             status, error = result[1]
             self._send_json_response(status, error)
             return
-        
         body = result[0]
-        
-        # Parse JSON
+
         try:
             data = json.loads(body.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             status, error = _make_json_error(400, f"Invalid JSON: {e}", "BadRequest")
             self._send_json_response(status, error)
             return
-        
-        # Validate request structure
+
         if not isinstance(data, dict):
             status, error = _make_json_error(400, "Request body must be a JSON object", "BadRequest")
             self._send_json_response(status, error)
             return
-        
-        # Validate "text" field (required)
+
         text = data.get("text", "")
         if not isinstance(text, str) or not text.strip():
             status, error = _make_json_error(400, 'Missing required field: "text"', "BadRequest")
             self._send_json_response(status, error)
             return
-        
-        # Get optional domain (default to "FIN")
+
         domain = data.get("domain", "FIN")
-        
-        # Get optional session context
         session_data = data.get("session_context", {})
-        session_context: SessionContext = SessionContext(
-            last_domain=session_data.get("last_domain"),
-            last_moneda=session_data.get("last_moneda"),
-            last_fecha=session_data.get("last_fecha"),
-            last_action_type=session_data.get("last_action_type"),
-        )
-        
-        # Check for pending flow - respect priority
+
+        # Pending flow guard — short-circuit before any routing
         if session_data.get("pending"):
             self._send_json_response(200, {
                 "ok": True,
@@ -2736,289 +2701,175 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "clarification_questions": [],
                 "should_execute": False,
                 "confirmation_message": "Tienes un flujo pendiente. Complétalo antes de continuar.",
-                "inherited_context": dict(session_context),
+                "inherited_context": dict(session_data),
                 "raw_text": text,
                 "detected_domain": domain,
             })
             return
-        
-        # Check if this is a WORK query - route to /work/query
+
+        from .contracts import normalize_request, ACTION_FIN_CHAPERON, ACTION_WORK_QUERY, RISK_LOW
+        from .core.orchestrator import handle_request as _handle_request
+
         if domain == "WORK":
-            from .classifier import is_work_query, parse_work_query_filters
-            
-            if is_work_query(text, domain):
-                # Parse filters from natural language
-                filters = parse_work_query_filters(text)
-                
-                # Check Notion availability
-                if not check_notion_available():
-                    notion_status = get_notion_status()
-                    error_msg = notion_status.get("last_error", {}).get("message", "Notion not configured")
-                    self._send_json_response(200, {
-                        "ok": True,
-                        "type": "work_query_error",
-                        "items": [],
-                        "requires_confirmation": False,
-                        "clarification_questions": [],
-                        "should_execute": False,
-                        "confirmation_message": f"❌ No puedo consultar Notion: {error_msg}",
-                        "inherited_context": dict(session_context),
-                        "raw_text": text,
-                        "detected_domain": "WORK",
-                    })
-                    return
-                
-                # Query Notion
-                result = query_work_db(filters=filters, limit=20)
-                formatted = format_work_query_response(result)
-                
-                self._send_json_response(200, {
-                    "ok": True,
-                    "type": "work_query",
-                    "items": result["items"],
+            # Route WORK queries through the canonical WORK_QUERY path
+            from .classifier import parse_work_query_filters
+            work_filters = parse_work_query_filters(text)
+            if "status" not in work_filters:
+                work_filters["status"] = NOTION_WORK_ACTIVE_STATUSES
+
+            req = normalize_request(
+                text=text,
+                filters=dict(work_filters),
+                metadata={
+                    "action": ACTION_WORK_QUERY,
+                    "domain": "WORK",
+                    "risk_level": RISK_LOW,
                     "requires_confirmation": False,
-                    "clarification_questions": [],
-                    "should_execute": True,
-                    "confirmation_message": formatted,
-                    "inherited_context": {"last_domain": "WORK"},
-                    "raw_text": text,
-                    "detected_domain": "WORK",
-                    "query_filters": filters,
-                    "total": result["total"],
-                })
-                return
-        
-        # Run chaperon for FIN domain
-        chaperon_response = run_chaperon(
+                    "target": "work db query",
+                },
+            )
+            dr = _handle_request(req)
+            work_data = dr.get("data", {})
+            self._send_json_response(200, {
+                "ok": dr["ok"],
+                "type": "work_query",
+                "items": work_data.get("items", []),
+                "requires_confirmation": False,
+                "clarification_questions": [],
+                "should_execute": True,
+                "confirmation_message": work_data.get("formatted", ""),
+                "inherited_context": {"last_domain": "WORK"},
+                "raw_text": text,
+                "detected_domain": "WORK",
+                "query_filters": work_filters,
+                "total": work_data.get("total", 0),
+                "execution_id": dr.get("plan_id"),
+            })
+            return
+
+        # FIN domain: run chaperon via pipeline
+        req = normalize_request(
             text=text,
-            domain=domain,
-            session_context=session_context,
+            filters={"domain": domain, "session_context": session_data},
+            metadata={
+                "action": ACTION_FIN_CHAPERON,
+                "domain": "FIN",
+                "risk_level": RISK_LOW,
+                "requires_confirmation": False,
+            },
         )
-        
-        # Build response
-        action_plan = chaperon_response["action_plan"]
-        
-        response_data = {
-            "ok": True,
-            "type": action_plan["type"],
+        dr = _handle_request(req)
+        chap_data = dr.get("data", {})
+        action_plan = chap_data.get("action_plan", {})
+
+        self._send_json_response(200, {
+            "ok": dr["ok"],
+            "type": action_plan.get("type", "passthrough"),
             "items": [
                 {
-                    "monto": item["monto"],
-                    "moneda": item["moneda"],
-                    "categoria": item["categoria"],
-                    "responsable": item["responsable"],
-                    "descripcion": item["descripcion"],
-                    "raw_segment": item["raw_segment"],
+                    "monto":       item.get("monto"),
+                    "moneda":      item.get("moneda"),
+                    "categoria":   item.get("categoria"),
+                    "responsable": item.get("responsable"),
+                    "descripcion": item.get("descripcion"),
+                    "raw_segment": item.get("raw_segment"),
                 }
-                for item in action_plan["items"]
+                for item in action_plan.get("items", [])
             ],
-            "requires_confirmation": action_plan["requires_confirmation"],
-            "clarification_questions": action_plan["clarification_questions"],
-            "should_execute": chaperon_response["should_execute"],
-            "confirmation_message": chaperon_response["confirmation_message"],
-            "inherited_context": dict(action_plan["inherited_context"]),
-            "raw_text": chaperon_response["raw_text"],
-            "detected_domain": chaperon_response["detected_domain"],
-        }
-        
-        self._send_json_response(200, response_data)
+            "requires_confirmation": action_plan.get("requires_confirmation", False),
+            "clarification_questions": action_plan.get("clarification_questions", []),
+            "should_execute": chap_data.get("should_execute", True),
+            "confirmation_message": chap_data.get("confirmation_message"),
+            "inherited_context": dict(action_plan.get("inherited_context", {})),
+            "raw_text": chap_data.get("raw_text", text),
+            "detected_domain": chap_data.get("detected_domain", domain),
+            "execution_id": dr.get("plan_id"),
+        })
     
     def _handle_fin_expense_batch(self, remote: str) -> None:
         """Handle POST /fin/expense/batch - execute multiple expenses from confirmed action_plan.
-        
-        Expects a list of expense items (from chaperon) to process in batch.
-        Each item is processed and stored to Sheets individually.
+
+        Sprint 2 canonical entry: normalize_request → handle_request → DomainResult.
+        Batch processing (parse + store per item) is delegated to the pipeline.
         """
-        # Check auth
         auth_error = self._check_auth()
         if auth_error:
             status, error = auth_error
             self._send_json_response(status, error)
             return
-        
-        # Check content-type
-        content_type = self.headers.get("Content-Type", "")
-        if "application/json" not in content_type:
-            status, error = _make_json_error(400, "Content-Type must be application/json", "BadRequest")
-            self._send_json_response(status, error)
-            return
-        
-        # Read body
+
         result = self._read_body()
         if result[1] is not None:
             status, error = result[1]
             self._send_json_response(status, error)
             return
-        
         body = result[0]
-        
-        # Parse JSON
+
         try:
             data = json.loads(body.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
             status, error = _make_json_error(400, f"Invalid JSON: {e}", "BadRequest")
             self._send_json_response(status, error)
             return
-        
-        # Validate request structure
+
         if not isinstance(data, dict):
             status, error = _make_json_error(400, "Request body must be a JSON object", "BadRequest")
             self._send_json_response(status, error)
             return
-        
-        # Get items list
+
         items = data.get("items", [])
         if not isinstance(items, list) or len(items) == 0:
             status, error = _make_json_error(400, 'Missing required field: "items"', "BadRequest")
             self._send_json_response(status, error)
             return
-        
-        # Process each item
-        results = []
-        sheets_available = check_sheets_available()
-        
-        for i, item in enumerate(items):
-            if not isinstance(item, dict):
-                results.append({
-                    "index": i,
-                    "ok": False,
-                    "error": "Item must be a JSON object",
-                    "stored": False,
-                })
-                continue
-            
-            # Build text from item for parsing
-            raw_segment = item.get("raw_segment", "")
-            if not raw_segment:
-                # Reconstruct from fields
-                monto = item.get("monto", 0)
-                moneda = item.get("moneda", "USD")
-                categoria = item.get("categoria", "")
-                responsable = item.get("responsable", "")
-                raw_segment = f"${monto} {categoria} {responsable}"
-            
-            # Build expense request
-            expense_request: ExpenseRequest = {
-                "text": raw_segment,
-                "override": {
-                    "responsable": item.get("responsable") or "",
-                    "moneda": item.get("moneda") or "",
-                },
-                "session_id": data.get("session_id", ""),
-            }
-            
-            # Parse expense
-            expense_response = parse_expense(expense_request)
-            
-            if not expense_response["ok"] or not expense_response["expense"]:
-                results.append({
-                    "index": i,
-                    "ok": False,
-                    "error": expense_response["message"],
-                    "stored": False,
-                })
-                continue
-            
-            exp = expense_response["expense"]
-            
-            # Override with confirmed values from batch item
-            if item.get("monto") is not None:
-                exp["monto"] = item["monto"]
-            if item.get("moneda"):
-                exp["moneda"] = item["moneda"]
-            if item.get("categoria"):
-                exp["categoria"] = item["categoria"]
-            if item.get("responsable"):
-                exp["responsable"] = item["responsable"]
-            
-            # Try to store to Sheets
-            if sheets_available and expense_response["ok"] and not expense_response["needs_confirmation"]:
-                from .tools.google.append_expense_row_tool import AppendExpenseRowTool
-                sheet_result = AppendExpenseRowTool().execute({
-                    "fecha": exp["fecha"],
-                    "descripcion": exp["descripcion"],
-                    "factura": exp.get("factura", ""),
-                    "responsable": exp["responsable"],
-                    "monto": exp["monto"] or 0.0,
-                    "moneda": exp["moneda"],
-                    "itbms": exp["itbms"] if exp.get("itbms") is not None else False,
-                    "categoria": exp["categoria"],
-                    "metodo_pago": exp.get("metodo_pago", "") or "",
-                    "notas": exp.get("notas", ""),
-                    "fuente": exp.get("fuente", "chat"),
-                    "link_archivo": exp.get("link_archivo", ""),
-                })
 
-                if sheet_result.ok:
-                    results.append({
-                        "index": i,
-                        "ok": True,
-                        "stored": True,
-                        "row_number": sheet_result.data["row_number"],
-                        "expense": exp,
-                    })
-                else:
-                    err_msg = sheet_result.error.message if sheet_result.error else "Unknown sheets error"
-                    results.append({
-                        "index": i,
-                        "ok": True,
-                        "stored": False,
-                        "error": err_msg,
-                        "expense": exp,
-                    })
-            else:
-                results.append({
-                    "index": i,
-                    "ok": True,
-                    "stored": False,
-                    "needs_confirmation": expense_response["needs_confirmation"],
-                    "missing_fields": expense_response["missing_fields"],
-                    "expense": exp,
-                })
-        
-        # Build response
-        stored_count = sum(1 for r in results if r.get("stored", False))
-        
-        response_data = {
-            "ok": True,
-            "total_items": len(items),
-            "stored_count": stored_count,
-            "sheets_available": sheets_available,
-            "results": results,
-            "message": f"Procesados {len(items)} gastos, {stored_count} guardados en Sheets",
-        }
-        
-        self._send_json_response(200, response_data)
+        from .contracts import normalize_request, ACTION_FIN_BATCH, RISK_MEDIUM
+        from .core.orchestrator import handle_request as _handle_request
+
+        req = normalize_request(
+            text="",
+            filters={"items": items, "session_id": data.get("session_id", "")},
+            metadata={
+                "action": ACTION_FIN_BATCH,
+                "domain": "FIN",
+                "risk_level": RISK_MEDIUM,
+                "requires_confirmation": False,
+            },
+        )
+        dr = _handle_request(req)
+        batch_data = dr.get("data", {})
+
+        self._send_json_response(200, {
+            "ok": dr["ok"],
+            "total_items": batch_data.get("total_items", len(items)),
+            "stored_count": batch_data.get("stored_count", 0),
+            "sheets_available": batch_data.get("sheets_available", True),
+            "results": batch_data.get("results", []),
+            "message": batch_data.get("message", dr.get("message", "")),
+            "execution_id": dr.get("plan_id"),
+        })
 
     def _handle_fin_expense_confirm(self, remote: str) -> None:
-        """Handle POST /fin/expense/confirm - confirm expense and append to Sheets."""
-        # Check auth
+        """Handle POST /fin/expense/confirm - confirm expense and append to Sheets.
+
+        Sprint 2 canonical entry: normalize_request → handle_request → DomainResult.
+        All expense fields passed as flat filters to ACTION_FIN_CONFIRM pipeline.
+        """
         auth_error = self._check_auth()
         if auth_error:
             status, error = auth_error
             _log_fin_expense_event(remote, ok=False, action="confirm", error_message="Unauthorized")
             self._send_json_response(status, error)
             return
-        
-        # Check content-type
-        content_type = self.headers.get("Content-Type", "")
-        if "application/json" not in content_type:
-            status, error = _make_json_error(400, "Content-Type must be application/json", "BadRequest")
-            _log_fin_expense_event(remote, ok=False, action="confirm", error_message="Invalid content type")
-            self._send_json_response(status, error)
-            return
-        
-        # Read body
+
         result = self._read_body()
         if result[1] is not None:
             status, error = result[1]
             _log_fin_expense_event(remote, ok=False, action="confirm", error_message="Failed to read body")
             self._send_json_response(status, error)
             return
-        
         body = result[0]
-        
-        # Parse JSON
+
         try:
             data = json.loads(body.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as e:
@@ -3026,8 +2877,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             _log_fin_expense_event(remote, ok=False, action="confirm", error_message=f"Invalid JSON: {e}")
             self._send_json_response(status, error)
             return
-        
-        # Validate required expense fields
+
         required = ["fecha", "monto", "moneda", "descripcion", "responsable"]
         missing = [f for f in required if f not in data or data[f] is None]
         if missing:
@@ -3035,79 +2885,68 @@ class WebhookHandler(BaseHTTPRequestHandler):
             _log_fin_expense_event(remote, ok=False, action="confirm", error_message=f"Missing fields: {missing}")
             self._send_json_response(status, error)
             return
-        
-        # Extract fields
-        fecha = data["fecha"]
-        monto = data["monto"]
-        moneda = data["moneda"]
-        descripcion = data["descripcion"]
-        responsable = data["responsable"]
-        categoria = data.get("categoria", "otros")
-        itbms = data.get("itbms", False)
-        metodo_pago = data.get("metodo_pago", "")
-        notas = data.get("notas", "")
-        factura = data.get("factura", "")
-        session_id = data.get("session_id", "")
-        
-        # Validate monto is numeric
+
         try:
-            monto = float(monto)
+            monto = float(data["monto"])
         except (ValueError, TypeError):
             status, error = _make_json_error(400, "monto must be a number", "BadRequest")
             _log_fin_expense_event(remote, ok=False, action="confirm", error_message="Invalid monto")
             self._send_json_response(status, error)
             return
-        
-        # Append to Google Sheets using new 13-column format
-        from .tools.google.append_expense_row_tool import AppendExpenseRowTool
-        tool_result = AppendExpenseRowTool().execute({
-            "fecha": fecha,
-            "descripcion": descripcion,
-            "factura": factura,
-            "responsable": responsable,
-            "monto": monto,
-            "moneda": moneda,
-            "itbms": itbms,
-            "categoria": categoria,
-            "metodo_pago": metodo_pago,
-            "notas": notas,
-            "fuente": "Texto",
-            "link_archivo": "",
-            "expense_id": session_id,
-        })
 
-        # Log
-        err_msg = "" if tool_result.ok else (tool_result.error.message if tool_result.error else "")
+        session_id = data.get("session_id", "")
+
+        from .contracts import normalize_request, ACTION_FIN_CONFIRM, RISK_MEDIUM
+        from .core.orchestrator import handle_request as _handle_request
+
+        req = normalize_request(
+            text="",
+            filters={
+                "fecha":       data["fecha"],
+                "monto":       monto,
+                "moneda":      data["moneda"],
+                "descripcion": data["descripcion"],
+                "responsable": data["responsable"],
+                "categoria":   data.get("categoria", "otros"),
+                "itbms":       data.get("itbms", False),
+                "metodo_pago": data.get("metodo_pago", ""),
+                "notas":       data.get("notas", ""),
+                "factura":     data.get("factura", ""),
+                "session_id":  session_id,
+            },
+            metadata={
+                "action": ACTION_FIN_CONFIRM,
+                "domain": "FIN",
+                "risk_level": RISK_MEDIUM,
+                "requires_confirmation": False,
+            },
+        )
+        dr = _handle_request(req)
+        confirm_data = dr.get("data", {})
+
         _log_fin_expense_event(
             remote=remote,
-            ok=tool_result.ok,
+            ok=dr["ok"],
             action="sheets_append",
             monto=monto,
-            moneda=moneda,
-            categoria=categoria,
-            responsable=responsable,
+            moneda=data["moneda"],
+            categoria=data.get("categoria", "otros"),
+            responsable=data["responsable"],
             session_id=session_id,
-            error_message=err_msg,
+            error_message="" if dr["ok"] else (dr.get("error") or {}).get("message", ""),
         )
 
-        if tool_result.ok:
-            row_number = tool_result.data["row_number"]
-            response = {
+        if dr["ok"]:
+            row_number = confirm_data.get("row_number")
+            self._send_json_response(200, {
                 "ok": True,
-                "message": f"Guardado en Sheets (fila {row_number})",
+                "message": dr.get("message", f"Guardado en Sheets (fila {row_number})"),
                 "row_number": row_number,
-                "expense": {
-                    "fecha": fecha,
-                    "monto": monto,
-                    "moneda": moneda,
-                    "descripcion": descripcion,
-                    "categoria": categoria,
-                    "responsable": responsable,
-                    "itbms": itbms,
-                },
-            }
-            self._send_json_response(200, response)
+                "expense": confirm_data.get("expense", {}),
+                "execution_id": dr.get("plan_id"),
+            })
         else:
+            err_msg = (dr.get("error") or {}).get("message", "SheetsError")
             status, error = _make_json_error(500, err_msg, "SheetsError")
             self._send_json_response(status, error)
     

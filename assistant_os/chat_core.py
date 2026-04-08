@@ -2010,7 +2010,7 @@ def _resolve_code_preview(
                 "write_intent_summary": exec_result.get("write_intent_summary", ""),
             },
         )
-    # Executor ran but failed — surface as executor_error (not queued)
+    # Executor ran but returned an error — surface as executor_error, not queued
     _log.warning("propose_executor failed: %s", exec_result.get("error"))
     return make_chat_core_response(
         domain="CODE",
@@ -2025,6 +2025,8 @@ def _resolve_code_preview(
             "base_branch": base_branch,
             "files": resolved_files,
             "resolution": "confirmed",
+            # error_message used by renderer template; propose_error preserved for audit
+            "error_message": exec_result.get("error") or "El executor no detectó cambios aplicables.",
             "propose_error": exec_result.get("error"),
             "human_msg": "El executor corrió pero no pudo generar cambios aplicables.",
         },
