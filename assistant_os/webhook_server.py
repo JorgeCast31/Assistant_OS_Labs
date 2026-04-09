@@ -2517,17 +2517,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 remote=remote,
                 ok=True,
                 action="parse",
-<<<<<<< HEAD
                 monto=(exp.get("monto") or 0.0) if exp else 0.0,
                 moneda=exp.get("moneda", "") if exp else "",
                 categoria=exp.get("categoria", "") if exp else "",
                 responsable=exp.get("responsable", "") if exp else "",
-=======
-                monto=(exp["monto"] or 0.0) if exp else 0.0,
-                moneda=exp["moneda"] if exp else "",
-                categoria=exp["categoria"] if exp else "",
-                responsable=exp["responsable"] if exp else "",
->>>>>>> origin/main
                 needs_confirmation=True,
                 session_id=safe_session_id,
                 text_preview=text,
@@ -2720,10 +2713,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if domain == "WORK":
             # Route WORK queries through the canonical WORK_QUERY path
             from .classifier import parse_work_query_filters
-<<<<<<< HEAD
             from .config import NOTION_WORK_ACTIVE_STATUSES
-=======
->>>>>>> origin/main
             work_filters = parse_work_query_filters(text)
             if "status" not in work_filters:
                 work_filters["status"] = NOTION_WORK_ACTIVE_STATUSES
