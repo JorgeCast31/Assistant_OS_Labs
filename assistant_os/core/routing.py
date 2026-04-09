@@ -67,10 +67,27 @@ def get_pipeline(domain: str) -> Optional[Callable]:
     """
     Return the pipeline executor for the given system domain, or None.
 
+    Uses hybrid late-binding: if DOMAIN_PIPELINES holds the original module-level
+    reference (unchanged), re-reads the attribute from the pipeline module so that
+    unittest.mock @patch decorators are respected. If the entry has been replaced
+    (e.g. by a test via DOMAIN_PIPELINES["WORK"] = mock), the override is used as-is.
+
     Args:
         domain: System domain string (e.g. "WORK", "FIN").
 
     Returns:
         Callable(plan, context_id) -> DomainResult, or None if unregistered.
     """
-    return DOMAIN_PIPELINES.get(domain)
+    stored = DOMAIN_PIPELINES.get(domain)
+    if stored is None:
+        return None
+    if domain == "WORK" and stored is _work_execute:
+        from ..pipelines import work_pipeline
+        return work_pipeline.execute
+    if domain == "FIN" and stored is _fin_execute:
+        from ..pipelines import fin_pipeline
+        return fin_pipeline.execute
+    if domain == "CODE" and stored is _code_execute:
+        from ..pipelines import code_pipeline
+        return code_pipeline.execute
+    return stored

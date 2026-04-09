@@ -460,12 +460,16 @@ def make_plan(
 # Auto-execute rules:
 #   WORK_QUERY / RISK_LOW    — read-only Notion query, no side effects
 #   WORK_UPDATE / RISK_LOW   — Phase 1 is read-only preview; no mutation occurs
+#   WORK_CREATE / RISK_MEDIUM — Post-confirmation: handler is called after user approval
+#   WORK_DELETE / RISK_HIGH   — Post-confirmation: handler is called after user approval
 #   FIN_EXPENSE / RISK_MEDIUM — single expense auto-executes per design intent
 #   CODE_EXPLAIN / RISK_LOW  — read-only: no side effects
 #   CODE_REVIEW / RISK_LOW   — read-only: no side effects
 _AUTO_EXECUTE_WHITELIST: frozenset[tuple[str, str]] = frozenset({
     (ACTION_WORK_QUERY,    RISK_LOW),
     (ACTION_WORK_UPDATE,   RISK_LOW),     # Phase 1: read-only preview, no mutation side effects
+    (ACTION_WORK_CREATE,   RISK_MEDIUM),  # Post-confirmation: user already approved
+    (ACTION_WORK_DELETE,   RISK_HIGH),    # Post-confirmation: user already approved
     (ACTION_FIN_EXPENSE,   RISK_MEDIUM),  # Single expense auto-executes by design
     (ACTION_FIN_PLAN,      RISK_LOW),     # Analysis-only, no side effects
     (ACTION_FIN_CHAPERON,  RISK_LOW),     # Analysis-only, no side effects

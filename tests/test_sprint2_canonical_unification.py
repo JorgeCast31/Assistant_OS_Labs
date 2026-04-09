@@ -74,29 +74,33 @@ class TestOrchestratorStructuredPath(unittest.TestCase):
     """When req["metadata"]["action"] is set, orchestrator skips NL classify."""
 
     @patch("assistant_os.core.policy.build_policy")
-    @patch("assistant_os.pipelines.fin_pipeline.execute")
-    def test_structured_path_skips_classify(self, mock_fin_execute, mock_policy):
+    def test_structured_path_skips_classify(self, mock_policy):
         """Structured path must not call semantic.classify."""
         mock_policy.return_value = {"execution_mode": "auto"}
-        mock_fin_execute.return_value = make_domain_result(
+        mock_fin_execute = MagicMock(return_value=make_domain_result(
             ok=True, result_type=RESULT_TYPE_FIN_PLAN, domain="FIN",
             message="Plan ok", data={"items": []},
-        )
+        ))
 
         from assistant_os.contracts import normalize_request, ACTION_FIN_PLAN, RISK_LOW
         from assistant_os.core.orchestrator import handle_request
+        import assistant_os.core.routing as routing
 
-        req = normalize_request(
-            text="compré 25 dólares en comida",
-            filters={},
-            metadata={"action": ACTION_FIN_PLAN, "domain": "FIN", "risk_level": RISK_LOW,
-                      "requires_confirmation": False},
-        )
-
-        with patch("assistant_os.core.semantic.classify") as mock_classify:
-            dr = handle_request(req)
-            # classify must NOT be called in the structured path
-            mock_classify.assert_not_called()
+        orig = routing.DOMAIN_PIPELINES.get("FIN")
+        routing.DOMAIN_PIPELINES["FIN"] = mock_fin_execute
+        try:
+            req = normalize_request(
+                text="compré 25 dólares en comida",
+                filters={},
+                metadata={"action": ACTION_FIN_PLAN, "domain": "FIN", "risk_level": RISK_LOW,
+                          "requires_confirmation": False},
+            )
+            with patch("assistant_os.core.semantic.classify") as mock_classify:
+                dr = handle_request(req)
+                # classify must NOT be called in the structured path
+                mock_classify.assert_not_called()
+        finally:
+            routing.DOMAIN_PIPELINES["FIN"] = orig
 
         self.assertTrue(dr["ok"])
         mock_fin_execute.assert_called_once()
@@ -392,7 +396,7 @@ class TestFinChaperonSprint2(unittest.TestCase):
     def test_pending_flow_short_circuits(self):
         body = json.dumps({"text": "25$", "session_context": {"pending": True}}).encode()
         handler = _make_handler(body)
-        with patch("assistant_os.webhook_server._handle_request") as mock_handle:
+        with patch("assistant_os.core.orchestrator.handle_request") as mock_handle:
             WebhookHandler._handle_fin_chaperon(handler, _REMOTE)
             mock_handle.assert_not_called()
 

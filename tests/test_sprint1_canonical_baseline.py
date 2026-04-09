@@ -60,10 +60,20 @@ def _captured_response(handler: MagicMock) -> dict:
 
 class TestWorkQueryCanonicalPath(unittest.TestCase):
 
-    @patch("assistant_os.pipelines.work_pipeline.execute")
-    def test_routes_through_pipeline(self, mock_execute):
+    def setUp(self):
+        self.mock_execute = MagicMock()
+        self._patcher = patch.dict(
+            "assistant_os.core.routing.DOMAIN_PIPELINES",
+            {"WORK": self.mock_execute},
+        )
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
+
+    def test_routes_through_pipeline(self):
         """handle_work_query must call work_pipeline.execute, not query_work_db."""
-        mock_execute.return_value = make_domain_result(
+        self.mock_execute.return_value = make_domain_result(
             ok=True,
             result_type=RESULT_TYPE_WORK_QUERY,
             domain="WORK",
@@ -76,19 +86,19 @@ class TestWorkQueryCanonicalPath(unittest.TestCase):
         from assistant_os.handlers.work import handle_work_query
         handle_work_query(handler, _REMOTE)
 
-        mock_execute.assert_called_once()
-        plan_arg, context_id_arg = mock_execute.call_args[0]
+        self.mock_execute.assert_called_once()
+        plan_arg, context_id_arg = self.mock_execute.call_args[0]
         self.assertEqual(plan_arg.get("action"), "WORK_QUERY")
         self.assertIsNotNone(plan_arg.get("plan_id"))
 
-    @patch("assistant_os.pipelines.work_pipeline.execute")
-    def test_response_contains_execution_id(self, mock_execute):
-        mock_execute.return_value = make_domain_result(
+    def test_response_contains_execution_id(self):
+        self.mock_execute.return_value = make_domain_result(
             ok=True,
             result_type=RESULT_TYPE_WORK_QUERY,
             domain="WORK",
             message="OK",
             data={"items": [], "total": 0, "formatted": "", "filters": {}},
+            plan_id="plan-wq-1",
         )
         handler = _make_handler(b"{}")
         from assistant_os.handlers.work import handle_work_query
@@ -98,9 +108,8 @@ class TestWorkQueryCanonicalPath(unittest.TestCase):
         self.assertIn("execution_id", resp)
         self.assertIsNotNone(resp["execution_id"])
 
-    @patch("assistant_os.pipelines.work_pipeline.execute")
-    def test_response_contains_result_type(self, mock_execute):
-        mock_execute.return_value = make_domain_result(
+    def test_response_contains_result_type(self):
+        self.mock_execute.return_value = make_domain_result(
             ok=True,
             result_type=RESULT_TYPE_WORK_QUERY,
             domain="WORK",
@@ -114,10 +123,9 @@ class TestWorkQueryCanonicalPath(unittest.TestCase):
         resp = _captured_response(handler)
         self.assertEqual(resp.get("result_type"), RESULT_TYPE_WORK_QUERY)
 
-    @patch("assistant_os.pipelines.work_pipeline.execute")
-    def test_backward_compat_fields_present(self, mock_execute):
+    def test_backward_compat_fields_present(self):
         """Legacy fields (ok, items, total, formatted) must still be in response."""
-        mock_execute.return_value = make_domain_result(
+        self.mock_execute.return_value = make_domain_result(
             ok=True,
             result_type=RESULT_TYPE_WORK_QUERY,
             domain="WORK",
@@ -134,15 +142,15 @@ class TestWorkQueryCanonicalPath(unittest.TestCase):
         self.assertIn("total", resp)
         self.assertIn("formatted", resp)
 
-    @patch("assistant_os.pipelines.work_pipeline.execute")
-    def test_pipeline_error_still_returns_execution_id(self, mock_execute):
-        mock_execute.return_value = make_domain_result(
+    def test_pipeline_error_still_returns_execution_id(self):
+        self.mock_execute.return_value = make_domain_result(
             ok=False,
             result_type=RESULT_TYPE_WORK_QUERY,
             domain="WORK",
             message="Notion no disponible.",
             data={},
             error={"type": "NotionUnavailable", "message": "Notion not configured"},
+            plan_id="plan-wq-err",
         )
         handler = _make_handler(b"{}")
         from assistant_os.handlers.work import handle_work_query
@@ -160,9 +168,19 @@ class TestWorkQueryCanonicalPath(unittest.TestCase):
 
 class TestWorkCreateCanonicalPath(unittest.TestCase):
 
-    @patch("assistant_os.pipelines.work_pipeline.execute")
-    def test_routes_through_pipeline(self, mock_execute):
-        mock_execute.return_value = make_domain_result(
+    def setUp(self):
+        self.mock_execute = MagicMock()
+        self._patcher = patch.dict(
+            "assistant_os.core.routing.DOMAIN_PIPELINES",
+            {"WORK": self.mock_execute},
+        )
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
+
+    def test_routes_through_pipeline(self):
+        self.mock_execute.return_value = make_domain_result(
             ok=True,
             result_type=RESULT_TYPE_WORK_CREATE,
             domain="WORK",
@@ -175,19 +193,19 @@ class TestWorkCreateCanonicalPath(unittest.TestCase):
         from assistant_os.handlers.work import handle_work_create
         handle_work_create(handler, _REMOTE)
 
-        mock_execute.assert_called_once()
-        plan_arg, _ = mock_execute.call_args[0]
+        self.mock_execute.assert_called_once()
+        plan_arg, _ = self.mock_execute.call_args[0]
         self.assertEqual(plan_arg.get("action"), "WORK_CREATE")
         self.assertEqual(plan_arg.get("filters", {}).get("title"), "Mi tarea")
 
-    @patch("assistant_os.pipelines.work_pipeline.execute")
-    def test_response_contains_execution_id(self, mock_execute):
-        mock_execute.return_value = make_domain_result(
+    def test_response_contains_execution_id(self):
+        self.mock_execute.return_value = make_domain_result(
             ok=True,
             result_type=RESULT_TYPE_WORK_CREATE,
             domain="WORK",
             message="Tarea creada.",
             data={"page_id": "x", "url": "", "title": "T"},
+            plan_id="plan-wc-1",
         )
         handler = _make_handler(json.dumps({"title": "T"}).encode())
         from assistant_os.handlers.work import handle_work_create
@@ -197,9 +215,8 @@ class TestWorkCreateCanonicalPath(unittest.TestCase):
         self.assertIn("execution_id", resp)
         self.assertIsNotNone(resp["execution_id"])
 
-    @patch("assistant_os.pipelines.work_pipeline.execute")
-    def test_backward_compat_fields_present(self, mock_execute):
-        mock_execute.return_value = make_domain_result(
+    def test_backward_compat_fields_present(self):
+        self.mock_execute.return_value = make_domain_result(
             ok=True,
             result_type=RESULT_TYPE_WORK_CREATE,
             domain="WORK",
@@ -216,10 +233,9 @@ class TestWorkCreateCanonicalPath(unittest.TestCase):
 
     def test_missing_title_returns_400_without_calling_pipeline(self):
         handler = _make_handler(json.dumps({}).encode())
-        with patch("assistant_os.pipelines.work_pipeline.execute") as mock_execute:
-            from assistant_os.handlers.work import handle_work_create
-            handle_work_create(handler, _REMOTE)
-            mock_execute.assert_not_called()
+        from assistant_os.handlers.work import handle_work_create
+        handle_work_create(handler, _REMOTE)
+        self.mock_execute.assert_not_called()
         status_code, _ = handler._send_json_response.call_args[0]
         self.assertEqual(status_code, 400)
 
@@ -230,9 +246,19 @@ class TestWorkCreateCanonicalPath(unittest.TestCase):
 
 class TestWorkDeleteCanonicalPath(unittest.TestCase):
 
-    @patch("assistant_os.pipelines.work_pipeline.execute")
-    def test_routes_through_pipeline(self, mock_execute):
-        mock_execute.return_value = make_domain_result(
+    def setUp(self):
+        self.mock_execute = MagicMock()
+        self._patcher = patch.dict(
+            "assistant_os.core.routing.DOMAIN_PIPELINES",
+            {"WORK": self.mock_execute},
+        )
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
+
+    def test_routes_through_pipeline(self):
+        self.mock_execute.return_value = make_domain_result(
             ok=True,
             result_type=RESULT_TYPE_WORK_DELETE,
             domain="WORK",
@@ -245,19 +271,19 @@ class TestWorkDeleteCanonicalPath(unittest.TestCase):
         from assistant_os.handlers.work import handle_work_delete
         handle_work_delete(handler, _REMOTE)
 
-        mock_execute.assert_called_once()
-        plan_arg, _ = mock_execute.call_args[0]
+        self.mock_execute.assert_called_once()
+        plan_arg, _ = self.mock_execute.call_args[0]
         self.assertEqual(plan_arg.get("action"), "WORK_DELETE")
         self.assertEqual(plan_arg.get("filters", {}).get("keywords"), ["test"])
 
-    @patch("assistant_os.pipelines.work_pipeline.execute")
-    def test_response_contains_execution_id(self, mock_execute):
-        mock_execute.return_value = make_domain_result(
+    def test_response_contains_execution_id(self):
+        self.mock_execute.return_value = make_domain_result(
             ok=True,
             result_type=RESULT_TYPE_WORK_DELETE,
             domain="WORK",
             message="OK",
             data={"deleted_count": 0},
+            plan_id="plan-wd-1",
         )
         body = json.dumps({"keywords": ["x"]}).encode()
         handler = _make_handler(body)
@@ -268,9 +294,8 @@ class TestWorkDeleteCanonicalPath(unittest.TestCase):
         self.assertIn("execution_id", resp)
         self.assertIsNotNone(resp["execution_id"])
 
-    @patch("assistant_os.pipelines.work_pipeline.execute")
-    def test_backward_compat_fields_present(self, mock_execute):
-        mock_execute.return_value = make_domain_result(
+    def test_backward_compat_fields_present(self):
+        self.mock_execute.return_value = make_domain_result(
             ok=True,
             result_type=RESULT_TYPE_WORK_DELETE,
             domain="WORK",
@@ -288,10 +313,9 @@ class TestWorkDeleteCanonicalPath(unittest.TestCase):
 
     def test_missing_criteria_returns_400_without_calling_pipeline(self):
         handler = _make_handler(json.dumps({}).encode())
-        with patch("assistant_os.pipelines.work_pipeline.execute") as mock_execute:
-            from assistant_os.handlers.work import handle_work_delete
-            handle_work_delete(handler, _REMOTE)
-            mock_execute.assert_not_called()
+        from assistant_os.handlers.work import handle_work_delete
+        handle_work_delete(handler, _REMOTE)
+        self.mock_execute.assert_not_called()
         status_code, _ = handler._send_json_response.call_args[0]
         self.assertEqual(status_code, 400)
 
@@ -302,6 +326,17 @@ class TestWorkDeleteCanonicalPath(unittest.TestCase):
 
 class TestFinExpenseCanonicalPath(unittest.TestCase):
 
+    def setUp(self):
+        self.mock_execute = MagicMock()
+        self._patcher = patch.dict(
+            "assistant_os.core.routing.DOMAIN_PIPELINES",
+            {"FIN": self.mock_execute},
+        )
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
+
     def _make_fin_handler(self, text: str = "Gasté $50 en taxi", session_id: str = "") -> MagicMock:
         body = json.dumps({"text": text, "session_id": session_id}).encode()
         handler = MagicMock(spec=WebhookHandler)
@@ -311,9 +346,8 @@ class TestFinExpenseCanonicalPath(unittest.TestCase):
         return handler
 
     @patch("assistant_os.webhook_server.check_sheets_available", return_value=False)
-    @patch("assistant_os.pipelines.fin_pipeline.execute")
-    def test_routes_through_pipeline(self, mock_execute, mock_sheets):
-        mock_execute.return_value = make_domain_result(
+    def test_routes_through_pipeline(self, mock_sheets):
+        self.mock_execute.return_value = make_domain_result(
             ok=True,
             result_type=RESULT_TYPE_FIN_EXPENSE,
             domain="FIN",
@@ -331,15 +365,14 @@ class TestFinExpenseCanonicalPath(unittest.TestCase):
         handler = self._make_fin_handler()
         WebhookHandler._handle_fin_expense(handler, _REMOTE)
 
-        mock_execute.assert_called_once()
-        plan_arg, ctx_arg = mock_execute.call_args[0]
+        self.mock_execute.assert_called_once()
+        plan_arg, ctx_arg = self.mock_execute.call_args[0]
         self.assertEqual(plan_arg.get("action"), "FIN_EXPENSE")
         self.assertEqual(plan_arg.get("raw_text"), "Gasté $50 en taxi")
 
     @patch("assistant_os.webhook_server.check_sheets_available", return_value=False)
-    @patch("assistant_os.pipelines.fin_pipeline.execute")
-    def test_response_contains_execution_id(self, mock_execute, mock_sheets):
-        mock_execute.return_value = make_domain_result(
+    def test_response_contains_execution_id(self, mock_sheets):
+        self.mock_execute.return_value = make_domain_result(
             ok=True,
             result_type=RESULT_TYPE_FIN_EXPENSE,
             domain="FIN",
@@ -353,6 +386,7 @@ class TestFinExpenseCanonicalPath(unittest.TestCase):
                 "needs_confirmation": False,
                 "ambiguous_responsables": [],
             },
+            plan_id="plan-fe-1",
         )
         handler = self._make_fin_handler()
         WebhookHandler._handle_fin_expense(handler, _REMOTE)
@@ -362,9 +396,8 @@ class TestFinExpenseCanonicalPath(unittest.TestCase):
         self.assertIsNotNone(resp["execution_id"])
 
     @patch("assistant_os.webhook_server.check_sheets_available", return_value=False)
-    @patch("assistant_os.pipelines.fin_pipeline.execute")
-    def test_parse_failure_returns_execution_id(self, mock_execute, mock_sheets):
-        mock_execute.return_value = make_domain_result(
+    def test_parse_failure_returns_execution_id(self, mock_sheets):
+        self.mock_execute.return_value = make_domain_result(
             ok=False,
             result_type=RESULT_TYPE_FIN_EXPENSE,
             domain="FIN",
@@ -422,13 +455,23 @@ class TestFinPipelineBugFix(unittest.TestCase):
 
 class TestPolicyLayerInvoked(unittest.TestCase):
 
+    def setUp(self):
+        self.mock_execute = MagicMock()
+        self._patcher = patch.dict(
+            "assistant_os.core.routing.DOMAIN_PIPELINES",
+            {"WORK": self.mock_execute},
+        )
+        self._patcher.start()
+
+    def tearDown(self):
+        self._patcher.stop()
+
     @patch("assistant_os.core.policy.build_policy_decision")
-    @patch("assistant_os.pipelines.work_pipeline.execute")
-    def test_build_policy_called_for_work_query(self, mock_execute, mock_bpd):
+    def test_build_policy_called_for_work_query(self, mock_bpd):
         from assistant_os.contracts import build_policy_decision as real_bpd
         # Let build_policy_decision run normally but spy it
         mock_bpd.side_effect = real_bpd
-        mock_execute.return_value = make_domain_result(
+        self.mock_execute.return_value = make_domain_result(
             ok=True,
             result_type=RESULT_TYPE_WORK_QUERY,
             domain="WORK",
