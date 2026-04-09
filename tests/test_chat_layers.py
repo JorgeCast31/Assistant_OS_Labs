@@ -150,5 +150,76 @@ def test_renderer_preserves_plan_data():
 
 
 # ---------------------------------------------------------------------------
+# FIX-1: CODE executor_error surface — executor ran but returned error
+# ---------------------------------------------------------------------------
+
+def test_code_executor_error_intent_not_queued():
+    """
+    FIX-1: When the propose executor runs and returns ok=False, the response
+    must have intent='executor_error', NOT intent='queued'.
+    """
+    from unittest.mock import patch
+    from assistant_os.chat_core import PENDING_FLOW_RESOLVERS
+
+    ctx_id = new_context_id()
+    session = ChatSession(
+        pending_flow="code_preview",
+        context_id=ctx_id,
+        pending_data={
+            "operation": "CODE_FIX",
+            "task": "fix a bug",
+            "repo_path": "/tmp/repo",
+            "base_branch": "main",
+            "files": ["src/foo.py"],
+        },
+    )
+
+    failing_exec = {"ok": False, "error": "No changes detected"}
+
+    with patch("assistant_os.chat_core._call_propose_executor", return_value=failing_exec):
+        result = process_chat_input("confirmar", session=session)
+
+    assert result["intent"] == "executor_error", (
+        f"Expected 'executor_error', got {result['intent']!r}"
+    )
+    assert result["audit"].get("propose_error") is not None
+    assert result["audit"].get("error_message") is not None
+    # Must NOT sound like success/queued
+    assert result["intent"] != "queued"
+
+
+def test_code_executor_error_renders_truthfully():
+    """
+    FIX-1: Rendered message for executor_error must NOT look like a success
+    confirmation (template should produce the error text, not 'Tarea CODE registrada').
+    """
+    from unittest.mock import patch
+
+    ctx_id = new_context_id()
+    session = ChatSession(
+        pending_flow="code_preview",
+        context_id=ctx_id,
+        pending_data={
+            "operation": "CODE_FIX",
+            "task": "fix a bug",
+            "repo_path": "/tmp/repo",
+            "base_branch": "main",
+            "files": ["src/foo.py"],
+        },
+    )
+
+    failing_exec = {"ok": False, "error": "El executor no detectó cambios aplicables."}
+
+    with patch("assistant_os.chat_core._call_propose_executor", return_value=failing_exec):
+        result = process_chat_input("confirmar", session=session)
+
+    rendered = render_chat_response(result)
+    # Must not contain the success queued message
+    assert "Tarea CODE registrada" not in rendered.message
+    # Must contain something error-related
+    assert "executor_error" in result["intent"] or result["intent"] != "queued"
+
+
+# ---------------------------------------------------------------------------
 # Run with: python -m unittest tests.test_chat_layers -v
 # ---------------------------------------------------------------------------

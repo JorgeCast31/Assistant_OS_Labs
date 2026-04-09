@@ -1,26 +1,36 @@
 """
 WORK domain HTTP handlers.
 
-Standalone functions extracted from WebhookHandler class in webhook_server.py.
-Each function accepts the handler instance as first argument so it can call
-self._check_auth(), self._read_body(), self._send_json_response() unchanged.
+Sprint 2 — Full Canonical Entry
+--------------------------------
+All three main handlers are pure HTTP adapters:
 
-The WebhookHandler class delegates to these functions via one-liner methods:
+    HTTP body → normalize_request() → handle_request() → HTTP response
 
-    def _handle_work_query(self, remote: str) -> None:
-        from .handlers.work import handle_work_query
-        handle_work_query(self, remote)
+The orchestrator's structured path (req["metadata"]["action"] is set) bypasses
+NL classification and builds the plan directly from req["filters"] +
+req["metadata"], then dispatches to work_pipeline via the domain registry.
 
-Test patching note:
-  NOTION_WORK_TRASH_DB_ID is kept in webhook_server module namespace and passed
-  as parameter so @patch('assistant_os.webhook_server.NOTION_WORK_TRASH_DB_ID')
-  continues to work in existing tests.
+Handlers no longer call make_plan(), build_policy(), or pipeline.execute()
+directly. orchestrator.handle_request() is the single canonical entry point.
+
+Backward-compatibility note
+----------------------------
+HTTP response shapes are kept identical to the pre-sprint format except two new
+fields (added non-breakingly in Sprint 1):
+  - execution_id: plan_id from DomainResult (canonical trace anchor)
+  - result_type:  RESULT_TYPE_* constant from DomainResult
+
+LEGACY code
+-----------
+_execute_work_delete is preserved below because the smoke test imports it.
+It is no longer called from the main handler flow.
 """
 from __future__ import annotations
 
 import json
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 _log = logging.getLogger(__name__)
 
@@ -28,17 +38,28 @@ if TYPE_CHECKING:
     from ..webhook_server import WebhookHandler
 
 from ..webhook_utils import _make_json_error, _log_webhook_event
-from ..integrations.notion import (
-    query_work_db,
-    format_work_query_response,
-    check_notion_available,
-    get_notion_status,
-    create_work_item,
-    WorkCreateRequest,
-    query_work_items_by_keywords,
-    archive_pages,
+from ..contracts import (
+    normalize_request,
+    ACTION_WORK_QUERY,
+    ACTION_WORK_CREATE,
+    ACTION_WORK_DELETE,
+    RISK_LOW,
+    RISK_MEDIUM,
+    RISK_HIGH,
 )
-from ..config import NOTION_WORK_DB_ID
+from ..core.orchestrator import handle_request as _handle_request
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _extract_error_msg(dr: dict) -> str | None:
+    """Extract a plain error string from a DomainResult for legacy response compat."""
+    err = dr.get("error")
+    if err and isinstance(err, dict):
+        return err.get("message")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +69,8 @@ from ..config import NOTION_WORK_DB_ID
 def handle_work_query(handler: "WebhookHandler", remote: str) -> None:
     """
     Handle POST /work/query - Query WORK tasks from Notion (read-only).
+
+    Canonical path: make_plan → build_policy → work_pipeline.execute → DomainResult
 
     Request JSON:
     {
@@ -84,7 +107,7 @@ def handle_work_query(handler: "WebhookHandler", remote: str) -> None:
             handler._send_json_response(status, error)
             return
 
-        # Check for pending session
+        # Pending session guard (unchanged)
         session_context = data.get("session_context", {})
         if session_context.get("pending"):
             handler._send_json_response(200, {
@@ -92,55 +115,54 @@ def handle_work_query(handler: "WebhookHandler", remote: str) -> None:
                 "items": [],
                 "total": 0,
                 "formatted": "Tienes un flujo pendiente. Complétalo antes de consultar tareas.",
-                "error": "pending_flow"
+                "error": "pending_flow",
+                "execution_id": None,
             })
             return
 
-        # Check Notion availability
-        if not check_notion_available():
-            notion_status = get_notion_status()
-            error_msg = notion_status.get("last_error", {}).get("message", "Notion not configured")
-            handler._send_json_response(200, {
-                "ok": False,
-                "items": [],
-                "total": 0,
-                "formatted": f"❌ Notion no está configurado: {error_msg}",
-                "error": error_msg
-            })
-            return
-
-        # Extract filters - support both structured filters and natural language
+        # Extract and normalise filters
         text = data.get("text", "")
         filters: dict = data.get("filters", {})
-
         if text and not filters:
             from ..classifier import parse_work_query_filters
             filters = parse_work_query_filters(text)
-
-        limit = data.get("limit", 20)
-        sort = data.get("sort")
-
         if "status" not in filters:
             from ..config import NOTION_WORK_ACTIVE_STATUSES
             filters["status"] = NOTION_WORK_ACTIVE_STATUSES
 
-        query_result = query_work_db(filters=filters, limit=limit, sort=sort)
-        formatted = format_work_query_response(query_result)
+        # ── Canonical entry ──────────────────────────────────────────────
+        req = normalize_request(
+            text=text or "",
+            filters=dict(filters),
+            metadata={
+                "action": ACTION_WORK_QUERY,
+                "domain": "WORK",
+                "risk_level": RISK_LOW,
+                "requires_confirmation": False,
+                "target": "work db query",
+            },
+        )
+        dr = _handle_request(req)
+        # ── End canonical entry ──────────────────────────────────────────
 
+        data_out = dr.get("data", {})
         _log_webhook_event(
             "/work/query",
             remote,
-            ok=query_result["ok"],
+            ok=dr["ok"],
             event_type="work_query",
         )
 
         handler._send_json_response(200, {
-            "ok": query_result["ok"],
-            "items": query_result["items"],
-            "total": query_result["total"],
-            "formatted": formatted,
-            "error": query_result["error"],
+            "ok": dr["ok"],
+            "items": data_out.get("items", []),
+            "total": data_out.get("total", 0),
+            "formatted": data_out.get("formatted", ""),
+            "error": _extract_error_msg(dr),
             "query_filters": filters,
+            # Canonical traceability (new, non-breaking)
+            "execution_id": dr.get("plan_id"),
+            "result_type": dr.get("result_type"),
         })
 
     except Exception as e:
@@ -151,7 +173,8 @@ def handle_work_query(handler: "WebhookHandler", remote: str) -> None:
             "items": [],
             "total": 0,
             "formatted": f"❌ Error interno: {e}",
-            "error": str(e)
+            "error": str(e),
+            "execution_id": None,
         })
 
 
@@ -165,6 +188,8 @@ def handle_work_create(handler: "WebhookHandler", remote: str) -> None:
 
     This endpoint is called AFTER user confirms the create action.
 
+    Canonical path: make_plan → build_policy → work_pipeline.execute → DomainResult
+
     Request JSON:
     {
         "title": "Task title (required)",
@@ -172,8 +197,7 @@ def handle_work_create(handler: "WebhookHandler", remote: str) -> None:
         "status": "INBOX (optional, default)",
         "load": "Alta|Media|Baja (optional)",
         "due": "YYYY-MM-DD (optional)",
-        "notes": "Additional notes (optional)",
-        "plan": {...}  // Original plan for audit
+        "notes": "Additional notes (optional)"
     }
     """
     try:
@@ -205,42 +229,47 @@ def handle_work_create(handler: "WebhookHandler", remote: str) -> None:
             handler._send_json_response(status, error)
             return
 
-        if not check_notion_available():
-            notion_status = get_notion_status()
-            error_msg = notion_status.get("last_error", {}).get("message", "Notion not configured")
-            handler._send_json_response(200, {
-                "ok": False,
-                "page_id": "",
-                "url": "",
+        # ── Canonical entry ──────────────────────────────────────────────
+        req = normalize_request(
+            text=title,
+            filters={
                 "title": title,
-                "error": error_msg
-            })
-            return
+                "project": data.get("project"),
+                "status": data.get("status", "INBOX"),
+                "load": data.get("load"),
+                "due": data.get("due"),
+                "notes": data.get("notes"),
+            },
+            metadata={
+                "action": ACTION_WORK_CREATE,
+                "domain": "WORK",
+                "risk_level": RISK_MEDIUM,
+                # Post-confirmation endpoint: requires_confirmation=False signals the
+                # policy layer that this call is already approved by the user.
+                "requires_confirmation": False,
+                "target": title,
+            },
+        )
+        dr = _handle_request(req)
+        # ── End canonical entry ──────────────────────────────────────────
 
-        create_request: WorkCreateRequest = {
-            "title": title,
-            "project": data.get("project"),
-            "status": data.get("status", "INBOX"),
-            "load": data.get("load"),
-            "due": data.get("due"),
-            "notes": data.get("notes"),
-        }
-
-        create_result = create_work_item(create_request)
-
+        data_out = dr.get("data", {})
         _log_webhook_event(
             "/work/create",
             remote,
-            ok=create_result["ok"],
+            ok=dr["ok"],
             event_type="work_create",
         )
 
         handler._send_json_response(200, {
-            "ok": create_result["ok"],
-            "page_id": create_result["page_id"],
-            "url": create_result["url"],
-            "title": create_result["title"],
-            "error": create_result["error"],
+            "ok": dr["ok"],
+            "page_id": data_out.get("page_id", ""),
+            "url": data_out.get("url", ""),
+            "title": data_out.get("title", title),
+            "error": _extract_error_msg(dr),
+            # Canonical traceability (new, non-breaking)
+            "execution_id": dr.get("plan_id"),
+            "result_type": dr.get("result_type"),
         })
 
     except Exception as e:
@@ -251,13 +280,147 @@ def handle_work_create(handler: "WebhookHandler", remote: str) -> None:
             "page_id": "",
             "url": "",
             "title": "",
-            "error": str(e)
+            "error": str(e),
+            "execution_id": None,
         })
 
 
 # ---------------------------------------------------------------------------
-# WORK Delete (execution helper + handler)
+# WORK Delete
 # ---------------------------------------------------------------------------
+
+def handle_work_delete(
+    handler: "WebhookHandler",
+    remote: str,
+    *,
+    trash_db_id: str | None = None,
+) -> None:
+    """
+    Handle POST /work/delete - Delete/archive WORK tasks from Notion.
+
+    Canonical path: make_plan → build_policy → work_pipeline.execute → DomainResult
+
+    Known gap: trash_db_id (move-to-trash mode) is not yet supported in the
+    pipeline; all deletes fall back to archive.  This is documented and
+    acceptable for Sprint 1 scope.
+
+    trash_db_id is still accepted in the signature so existing test patches on
+    assistant_os.webhook_server.NOTION_WORK_TRASH_DB_ID continue to work.
+
+    Request JSON:
+    {
+        "keywords": ["keyword1", "keyword2"],
+        "delete_all": false,
+        "delete_mode": "archive"
+    }
+    """
+    try:
+        auth_error = handler._check_auth()
+        if auth_error:
+            status, error = auth_error
+            handler._send_json_response(status, error)
+            return
+
+        result = handler._read_body()
+        if result[1] is not None:
+            status, error = result[1]
+            handler._send_json_response(status, error)
+            return
+
+        body = result[0]
+
+        try:
+            data = json.loads(body) if body else {}
+        except json.JSONDecodeError as e:
+            status, error = _make_json_error(400, f"Invalid JSON: {e}", "InvalidJSON")
+            handler._send_json_response(status, error)
+            return
+
+        keywords = data.get("keywords", [])
+        delete_all = data.get("delete_all", False)
+        delete_mode = data.get("delete_mode", "archive")
+
+        if not keywords and not delete_all:
+            status, error = _make_json_error(400, "Missing keywords or delete_all flag", "BadRequest")
+            _log_webhook_event("/work/delete", remote, ok=False, event_type="work_delete")
+            handler._send_json_response(status, error)
+            return
+
+        # ── Canonical entry ──────────────────────────────────────────────
+        req = normalize_request(
+            text="",
+            filters={
+                "keywords": keywords,
+                "delete_all": delete_all,
+                "delete_mode": delete_mode,
+                # trash_db_id is noted here for observability; pipeline uses archive.
+                "trash_db_id": trash_db_id,
+            },
+            metadata={
+                "action": ACTION_WORK_DELETE,
+                "domain": "WORK",
+                "risk_level": RISK_HIGH,
+                # Post-confirmation endpoint: the caller has already confirmed.
+                "requires_confirmation": False,
+                "target": "work items",
+            },
+        )
+        dr = _handle_request(req)
+        # ── End canonical entry ──────────────────────────────────────────
+
+        data_out = dr.get("data", {})
+        _log_webhook_event(
+            "/work/delete",
+            remote,
+            ok=dr["ok"],
+            event_type="work_delete",
+        )
+
+        deleted_count = data_out.get("deleted_count", 0)
+        handler._send_json_response(200, {
+            "ok": dr["ok"],
+            # Backward-compat: pipeline archives everything (no trash mode yet).
+            # deleted_count = number of archived items; archived_count mirrors it.
+            "deleted_count": deleted_count,
+            "archived_count": deleted_count,
+            "pages": [],
+            "error": _extract_error_msg(dr),
+            # Canonical traceability (new, non-breaking)
+            "execution_id": dr.get("plan_id"),
+            "result_type": dr.get("result_type"),
+        })
+
+    except Exception as e:
+        _log.error("handle_work_delete exception: %s", e, exc_info=True)
+        _log_webhook_event("/work/delete", remote, ok=False, event_type="work_delete_error")
+        handler._send_json_response(500, {
+            "ok": False,
+            "deleted_count": 0,
+            "archived_count": 0,
+            "pages": [],
+            "error": str(e),
+            "execution_id": None,
+        })
+
+
+# ---------------------------------------------------------------------------
+# LEGACY: _execute_work_delete
+#
+# This function is no longer called from the main handler flow.
+# Preserved for test import compatibility (test_handlers_work_smoke.py).
+# The canonical delete path is now: handle_work_delete → work_pipeline.execute.
+#
+# Known gap vs pipeline: supports trash_db_id / move_pages_to_db; the pipeline
+# currently only archives.  Migration of trash mode is deferred to Sprint 2.
+# ---------------------------------------------------------------------------
+
+from ..integrations.notion import (
+    check_notion_available,
+    query_work_items_by_keywords,
+    archive_pages,
+)
+from ..config import NOTION_WORK_DB_ID
+
 
 def _execute_work_delete(
     keywords: list[str],
@@ -266,18 +429,9 @@ def _execute_work_delete(
     trash_db_id: str | None = None,
 ) -> dict:
     """
-    Execute work delete operation.
+    LEGACY — superseded by handle_work_delete → work_pipeline.execute canonical path.
 
-    Args:
-        keywords: Keywords to match in task titles.
-        delete_all: If True, delete all matching (up to 50 items).
-        delete_mode: "archive" or "trash".
-        trash_db_id: NOTION_WORK_TRASH_DB_ID from caller's scope so that
-                     test patches on webhook_server.NOTION_WORK_TRASH_DB_ID
-                     propagate correctly.
-
-    Returns:
-        dict with ok, deleted_count, archived_count, pages, error.
+    Kept for test import compatibility only.  Not called from any active handler.
     """
     if not check_notion_available():
         return {
@@ -351,93 +505,3 @@ def _execute_work_delete(
             "pages": matching_items[:archived_count],
             "error": "",
         }
-
-
-def handle_work_delete(
-    handler: "WebhookHandler",
-    remote: str,
-    *,
-    trash_db_id: str | None = None,
-) -> None:
-    """
-    Handle POST /work/delete - Delete/archive WORK tasks from Notion.
-
-    trash_db_id is passed explicitly from webhook_server so that tests that
-    patch assistant_os.webhook_server.NOTION_WORK_TRASH_DB_ID see the correct
-    value at call time.
-
-    Request JSON:
-    {
-        "keywords": ["keyword1", "keyword2"],
-        "delete_all": false,
-        "delete_mode": "archive",
-        "plan": {...}
-    }
-    """
-    try:
-        auth_error = handler._check_auth()
-        if auth_error:
-            status, error = auth_error
-            handler._send_json_response(status, error)
-            return
-
-        result = handler._read_body()
-        if result[1] is not None:
-            status, error = result[1]
-            handler._send_json_response(status, error)
-            return
-
-        body = result[0]
-
-        try:
-            data = json.loads(body) if body else {}
-        except json.JSONDecodeError as e:
-            status, error = _make_json_error(400, f"Invalid JSON: {e}", "InvalidJSON")
-            handler._send_json_response(status, error)
-            return
-
-        keywords = data.get("keywords", [])
-        delete_all = data.get("delete_all", False)
-        delete_mode = data.get("delete_mode", "archive")
-
-        if not keywords and not delete_all:
-            status, error = _make_json_error(400, "Missing keywords or delete_all flag", "BadRequest")
-            _log_webhook_event("/work/delete", remote, ok=False, event_type="work_delete")
-            handler._send_json_response(status, error)
-            return
-
-        if not check_notion_available():
-            notion_status = get_notion_status()
-            error_msg = notion_status.get("last_error", {}).get("message", "Notion not configured")
-            handler._send_json_response(200, {
-                "ok": False,
-                "deleted_count": 0,
-                "archived_count": 0,
-                "pages": [],
-                "error": error_msg
-            })
-            return
-
-        delete_result = _execute_work_delete(
-            keywords, delete_all, delete_mode, trash_db_id=trash_db_id
-        )
-
-        _log_webhook_event(
-            "/work/delete",
-            remote,
-            ok=delete_result["ok"],
-            event_type="work_delete",
-        )
-
-        handler._send_json_response(200, delete_result)
-
-    except Exception as e:
-        _log.error("handle_work_delete exception: %s", e, exc_info=True)
-        _log_webhook_event("/work/delete", remote, ok=False, event_type="work_delete_error")
-        handler._send_json_response(500, {
-            "ok": False,
-            "deleted_count": 0,
-            "archived_count": 0,
-            "pages": [],
-            "error": str(e)
-        })

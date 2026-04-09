@@ -392,6 +392,19 @@ class TestBuildClauseProposeExecutor:
         assert result["ok"] is False
         assert "risky" in result["error"]
 
+    def test_timeout_error_returns_ok_false(self, tmp_path):
+        """FIX-3: APITimeoutError must surface as ok=False with 'timed out' in message."""
+        import anthropic as _anthropic
+        exc = _anthropic.APITimeoutError.__new__(_anthropic.APITimeoutError)
+        exc.args = ("request timed out",)
+        executor = self._build(client=_RaisingClient(exc))
+        result = executor({
+            "action": "CODE_FIX", "target_file": "", "workspace": str(tmp_path),
+            "context": "fix", "allowed_write_scope": [],
+        })
+        assert result["ok"] is False
+        assert "timed out" in result["error"].lower()
+
     def test_authentication_error_returns_ok_false(self, tmp_path):
         import anthropic as _anthropic
         exc = _anthropic.AuthenticationError.__new__(_anthropic.AuthenticationError)
@@ -424,6 +437,41 @@ class TestBuildClauseProposeExecutor:
         })
         assert result["ok"] is False
         assert "unexpected" in result["error"].lower()
+
+    # FIX 3 — timeout
+    def test_timeout_error_returns_ok_false(self, tmp_path):
+        """APITimeoutError must return ok=False with 'timeout' in error message."""
+        import anthropic as _anthropic
+        exc = _anthropic.APITimeoutError.__new__(_anthropic.APITimeoutError)
+        exc.args = ("request timed out",)
+        executor = self._build(client=_RaisingClient(exc))
+        result = executor({
+            "action": "CODE_FIX", "target_file": "", "workspace": str(tmp_path),
+            "context": "fix", "allowed_write_scope": [],
+        })
+        assert result["ok"] is False
+        assert "timeout" in result["error"].lower()
+
+    def test_timeout_is_set_on_messages_create(self, tmp_path):
+        """The executor must pass timeout=45.0 to client.messages.create()."""
+        received_kwargs: dict = {}
+
+        class _CapturingClient:
+            def __init__(self):
+                self.messages = self
+            def create(self, **kwargs):
+                received_kwargs.update(kwargs)
+                return _FakeResponse(json.dumps({
+                    "summary": "s", "affected_files": [], "write_intent_summary": "w",
+                    "patch_preview": "diff", "operation_types": ["modify"], "risk_level": "low",
+                }))
+
+        executor = self._build(client=_CapturingClient())
+        executor({
+            "action": "CODE_FIX", "target_file": "", "workspace": str(tmp_path),
+            "context": "fix", "allowed_write_scope": [],
+        })
+        assert received_kwargs.get("timeout") == 45.0
 
     def test_blocked_ops_stripped_in_output(self, tmp_path):
         (tmp_path / "f.py").write_text("# existing\n", encoding="utf-8")

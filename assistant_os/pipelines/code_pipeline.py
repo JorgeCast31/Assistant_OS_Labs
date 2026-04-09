@@ -197,6 +197,15 @@ def execute(plan: dict, context_id: str) -> DomainResult:
     """
     _context = get_context(context_id)  # noqa: F841 — reserved for future use
 
+    if not plan.get("plan_id"):
+        return make_domain_result(
+            ok=False,
+            result_type="code_unknown",
+            domain="CODE",
+            message="plan_id is required",
+            error={"type": "ExecutionPlanViolation", "message": "plan_id is required"},
+        )
+
     action = plan.get("action", "")
 
     if action == ACTION_CODE_EXPLAIN:
@@ -308,7 +317,15 @@ def _execute_mutating(plan: dict, context_id: str) -> DomainResult:
     phase = payload.get("phase", "preview")
     proposal = payload.get("proposal")
 
-    if phase == "apply" and proposal:
+    if phase == "apply":
+        if proposal is None:
+            return make_domain_result(
+                ok=False,
+                result_type=RESULT_TYPE_CODE_APPLY,
+                domain="CODE",
+                message="apply phase requires proposal",
+                error={"type": "ExecutionPlanViolation", "message": "apply phase requires proposal"},
+            )
         return _apply_code_proposal(plan, proposal, payload)
     return _build_code_preview(plan, payload)
 
@@ -604,11 +621,25 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
     proposal_id = proposal.get("proposal_id", "")
 
     # ------------------------------------------------------------------
+    # Guard 0 — proposal_id required
+    # Apply without an identity token is not permitted.
+    # ------------------------------------------------------------------
+    if not proposal_id:
+        return make_domain_result(
+            ok=False,
+            result_type=RESULT_TYPE_CODE_APPLY,
+            domain="CODE",
+            message="proposal_id is required",
+            data={"action": action},
+            error={"type": "ExecutionPlanViolation", "message": "proposal_id is required"},
+        )
+
+    # ------------------------------------------------------------------
     # Guard 1 — Single-use enforcement
     # Prevents double-application of the same proposal regardless of runner
     # outcome.  Checked BEFORE building AuthorizedPlan to fail fast.
     # ------------------------------------------------------------------
-    if proposal_id and proposal_id in _applied_proposals:
+    if proposal_id in _applied_proposals:
         return make_domain_result(
             ok=False,
             result_type=RESULT_TYPE_CODE_APPLY,
@@ -643,6 +674,25 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
             },
             error={"type": "NotApplicable", "message": applicability_error},
         )
+
+    # ------------------------------------------------------------------
+    # Guard 3 — Invalid changes
+    # If proposal carries a "changes" list but every entry is filtered out
+    # by _extract_file_replace_changes, refuse to continue.  Passing None
+    # (stub / no-changes path) is still valid — runner skips apply phase.
+    # ------------------------------------------------------------------
+    _raw_changes = proposal.get("changes")
+    if _raw_changes:
+        _extracted = _extract_file_replace_changes(proposal)
+        if not _extracted:
+            return make_domain_result(
+                ok=False,
+                result_type=RESULT_TYPE_CODE_APPLY,
+                domain="CODE",
+                message="no valid changes after validation",
+                data={"proposal_id": proposal_id, "action": action},
+                error={"type": "InvalidChanges", "message": "no valid changes after validation"},
+            )
 
     # ------------------------------------------------------------------
     # Build AuthorizedPlan — governance binding.
@@ -688,8 +738,8 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
 
     # Mark proposal used AFTER runner dispatch (regardless of runner outcome).
     # This prevents retry on partial applies that may have modified the workspace.
-    if proposal_id:
-        _applied_proposals.add(proposal_id)
+    # proposal_id is guaranteed non-empty by Guard 0.
+    _applied_proposals.add(proposal_id)
 
     # ------------------------------------------------------------------
     # Map RunnerExecutionResult → DomainResult
@@ -709,6 +759,25 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
         "promoted_files": runner_result.promoted_files or [],
         "promotion_status": runner_result.promotion_status,
     }
+
+    if final_status == "needs_review":
+        return make_domain_result(
+            ok=False,
+            result_type=RESULT_TYPE_CODE_APPLY,
+            domain="CODE",
+            message="Aplicación completada pero requiere revisión manual antes de aceptarse.",
+            data={
+                "proposal_id": proposal_id,
+                "action": action,
+                "execution_id": execution_id,
+                "status": final_status,
+                "audit_summary": audit_summary,
+            },
+            error={
+                "type": "NeedsReview",
+                "message": "Runner returned needs_review — manual validation required before accepting.",
+            },
+        )
 
     if runner_result.error or final_status == "failed":
         error_msg = runner_result.error or f"Runner failed with status: {final_status}"
@@ -797,7 +866,7 @@ def _build_authorized_plan_from_kernel(plan: dict) -> "AuthorizedPlan":
     """
     from ..sandbox.authorized_plan import AuthorizedPlan
 
-    plan_id = plan.get("plan_id") or str(uuid.uuid4())
+    plan_id = plan.get("plan_id")
     action = plan.get("action", "")
     workspace = (plan.get("domain_payload") or {}).get("workspace", "")
 

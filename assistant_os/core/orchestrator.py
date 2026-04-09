@@ -48,10 +48,17 @@ def handle_request(
 
     Pipeline stages
     ---------------
+    NL path (default):
     1. Semantic classification  → intent
     2. Structural planning      → ExecutionPlan
     3. Policy decision          → execution_mode
     4. Domain registry dispatch → DomainResult (or policy fallback)
+
+    Structured path (when req["metadata"]["action"] is set):
+    - Skips NL classification and plan building.
+    - Builds plan directly from req["filters"] + req["metadata"].
+    - Still runs policy decision and domain dispatch.
+    - Used by structured HTTP endpoints (pre-parsed filters, known action).
 
     Args
     ----
@@ -59,19 +66,84 @@ def handle_request(
                       req["context_id"] is used as the canonical request context ID.
     forced_operation: Optional operation string from the HTTP routing layer.
                       Must be one of the OP_* constants when provided.
+                      Ignored when req["metadata"]["action"] is set (structured path).
 
     Returns
     -------
     DomainResult — canonical output contract. The caller adapts this to the
     legacy Response transport shape via _adapt_result_to_response.
     """
-    from .semantic import classify
-    from .planning import build_plan
     from .policy import build_policy
     from .routing import get_pipeline, action_domain
 
     context_id = req["context_id"]
     text = req["text"]
+
+    # ---------------------------------------------------------------------------
+    # Structured path: when metadata["action"] is present, skip NL classification
+    # and planning. Build plan directly from req["filters"] + req["metadata"].
+    # This handles structured HTTP endpoints where the action and filters are
+    # already known (pre-parsed), bypassing NL text parsing entirely.
+    # ---------------------------------------------------------------------------
+    meta = req.get("metadata", {})
+    if meta.get("action"):
+        from ..contracts import make_plan, RISK_LOW
+        structured_action = meta["action"]
+        derived_domain = action_domain(structured_action)
+        structured_plan = make_plan(
+            domain=meta.get("domain", derived_domain),
+            action=structured_action,
+            target=meta.get("target", structured_action),
+            filters=req.get("filters", {}),
+            risk_level=meta.get("risk_level", RISK_LOW),
+            raw_text=text,
+            requires_confirmation=meta.get("requires_confirmation", False),
+        )
+        structured_intent = {
+            "operation": structured_action,
+            "domain": meta.get("domain", derived_domain),
+            "confidence": 1.0,
+            "reason": "structured_path",
+        }
+        policy = build_policy(req, structured_intent, structured_plan)
+        execution_mode = policy.get("execution_mode", EXECUTION_MODE_AUTO)
+
+        plan_for_exec = dict(structured_plan)
+        plan_for_exec["raw_text"] = text
+
+        if execution_mode == EXECUTION_MODE_AUTO:
+            pipeline = get_pipeline(derived_domain)
+            if pipeline:
+                return pipeline(plan_for_exec, context_id)
+
+        if execution_mode in (EXECUTION_MODE_CONFIRM, EXECUTION_MODE_CLARIFY):
+            return make_domain_result(
+                ok=True,
+                result_type=RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED,
+                domain=structured_plan.get("domain", "UNKNOWN"),
+                message=f"¿Confirmar: {structured_plan.get('preview')}?",
+                data={
+                    "type": "plan_confirmation_required",
+                    "plan": dict(structured_plan),
+                    "confirmation_message": f"¿Confirmar: {structured_plan.get('preview')}?",
+                },
+            )
+
+        domain = structured_plan.get("domain", "UNKNOWN")
+        message = f"Dominio detectado: {domain}. Acción: {structured_action}."
+        return make_domain_result(
+            ok=True,
+            result_type=RESULT_TYPE_PLAN_GENERATED,
+            domain=domain,
+            message=message,
+            data={"type": "plan_generated", "plan": dict(structured_plan)},
+        )
+
+    # ---------------------------------------------------------------------------
+    # NL path: classify text → build plan → policy → dispatch
+    # ---------------------------------------------------------------------------
+    from .semantic import classify
+    from .planning import build_plan
 
     # Stage 1 — Semantic: classify text and apply routing hint.
     intent = classify(req, forced_operation)

@@ -57,6 +57,7 @@ export async function POST(req: NextRequest) {
       headers,
       body:    JSON.stringify(payload),
       cache:   'no-store',
+      signal:  AbortSignal.timeout(45000),
     })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

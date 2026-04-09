@@ -184,9 +184,82 @@ class TestChatHistory(unittest.TestCase):
         status, data = self._post_command_summary(
             text="DOC: test doc without conv id",
         )
-        
+
         self.assertEqual(status, 200)
         self.assertTrue(data.get("ok"))
+
+    # -------------------------------------------------------------------------
+    # FIX-2: UTF-8 session title round-trip
+    # -------------------------------------------------------------------------
+
+    def _post_session(
+        self,
+        session_id: str,
+        title: str,
+    ) -> tuple[int, dict]:
+        """POST /chat/sessions — create session with given title."""
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "X-Assistant-Token": WEBHOOK_TOKEN,
+        }
+        body = json.dumps({"id": session_id, "title": title}, ensure_ascii=False).encode("utf-8")
+        conn.request("POST", "/chat/sessions", body, headers)
+        response = conn.getresponse()
+        status = response.status
+        data = response.read().decode("utf-8")
+        conn.close()
+        try:
+            return status, json.loads(data)
+        except json.JSONDecodeError:
+            return status, {"_raw": data}
+
+    def _patch_session(
+        self,
+        session_id: str,
+        title: str,
+    ) -> tuple[int, dict]:
+        """PATCH /chat/sessions/{id} — update title."""
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        headers = {
+            "Content-Type": "application/json; charset=utf-8",
+            "X-Assistant-Token": WEBHOOK_TOKEN,
+        }
+        body = json.dumps({"title": title}, ensure_ascii=False).encode("utf-8")
+        conn.request("PATCH", f"/chat/sessions/{session_id}", body, headers)
+        response = conn.getresponse()
+        status = response.status
+        data = response.read().decode("utf-8")
+        conn.close()
+        try:
+            return status, json.loads(data)
+        except json.JSONDecodeError:
+            return status, {"_raw": data}
+
+    def test_utf8_title_roundtrips_on_create(self):
+        """FIX-2: Titles con tildes deben almacenarse y devolverse sin mojibake."""
+        import uuid as _uuid
+        session_id = str(_uuid.uuid4())
+        title = "Auditoría de código"
+        status, data = self._post_session(session_id, title)
+
+        self.assertEqual(status, 201)
+        self.assertTrue(data.get("ok"))
+        self.assertEqual(data["session"]["title"], title)
+
+    def test_utf8_title_roundtrips_on_patch(self):
+        """FIX-2: PATCH de título con tildes debe persistir y devolverse correctamente."""
+        import uuid as _uuid
+        session_id = str(_uuid.uuid4())
+        # Create with plain title first
+        self._post_session(session_id, "Nuevo chat")
+        # Patch with accented title
+        title = "Revisión técnica"
+        status, data = self._patch_session(session_id, title)
+
+        self.assertEqual(status, 200)
+        self.assertTrue(data.get("ok"))
+        self.assertEqual(data["session"]["title"], title)
 
 
 if __name__ == "__main__":
