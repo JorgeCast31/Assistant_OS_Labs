@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from assistant_os.api.code_api import (
     _validate_payload,
     _build_execution_id,
+    _derive_execution_assessment,
     handle_execute,
     handle_review_execution,
     handle_get_execution,
@@ -438,6 +439,128 @@ class TestReviewStatus:
         assert detail["metadata"]["final_status"] == "needs_review"
         # Human decision is independent
         assert detail["review_status"] == "rejected"
+
+
+class TestDeriveExecutionAssessment:
+    """Unit tests for the pure _derive_execution_assessment helper."""
+
+    # --- sprint-specified cases ---
+
+    def test_success_accepted(self):
+        assert _derive_execution_assessment("success", "accepted") == "accepted"
+
+    def test_success_rejected(self):
+        assert _derive_execution_assessment("success", "rejected") == "rejected_after_review"
+
+    def test_success_pending_followup(self):
+        assert _derive_execution_assessment("success", "pending_followup") == "awaiting_followup"
+
+    def test_needs_review_no_review(self):
+        assert _derive_execution_assessment("needs_review", None) == "awaiting_review"
+
+    def test_failed_returns_failed(self):
+        assert _derive_execution_assessment("failed", None) == "failed"
+
+    def test_success_no_review(self):
+        assert _derive_execution_assessment("success", None) == "completed_unreviewed"
+
+    # --- failed overrides human decision ---
+
+    def test_failed_with_accepted_still_failed(self):
+        """System failure overrides human review — failed is terminal."""
+        assert _derive_execution_assessment("failed", "accepted") == "failed"
+
+    def test_failed_with_rejected_still_failed(self):
+        assert _derive_execution_assessment("failed", "rejected") == "failed"
+
+    # --- edge cases ---
+
+    def test_needs_review_with_accepted(self):
+        """Human accepted a needs_review run — assessment follows human decision."""
+        assert _derive_execution_assessment("needs_review", "accepted") == "accepted"
+
+    def test_needs_review_with_rejected(self):
+        assert _derive_execution_assessment("needs_review", "rejected") == "rejected_after_review"
+
+    def test_unknown_final_status(self):
+        assert _derive_execution_assessment("unknown_status", None) == "unknown"
+
+    def test_none_final_status(self):
+        assert _derive_execution_assessment(None, None) == "unknown"
+
+    def test_none_final_status_with_review(self):
+        """If final_status is missing but human reviewed, human decision wins."""
+        assert _derive_execution_assessment(None, "accepted") == "accepted"
+
+
+class TestExecutionAssessmentInDetail:
+    """Integration tests: execution_assessment in handle_get_execution output."""
+
+    def _make_dir_with_status(self, root, eid: str, final_status: str):
+        exec_dir = _make_exec_dir(root, eid)
+        (exec_dir / "metadata.json").write_text(
+            json.dumps({"execution_id": eid, "final_status": final_status}),
+            encoding="utf-8",
+        )
+        return exec_dir
+
+    def test_success_accepted_in_detail(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("assistant_os.api.code_api.EXECUTIONS_ROOT", tmp_path)
+        self._make_dir_with_status(tmp_path, "ea-001", "success")
+        handle_review_execution("ea-001", {"review_action": "approved", "reviewed_by": "jorge"})
+        detail = handle_get_execution("ea-001")
+        assert detail["execution_assessment"] == "accepted"
+
+    def test_success_rejected_in_detail(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("assistant_os.api.code_api.EXECUTIONS_ROOT", tmp_path)
+        self._make_dir_with_status(tmp_path, "ea-002", "success")
+        handle_review_execution("ea-002", {"review_action": "rejected", "reviewed_by": "jorge"})
+        detail = handle_get_execution("ea-002")
+        assert detail["execution_assessment"] == "rejected_after_review"
+
+    def test_success_pending_followup_in_detail(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("assistant_os.api.code_api.EXECUTIONS_ROOT", tmp_path)
+        self._make_dir_with_status(tmp_path, "ea-003", "success")
+        handle_review_execution("ea-003", {"review_action": "needs_followup", "reviewed_by": "jorge"})
+        detail = handle_get_execution("ea-003")
+        assert detail["execution_assessment"] == "awaiting_followup"
+
+    def test_needs_review_no_review_in_detail(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("assistant_os.api.code_api.EXECUTIONS_ROOT", tmp_path)
+        self._make_dir_with_status(tmp_path, "ea-004", "needs_review")
+        detail = handle_get_execution("ea-004")
+        assert detail["execution_assessment"] == "awaiting_review"
+
+    def test_failed_in_detail(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("assistant_os.api.code_api.EXECUTIONS_ROOT", tmp_path)
+        self._make_dir_with_status(tmp_path, "ea-005", "failed")
+        detail = handle_get_execution("ea-005")
+        assert detail["execution_assessment"] == "failed"
+
+    def test_success_no_review_in_detail(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("assistant_os.api.code_api.EXECUTIONS_ROOT", tmp_path)
+        self._make_dir_with_status(tmp_path, "ea-006", "success")
+        detail = handle_get_execution("ea-006")
+        assert detail["execution_assessment"] == "completed_unreviewed"
+
+    def test_review_status_still_intact(self, tmp_path, monkeypatch):
+        """execution_assessment does not replace review_status."""
+        monkeypatch.setattr("assistant_os.api.code_api.EXECUTIONS_ROOT", tmp_path)
+        self._make_dir_with_status(tmp_path, "ea-007", "success")
+        handle_review_execution("ea-007", {"review_action": "approved", "reviewed_by": "jorge"})
+        detail = handle_get_execution("ea-007")
+        assert detail["review_status"] == "accepted"
+        assert detail["execution_assessment"] == "accepted"
+
+    def test_final_status_still_intact(self, tmp_path, monkeypatch):
+        """execution_assessment does not replace metadata.final_status."""
+        monkeypatch.setattr("assistant_os.api.code_api.EXECUTIONS_ROOT", tmp_path)
+        self._make_dir_with_status(tmp_path, "ea-008", "needs_review")
+        handle_review_execution("ea-008", {"review_action": "rejected", "reviewed_by": "jorge"})
+        detail = handle_get_execution("ea-008")
+        assert detail["metadata"]["final_status"] == "needs_review"
+        assert detail["review_status"] == "rejected"
+        assert detail["execution_assessment"] == "rejected_after_review"
 
 
 # ---------------------------------------------------------------------------

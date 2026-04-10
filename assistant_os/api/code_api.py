@@ -380,6 +380,13 @@ def handle_get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
         if review else None
     )
 
+    # Derive execution_assessment: combined visible interpretation of the execution.
+    # Reads final_status from metadata (system layer) + review_status (human layer).
+    execution_assessment: str = _derive_execution_assessment(
+        final_status=metadata.get("final_status"),
+        review_status=review_status,
+    )
+
     return {
         "ok": True,
         "metadata": metadata,
@@ -387,10 +394,11 @@ def handle_get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
         "report_md_path": str(report_md_path) if report_md_path.exists() else None,
         "log_path": str(log_path) if log_path.exists() else None,
         "log_content": log_content,
-        "review":        review,
-        "review_status": review_status,
-        "rerun_of":      metadata.get("rerun_of"),
-        "has_snapshot":  "request_snapshot" in metadata,
+        "review":               review,
+        "review_status":        review_status,
+        "execution_assessment": execution_assessment,
+        "rerun_of":             metadata.get("rerun_of"),
+        "has_snapshot":         "request_snapshot" in metadata,
     }
 
 
@@ -465,6 +473,42 @@ _REVIEW_STATUS_MAP: Dict[str, str] = {
     "rejected":        "rejected",
     "needs_followup":  "pending_followup",
 }
+
+
+def _derive_execution_assessment(
+    final_status: Optional[str],
+    review_status: Optional[str],
+) -> str:
+    """Combine final_status and review_status into a single visible assessment.
+
+    Three distinct layers — none overrides the others:
+      final_status        : what the runner produced (technical result)
+      review_status       : what the human decided (evaluation)
+      execution_assessment: the combined visible interpretation
+
+    Priority rules (in order):
+      1. failed is terminal — no human review changes a failed run.
+      2. If a human decision exists, it is the primary signal.
+      3. No human decision: derive from runner status.
+      4. Unknown combinations: "unknown" (explicit, never silent).
+    """
+    if final_status == "failed":
+        return "failed"
+
+    if review_status == "accepted":
+        return "accepted"
+    if review_status == "rejected":
+        return "rejected_after_review"
+    if review_status == "pending_followup":
+        return "awaiting_followup"
+
+    # No human decision yet.
+    if final_status == "needs_review":
+        return "awaiting_review"
+    if final_status == "success":
+        return "completed_unreviewed"
+
+    return "unknown"
 
 
 def handle_review_execution(execution_id: str, body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
