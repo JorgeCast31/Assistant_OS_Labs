@@ -130,6 +130,146 @@ class TestHandleExecute:
             assert key in result, f"Missing key: {key}"
 
 
+class TestHandleExecuteAgentRegistry:
+    """Verify handle_execute routes through the agent registry, not RunnerBackedExecutor directly."""
+
+    def _full_stub(self, mock_result, *, version="1.0.0",
+                   requires_review=True, scope=None) -> dict:
+        """Build a valid AgentDefinition stub (all required fields included)."""
+        return {
+            "name":            "code_executor",
+            "version":         version,
+            "requires_review": requires_review,
+            "capability_scope": scope or ["code_execute"],
+            "input_contract":  "RunnerExecutionRequest",
+            "output_contract": "RunnerExecutionResult",
+            "entrypoint":      lambda r: mock_result,
+        }
+
+    def _mock_runner_result(self, execution_id="n8n_test"):
+        from unittest.mock import MagicMock
+        r = MagicMock()
+        r.execution_id = execution_id
+        r.final_status = "success"
+        r.summary = "ok"
+        r.report_json_path = None
+        r.report_md_path = None
+        r.notification_path = None
+        r.error = None
+        return r
+
+    def test_uses_agent_registry(self, tmp_path):
+        """get_agent('code_executor') must be called during handle_execute."""
+        from unittest.mock import patch
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "main.py").write_text("pass\n")
+
+        mock_result = self._mock_runner_result("n8n_agent-registry-test")
+        stub = self._full_stub(mock_result)
+
+        with patch("assistant_os.agents.registry.AGENT_REGISTRY",
+                   {"code_executor": stub}):
+            result = handle_execute({
+                "repo_path": str(repo),
+                "request_id": "agent-registry-test",
+            })
+
+        assert result["ok"] is True
+        assert result["execution_id"] == "n8n_agent-registry-test"
+
+    def test_runner_not_called_directly(self, tmp_path):
+        """RunnerBackedExecutor.execute must not be called directly from code_api."""
+        from unittest.mock import patch
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "main.py").write_text("pass\n")
+
+        mock_result = self._mock_runner_result("n8n_direct-check")
+        stub = self._full_stub(mock_result)
+
+        with patch("assistant_os.agents.registry.AGENT_REGISTRY",
+                   {"code_executor": stub}), \
+             patch("assistant_os.executors.runner_backed_executor"
+                   ".RunnerBackedExecutor.execute") as mock_direct:
+            handle_execute({"repo_path": str(repo), "request_id": "direct-check"})
+
+        mock_direct.assert_not_called()
+
+    def test_agent_invocation_in_response(self, tmp_path):
+        """handle_execute response must include agent_invocation with registry values."""
+        from unittest.mock import patch
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "main.py").write_text("pass\n")
+
+        mock_result = self._mock_runner_result("n8n_inv-check")
+        # Distinctive values to verify the source is the registry, not hardcoded
+        stub = self._full_stub(mock_result, version="9.9.9",
+                               requires_review=False, scope=["test_scope"])
+
+        with patch("assistant_os.agents.registry.AGENT_REGISTRY",
+                   {"code_executor": stub}):
+            result = handle_execute({"repo_path": str(repo), "request_id": "inv-check"})
+
+        assert "agent_invocation" in result
+        inv = result["agent_invocation"]
+        assert inv["agent_name"]             == "code_executor"
+        assert inv["agent_version"]          == "9.9.9"
+        assert inv["agent_requires_review"]  is False
+        assert inv["agent_capability_scope"] == ["test_scope"]
+
+    def test_agent_invocation_matches_real_registry(self, tmp_path):
+        """With the real registry, agent_invocation values match AGENT_REGISTRY."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "main.py").write_text("pass\n")
+
+        result = handle_execute({"repo_path": str(repo), "request_id": "real-reg-check"})
+
+        assert "agent_invocation" in result
+        inv = result["agent_invocation"]
+        assert inv["agent_name"]             == "code_executor"
+        assert inv["agent_version"]          == "1.0.0"
+        assert inv["agent_requires_review"]  is True
+        assert inv["agent_capability_scope"] == ["code_execute"]
+
+    def test_execution_id_scheme_unchanged(self, tmp_path):
+        """execution_id derivation is unaffected by the agent registry change."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "main.py").write_text("pass\n")
+
+        result = handle_execute({"repo_path": str(repo), "request_id": "id-scheme-check"})
+
+        assert result["execution_id"] == "n8n_id-scheme-check"
+
+    def test_request_snapshot_still_written(self, tmp_path):
+        """request_snapshot is still persisted in metadata.json after agent change."""
+        from assistant_os.api.code_api import EXECUTIONS_ROOT
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "main.py").write_text("pass\n")
+
+        result = handle_execute({
+            "repo_path": str(repo),
+            "request_id": "snapshot-persist-check",
+            "source": "pytest-agent-unification",
+        })
+
+        # The runner writes metadata to EXECUTIONS_ROOT/{execution_id}/
+        eid = result["execution_id"]
+        meta_path = EXECUTIONS_ROOT / eid / "metadata.json"
+        assert meta_path.exists(), f"metadata.json must exist at {meta_path}"
+        meta = json.loads(meta_path.read_text())
+        assert "request_snapshot" in meta, "request_snapshot must be in metadata"
+        assert meta["request_snapshot"]["source"] == "pytest-agent-unification"
+
+
 # ---------------------------------------------------------------------------
 # HTTP integration tests — starts a real server on a random port
 # ---------------------------------------------------------------------------

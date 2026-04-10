@@ -23,7 +23,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..executors.runner_backed_executor import RunnerBackedExecutor
 from ..runners.runner_models import RunnerExecutionRequest
 from ..sandbox.authorized_plan import AuthorizedPlan, KNOWN_POLICY_IDS
 
@@ -62,9 +61,6 @@ logger = _setup_logger()
 # ---------------------------------------------------------------------------
 # Request / response helpers
 # ---------------------------------------------------------------------------
-
-_EXECUTOR = RunnerBackedExecutor()
-
 
 def _ok(data: Dict[str, Any]) -> bytes:
     return json.dumps(data, indent=2).encode()
@@ -253,28 +249,41 @@ def handle_execute(body: Dict[str, Any]) -> Dict[str, Any]:
         code=code,
     )
 
-    # Execute
+    # Execute — via agent registry (consistent with kernel path).
+    # Deferred import mirrors the pattern used in code_pipeline._apply_code_proposal.
+    from ..agents.registry import get_agent
+    _agent = get_agent("code_executor")
     try:
-        result = _EXECUTOR.execute(request)
+        result = _agent["entrypoint"](request)
     except Exception as exc:
         detail = traceback.format_exc()
         logger.error("RUNNER_ERROR execution_id=%s error=%s", execution_id, exc)
         return _error_response("Runner raised an unexpected exception.", execution_id, detail)
 
-    logger.info("DONE execution_id=%s final_status=%s", execution_id, result.final_status)
+    logger.info("DONE execution_id=%s final_status=%s agent=%s",
+                execution_id, result.final_status, _agent["name"])
 
     # Persist request snapshot for rerun capability (best-effort, non-fatal)
     _patch_metadata(result.execution_id, {"request_snapshot": _build_request_snapshot(body)})
 
+    # Agent invocation metadata — mirrors audit_summary.agent_invocation in kernel path.
+    agent_invocation = {
+        "agent_name":             _agent["name"],
+        "agent_version":          _agent["version"],
+        "agent_requires_review":  _agent["requires_review"],
+        "agent_capability_scope": _agent["capability_scope"],
+    }
+
     return {
         "ok": True,             # normalize envelope (consumed by frontend apiFetch)
-        "execution_id": result.execution_id,
-        "final_status": result.final_status,
-        "summary": result.summary,
+        "execution_id":   result.execution_id,
+        "final_status":   result.final_status,
+        "summary":        result.summary,
         "report_json_path": result.report_json_path,
         "report_md_path": result.report_md_path,
-        "done_path": result.notification_path,
-        "error": result.error,
+        "done_path":      result.notification_path,
+        "error":          result.error,
+        "agent_invocation": agent_invocation,
     }
 
 
