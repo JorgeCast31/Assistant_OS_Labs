@@ -615,8 +615,6 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
     - On RunnerBackedExecutor exception: return error, do NOT mark proposal used.
     - On RunnerBackedExecutor return (any status): mark proposal used, map result.
     """
-    from ..executors.runner_backed_executor import RunnerBackedExecutor
-
     action = plan.get("action", "")
     proposal_id = proposal.get("proposal_id", "")
 
@@ -707,12 +705,14 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
     request = _build_runner_execution_request(plan, proposal, authorized_plan)
 
     # ------------------------------------------------------------------
-    # Execute — exclusively via RunnerBackedExecutor (audited runner).
+    # Execute — via the registered code_executor agent (audited runner).
     # No fallback.  If this raises, the proposal is NOT marked used so
     # the caller can retry after fixing the infrastructure issue.
     # ------------------------------------------------------------------
+    from ..agents.registry import get_agent
+    _agent = get_agent("code_executor")
     try:
-        runner_result = RunnerBackedExecutor().execute(request)
+        runner_result = _agent["entrypoint"](request)
     except Exception as exc:
         return make_domain_result(
             ok=False,

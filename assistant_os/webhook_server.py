@@ -2459,7 +2459,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         safe_override = override if isinstance(override, dict) else {}
         safe_session_id = session_id if isinstance(session_id, str) else ""
 
-        # ── Canonical entry (parse step) ────────────────────────────────
+        # ── Canonical entry (parse + auto-store) ────────────────────────
         from .contracts import normalize_request, ACTION_FIN_EXPENSE, RISK_MEDIUM
         from .core.orchestrator import handle_request as _handle_request
 
@@ -2479,6 +2479,42 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # ── End canonical entry ──────────────────────────────────────────
 
         parse_data = dr.get("data", {})
+        exp = parse_data.get("expense")
+        stored = parse_data.get("stored", False)
+        needs_confirmation = parse_data.get("needs_confirmation", False)
+        missing_fields = parse_data.get("missing_fields", [])
+        ambiguous_responsables = parse_data.get("ambiguous_responsables", [])
+        sheets_available = parse_data.get("sheets_available", False)
+        sheets_error = parse_data.get("sheets_error")
+        row_number = parse_data.get("row_number")
+
+        # Sheets write error (parse succeeded but store failed)
+        if not dr["ok"] and exp is not None:
+            err_msg = dr.get("message", "Error guardando en Sheets")
+            error_type = (dr.get("error") or {}).get("type", "unknown_error")
+            _log_fin_expense_event(
+                remote=remote,
+                ok=False,
+                action="sheets_error",
+                error_message=err_msg,
+                session_id=safe_session_id,
+                text_preview=text,
+            )
+            self._send_json_response(500, {
+                "ok": False,
+                "stored": False,
+                "status": "error",
+                "needs_confirmation": False,
+                "message": err_msg,
+                "error_type": error_type,
+                "expense": exp,
+                "sheets_available": True,
+                "sheets_error": sheets_error,
+                "row_number": None,
+                "tab_name": SHEETS_TAB_NAME,
+                "execution_id": execution_id,
+            })
+            return
 
         # Parse failed
         if not dr["ok"]:
@@ -2496,20 +2532,14 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "status": "error",
                 "message": dr.get("message", "No se pudo parsear el gasto"),
                 "expense": None,
-                "missing_fields": parse_data.get("missing_fields", []),
-                "sheets_available": check_sheets_available(),
+                "missing_fields": missing_fields,
+                "sheets_available": sheets_available,
                 "needs_confirmation": False,
                 "row_number": None,
                 "tab_name": SHEETS_TAB_NAME,
                 "execution_id": execution_id,
             })
             return
-
-        exp = parse_data.get("expense")
-        sheets_available = check_sheets_available()
-        needs_confirmation = parse_data.get("needs_confirmation", False)
-        missing_fields = parse_data.get("missing_fields", [])
-        ambiguous_responsables = parse_data.get("ambiguous_responsables", [])
 
         # Needs confirmation — return parsed data without storing
         if needs_confirmation:
@@ -2541,19 +2571,19 @@ class WebhookHandler(BaseHTTPRequestHandler):
             })
             return
 
-        # All required fields present — auto-store to Sheets
+        # Sheets unavailable — expense parsed but not stored
         if not sheets_available:
-            last_error = get_sheets_last_error()
+            last_error = sheets_error
             error_type = last_error.get("type", "unknown_error") if last_error else "unknown_error"
             error_msg = last_error.get("message", "Sheets not configured") if last_error else "Sheets not configured"
             _log_fin_expense_event(
                 remote=remote,
                 ok=True,
                 action="parse",
-                monto=(exp["monto"] or 0.0) if exp else 0.0,
-                moneda=exp["moneda"] if exp else "",
-                categoria=exp["categoria"] if exp else "",
-                responsable=exp["responsable"] if exp else "",
+                monto=(exp.get("monto") or 0.0) if exp else 0.0,
+                moneda=exp.get("moneda", "") if exp else "",
+                categoria=exp.get("categoria", "") if exp else "",
+                responsable=exp.get("responsable", "") if exp else "",
                 needs_confirmation=False,
                 session_id=safe_session_id,
                 text_preview=text,
@@ -2575,80 +2605,30 @@ class WebhookHandler(BaseHTTPRequestHandler):
             })
             return
 
-        # Store to Sheets
-        from .tools.google.append_expense_row_tool import AppendExpenseRowTool
-        tool_result = AppendExpenseRowTool().execute({
-            "fecha": exp["fecha"],
-            "descripcion": exp["descripcion"],
-            "factura": exp.get("factura", ""),
-            "responsable": exp["responsable"],
-            "monto": exp["monto"] or 0.0,
-            "moneda": exp["moneda"],
-            "itbms": exp["itbms"],
-            "categoria": exp["categoria"],
-            "metodo_pago": exp.get("metodo_pago", "") or "",
-            "notas": exp.get("notas", ""),
-            "fuente": exp.get("fuente", "chat"),
-            "link_archivo": exp.get("link_archivo", ""),
-            "expense_id": safe_session_id,
+        # Successfully stored by pipeline
+        _log_fin_expense_event(
+            remote=remote,
+            ok=True,
+            action="stored",
+            monto=(exp.get("monto") or 0.0) if exp else 0.0,
+            moneda=exp.get("moneda", "") if exp else "",
+            categoria=exp.get("categoria", "") if exp else "",
+            responsable=exp.get("responsable", "") if exp else "",
+            session_id=safe_session_id,
+            text_preview=text,
+        )
+        self._send_json_response(200, {
+            "ok": True,
+            "stored": True,
+            "status": "stored",
+            "needs_confirmation": False,
+            "row_number": row_number,
+            "tab_name": SHEETS_TAB_NAME,
+            "message": dr.get("message", f"Guardado en Sheets"),
+            "expense": exp,
+            "sheets_available": True,
+            "execution_id": execution_id,
         })
-
-        if tool_result.ok:
-            row_number = tool_result.data["row_number"]
-            _log_fin_expense_event(
-                remote=remote,
-                ok=True,
-                action="stored",
-                monto=exp["monto"] or 0.0,
-                moneda=exp["moneda"],
-                categoria=exp["categoria"],
-                responsable=exp["responsable"],
-                session_id=safe_session_id,
-                text_preview=text,
-            )
-            self._send_json_response(200, {
-                "ok": True,
-                "stored": True,
-                "status": "stored",
-                "needs_confirmation": False,
-                "row_number": row_number,
-                "tab_name": SHEETS_TAB_NAME,
-                "message": f"Guardado en Sheets (fila {row_number})",
-                "expense": exp,
-                "sheets_available": True,
-                "execution_id": execution_id,
-            })
-        else:
-            err_msg = tool_result.error.message if tool_result.error else "Unknown error"
-            last_error = get_sheets_last_error()
-            if "Header mismatch" in err_msg:
-                error_type = "SheetSchemaMismatch"
-            elif last_error:
-                error_type = last_error.get("type", "unknown_error")
-            else:
-                error_type = "unknown_error"
-            _log_fin_expense_event(
-                remote=remote,
-                ok=False,
-                action="sheets_error",
-                error_message=err_msg,
-                session_id=safe_session_id,
-                text_preview=text,
-            )
-            self._send_json_response(500, {
-                "ok": False,
-                "stored": False,
-                "status": "error",
-                "needs_confirmation": False,
-                "message": err_msg,
-                "error_type": error_type,
-                "expense": exp,
-                "sheets_available": True,
-                "sheets_error": last_error,
-                "row_number": None,
-                "tab_name": SHEETS_TAB_NAME,
-                "execution_id": execution_id,
-            })
     
     def _handle_fin_chaperon(self, remote: str) -> None:
         """Handle POST /fin/chaperon - preprocess text to detect multi-expense or continuation.

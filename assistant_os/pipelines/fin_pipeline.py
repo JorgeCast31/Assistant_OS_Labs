@@ -104,8 +104,9 @@ def _append_expense_to_sheets(expense: dict, session_id: str = "") -> dict:
 
 
 def _fin_expense_execute(plan: dict) -> DomainResult:
-    """Execute a FIN expense parse and return DomainResult (no transport wrapping)."""
+    """Execute a FIN expense: parse, then auto-store to Sheets if complete and available."""
     from ..fin_expense import parse_expense, ExpenseRequest
+    from ..integrations.sheets import check_sheets_available, get_sheets_last_error
 
     text = plan.get("raw_text", "")
     filters = plan.get("filters", {})
@@ -117,7 +118,35 @@ def _fin_expense_execute(plan: dict) -> DomainResult:
     }
     expense_result = parse_expense(expense_request)
 
-    if expense_result.get("ok"):
+    if not expense_result.get("ok"):
+        return make_domain_result(
+            ok=False,
+            result_type=RESULT_TYPE_FIN_EXPENSE,
+            domain="FIN",
+            message=expense_result.get("error", "No se pudo parsear el gasto"),
+            data={
+                "stored": False,
+                "expense": None,
+                "row_number": None,
+                "missing_fields": expense_result.get("missing_fields", []),
+                "needs_confirmation": expense_result.get("needs_confirmation", False),
+                "ambiguous_responsables": [],
+                "sheets_available": check_sheets_available(),
+                "sheets_error": None,
+            },
+            error={
+                "type": "ExpenseParseError",
+                "message": expense_result.get("error", "No se pudo parsear el gasto"),
+            },
+        )
+
+    exp = expense_result["expense"]
+    needs_confirmation = expense_result.get("needs_confirmation", False)
+    missing_fields = expense_result.get("missing_fields", [])
+    ambiguous_responsables = expense_result.get("ambiguous_responsables", [])
+
+    # Missing fields — return parsed data for confirmation flow
+    if needs_confirmation:
         return make_domain_result(
             ok=True,
             result_type=RESULT_TYPE_FIN_EXPENSE,
@@ -125,30 +154,93 @@ def _fin_expense_execute(plan: dict) -> DomainResult:
             message=expense_result.get("message", "Gasto detectado"),
             data={
                 "type": "expense_parsed",
-                "expense": expense_result.get("expense"),
+                "stored": False,
+                "expense": exp,
+                "row_number": None,
+                "missing_fields": missing_fields,
+                "needs_confirmation": True,
+                "ambiguous_responsables": ambiguous_responsables,
+                "sheets_available": check_sheets_available(),
+                "sheets_error": None,
                 "message": expense_result.get("message", "Gasto detectado"),
-                # Surface all parse_expense fields so the transport layer
-                # can implement confirmation and auto-store flows.
-                "missing_fields": expense_result.get("missing_fields", []),
-                "needs_confirmation": expense_result.get("needs_confirmation", False),
-                "ambiguous_responsables": expense_result.get("ambiguous_responsables", []),
             },
         )
-    else:
+
+    # All required fields present — check Sheets before storing
+    sheets_available = check_sheets_available()
+    if not sheets_available:
+        last_error = get_sheets_last_error()
         return make_domain_result(
-            ok=False,
+            ok=True,
             result_type=RESULT_TYPE_FIN_EXPENSE,
             domain="FIN",
-            message=expense_result.get("error", "No se pudo parsear el gasto"),
+            message="Gasto parseado pero Sheets no está disponible",
             data={
-                "missing_fields": expense_result.get("missing_fields", []),
-                "needs_confirmation": expense_result.get("needs_confirmation", False),
-            },
-            error={
-                "type": "ExpenseParseError",
-                "message": expense_result.get("error", "No se pudo parsear el gasto"),
+                "type": "expense_parsed",
+                "stored": False,
+                "expense": exp,
+                "row_number": None,
+                "missing_fields": missing_fields,
+                "needs_confirmation": False,
+                "ambiguous_responsables": ambiguous_responsables,
+                "sheets_available": False,
+                "sheets_error": last_error,
+                "message": expense_result.get("message", "Gasto detectado"),
             },
         )
+
+    # Auto-store to Sheets
+    session_id = filters.get("session_id", "")
+    result = _append_expense_to_sheets(exp, session_id)
+    if result["ok"]:
+        row_number = result["row_number"]
+        return make_domain_result(
+            ok=True,
+            result_type=RESULT_TYPE_FIN_EXPENSE,
+            domain="FIN",
+            message=f"Guardado en Sheets (fila {row_number})",
+            data={
+                "type": "expense_stored",
+                "stored": True,
+                "expense": exp,
+                "row_number": row_number,
+                "missing_fields": [],
+                "needs_confirmation": False,
+                "ambiguous_responsables": ambiguous_responsables,
+                "sheets_available": True,
+                "sheets_error": None,
+                "message": f"Guardado en Sheets (fila {row_number})",
+            },
+        )
+
+    # Sheets write error
+    err_msg = result["error_message"]
+    last_error = get_sheets_last_error()
+    if "Header mismatch" in err_msg:
+        error_type = "SheetSchemaMismatch"
+    elif last_error:
+        error_type = last_error.get("type", "unknown_error")
+    else:
+        error_type = "unknown_error"
+    return make_domain_result(
+        ok=False,
+        result_type=RESULT_TYPE_FIN_EXPENSE,
+        domain="FIN",
+        message=err_msg,
+        data={
+            "type": "expense_parsed",
+            "stored": False,
+            "expense": exp,
+            "row_number": None,
+            "missing_fields": [],
+            "needs_confirmation": False,
+            "ambiguous_responsables": ambiguous_responsables,
+            "sheets_available": True,
+            "sheets_error": last_error,
+            "message": err_msg,
+        },
+        error={"type": error_type, "message": err_msg},
+    )
 
 
 def _fin_plan_execute(plan: dict) -> DomainResult:

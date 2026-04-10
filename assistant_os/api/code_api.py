@@ -365,11 +365,11 @@ def handle_get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
 
     report_md_path = exec_dir / "report.md"
 
-    review_data: Optional[Dict[str, Any]] = None
+    review: Optional[Dict[str, Any]] = None
     review_path = exec_dir / "review.json"
     if review_path.exists():
         try:
-            review_data = json.loads(review_path.read_text(encoding="utf-8"))
+            review = json.loads(review_path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -380,11 +380,9 @@ def handle_get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
         "report_md_path": str(report_md_path) if report_md_path.exists() else None,
         "log_path": str(log_path) if log_path.exists() else None,
         "log_content": log_content,
-        "review_action":  review_data.get("review_action")  if review_data else None,
-        "reviewed_at":    review_data.get("reviewed_at")    if review_data else None,
-        "review_comment": review_data.get("review_comment") if review_data else None,
-        "rerun_of":       metadata.get("rerun_of"),
-        "has_snapshot":   "request_snapshot" in metadata,
+        "review":       review,
+        "rerun_of":     metadata.get("rerun_of"),
+        "has_snapshot": "request_snapshot" in metadata,
     }
 
 
@@ -450,15 +448,17 @@ def handle_rerun_execution(execution_id: str) -> Dict[str, Any]:
     return response
 
 
-_REVIEW_ACTION_MAP: Dict[str, str] = {
-    "approve": "approved",
-    "reject":  "rejected",
-    "rerun":   "rerun",
-}
+_VALID_REVIEW_ACTIONS = {"approved", "rejected", "needs_followup"}
 
 
 def handle_review_execution(execution_id: str, body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Write review.json for a human review decision. Returns None if execution not found."""
+    """Write review.json for a human review decision. Returns None if execution not found.
+
+    Required body fields: review_action, reviewed_by
+    Optional body fields: review_notes
+
+    Raises ValueError on invalid payload.
+    """
     safe_id = _safe_exec_id(execution_id)
     if not safe_id:
         return None
@@ -467,30 +467,37 @@ def handle_review_execution(execution_id: str, body: Dict[str, Any]) -> Optional
     if not exec_dir.is_dir():
         return None
 
-    raw_action = (body.get("action") or "").strip().lower()
-    if raw_action not in _REVIEW_ACTION_MAP:
-        raise ValueError(f"Invalid action: {raw_action!r}. Must be one of: {', '.join(sorted(_REVIEW_ACTION_MAP))}")
+    review_action = str(body.get("review_action") or "").strip().lower()
+    if not review_action:
+        raise ValueError("review_action is required.")
+    if review_action not in _VALID_REVIEW_ACTIONS:
+        raise ValueError(
+            f"Invalid review_action: {review_action!r}. "
+            f"Must be one of: {', '.join(sorted(_VALID_REVIEW_ACTIONS))}"
+        )
 
-    review_action = _REVIEW_ACTION_MAP[raw_action]
-    comment = str(body.get("comment") or "").strip()[:500]
+    reviewed_by = str(body.get("reviewed_by") or "").strip()
+    if not reviewed_by:
+        raise ValueError("reviewed_by is required.")
+
+    review_notes = str(body.get("review_notes") or "").strip()
     reviewed_at = datetime.now(timezone.utc).isoformat()
 
     review = {
-        "review_action":  review_action,
-        "reviewed_at":    reviewed_at,
-        "review_comment": comment,
-        "review_source":  "ui",
+        "execution_id":  safe_id,
+        "review_action": review_action,
+        "review_notes":  review_notes,
+        "reviewed_by":   reviewed_by,
+        "reviewed_at":   reviewed_at,
     }
 
     review_path = exec_dir / "review.json"
     review_path.write_text(json.dumps(review, indent=2), encoding="utf-8")
-    logger.info("REVIEW id=%s action=%s", safe_id, review_action)
+    logger.info("REVIEW id=%s action=%s reviewed_by=%s", safe_id, review_action, reviewed_by)
 
     return {
-        "ok":            True,
-        "review_action": review_action,
-        "reviewed_at":   reviewed_at,
-        "review_comment": comment,
+        "ok":     True,
+        "review": review,
     }
 
 
