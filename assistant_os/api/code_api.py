@@ -373,6 +373,13 @@ def handle_get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
         except (json.JSONDecodeError, OSError):
             pass
 
+    # Derive review_status from the human decision stored in review.json.
+    # None when no review exists.  Never overrides or conflates with final_status.
+    review_status: Optional[str] = (
+        _REVIEW_STATUS_MAP.get(review.get("review_action", ""))
+        if review else None
+    )
+
     return {
         "ok": True,
         "metadata": metadata,
@@ -380,9 +387,10 @@ def handle_get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
         "report_md_path": str(report_md_path) if report_md_path.exists() else None,
         "log_path": str(log_path) if log_path.exists() else None,
         "log_content": log_content,
-        "review":       review,
-        "rerun_of":     metadata.get("rerun_of"),
-        "has_snapshot": "request_snapshot" in metadata,
+        "review":        review,
+        "review_status": review_status,
+        "rerun_of":      metadata.get("rerun_of"),
+        "has_snapshot":  "request_snapshot" in metadata,
     }
 
 
@@ -449,6 +457,14 @@ def handle_rerun_execution(execution_id: str) -> Dict[str, Any]:
 
 
 _VALID_REVIEW_ACTIONS = {"approved", "rejected", "needs_followup"}
+
+# Maps review_action (human decision) → review_status (derived system label).
+# Kept separate from final_status, which describes what the runner produced.
+_REVIEW_STATUS_MAP: Dict[str, str] = {
+    "approved":        "accepted",
+    "rejected":        "rejected",
+    "needs_followup":  "pending_followup",
+}
 
 
 def handle_review_execution(execution_id: str, body: Dict[str, Any]) -> Optional[Dict[str, Any]]:

@@ -371,6 +371,75 @@ class TestGetExecutionReview:
         assert detail["review"] is None
 
 
+class TestReviewStatus:
+    """review_status is derived from review_action — separate from final_status."""
+
+    def test_approved_maps_to_accepted(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("assistant_os.api.code_api.EXECUTIONS_ROOT", tmp_path)
+        _make_exec_dir(tmp_path, "rs-001")
+        handle_review_execution("rs-001", {"review_action": "approved", "reviewed_by": "jorge"})
+
+        detail = handle_get_execution("rs-001")
+        assert detail["review_status"] == "accepted"
+
+    def test_rejected_maps_to_rejected(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("assistant_os.api.code_api.EXECUTIONS_ROOT", tmp_path)
+        _make_exec_dir(tmp_path, "rs-002")
+        handle_review_execution("rs-002", {"review_action": "rejected", "reviewed_by": "jorge"})
+
+        detail = handle_get_execution("rs-002")
+        assert detail["review_status"] == "rejected"
+
+    def test_needs_followup_maps_to_pending_followup(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("assistant_os.api.code_api.EXECUTIONS_ROOT", tmp_path)
+        _make_exec_dir(tmp_path, "rs-003")
+        handle_review_execution("rs-003", {"review_action": "needs_followup", "reviewed_by": "jorge"})
+
+        detail = handle_get_execution("rs-003")
+        assert detail["review_status"] == "pending_followup"
+
+    def test_no_review_gives_null_status(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("assistant_os.api.code_api.EXECUTIONS_ROOT", tmp_path)
+        _make_exec_dir(tmp_path, "rs-004")
+
+        detail = handle_get_execution("rs-004")
+        assert detail["review_status"] is None
+
+    def test_review_object_still_intact(self, tmp_path, monkeypatch):
+        """review_status must not replace or alter the original review object."""
+        monkeypatch.setattr("assistant_os.api.code_api.EXECUTIONS_ROOT", tmp_path)
+        _make_exec_dir(tmp_path, "rs-005")
+        handle_review_execution(
+            "rs-005",
+            {"review_action": "approved", "reviewed_by": "jorge", "review_notes": "looks good"},
+        )
+
+        detail = handle_get_execution("rs-005")
+        assert detail["review_status"] == "accepted"
+        # Original review object must be untouched
+        assert detail["review"]["review_action"] == "approved"
+        assert detail["review"]["reviewed_by"] == "jorge"
+        assert detail["review"]["review_notes"] == "looks good"
+        assert detail["review"]["execution_id"] == "rs-005"
+
+    def test_final_status_unaffected_by_review(self, tmp_path, monkeypatch):
+        """final_status in metadata is independent of review_status."""
+        monkeypatch.setattr("assistant_os.api.code_api.EXECUTIONS_ROOT", tmp_path)
+        exec_dir = _make_exec_dir(tmp_path, "rs-006")
+        # Override metadata with an explicit final_status
+        (exec_dir / "metadata.json").write_text(
+            json.dumps({"execution_id": "rs-006", "final_status": "needs_review"}),
+            encoding="utf-8",
+        )
+        handle_review_execution("rs-006", {"review_action": "rejected", "reviewed_by": "jorge"})
+
+        detail = handle_get_execution("rs-006")
+        # System status is untouched
+        assert detail["metadata"]["final_status"] == "needs_review"
+        # Human decision is independent
+        assert detail["review_status"] == "rejected"
+
+
 # ---------------------------------------------------------------------------
 # HTTP integration tests for review endpoints
 # ---------------------------------------------------------------------------
