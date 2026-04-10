@@ -311,3 +311,117 @@ class TestCodePipelineViaAgent:
         assert isinstance(calls[0], RunnerExecutionRequest)
         assert result["ok"] is True
         assert result["domain"] == "CODE"
+
+    def test_agent_invocation_metadata_in_domain_result(self, tmp_path):
+        """audit_summary in DomainResult must include agent_invocation metadata."""
+        from unittest.mock import MagicMock, patch
+        from assistant_os.runners.runner_models import RunnerExecutionRequest
+
+        mock_result = MagicMock()
+        mock_result.execution_id = "meta-exec-id"
+        mock_result.final_status = "success"
+        mock_result.error = None
+        mock_result.modified_files = []
+        mock_result.promoted_files = []
+        mock_result.promotion_status = None
+        mock_result.report_json_path = None
+        mock_result.report_md_path = None
+        mock_result.changes_detail = []
+
+        stub_agent = _make_valid_stub_agent(lambda r: mock_result)
+        stub_registry = {"code_executor": stub_agent}
+
+        with patch("assistant_os.agents.registry.AGENT_REGISTRY", stub_registry):
+            from assistant_os.pipelines import code_pipeline
+
+            plan = {
+                "plan_id": "plan-meta-test",
+                "action": "CODE_FIX",
+                "raw_text": "fix",
+                "domain_payload": {
+                    "phase": "apply",
+                    "workspace": str(tmp_path),
+                    "target_file": "x.py",
+                    "proposal": {
+                        "proposal_id": "prop-meta-unique-002",
+                        "summary": "fix",
+                        "affected_files": ["x.py"],
+                        "patch_preview": "- a\n+ b",
+                        "patch_preview_truncated": False,
+                        "risk_level": "low",
+                        "write_intent_summary": "modify",
+                        "proposal_artifacts": {"operation_types": ["modify"]},
+                    },
+                },
+            }
+
+            result = code_pipeline.execute(plan, "ctx-meta-001")
+
+        assert result["ok"] is True
+        audit = result["data"]["audit_summary"]
+
+        # agent_invocation must be present
+        assert "agent_invocation" in audit, "agent_invocation missing from audit_summary"
+
+        inv = audit["agent_invocation"]
+        assert inv["agent_name"]             == stub_agent["name"]
+        assert inv["agent_version"]          == stub_agent["version"]
+        assert inv["agent_requires_review"]  == stub_agent["requires_review"]
+        assert inv["agent_capability_scope"] == stub_agent["capability_scope"]
+
+    def test_agent_invocation_values_match_registry(self, tmp_path):
+        """agent_invocation values must match the real AGENT_REGISTRY entry.
+
+        Uses the real registry (no stub) and patches only RunnerBackedExecutor.execute
+        so we verify that the pipeline reads from AGENT_REGISTRY correctly.
+        """
+        from unittest.mock import MagicMock, patch
+
+        mock_result = MagicMock()
+        mock_result.execution_id = "registry-check-id"
+        mock_result.final_status = "success"
+        mock_result.error = None
+        mock_result.modified_files = []
+        mock_result.promoted_files = []
+        mock_result.promotion_status = None
+        mock_result.report_json_path = None
+        mock_result.report_md_path = None
+        mock_result.changes_detail = []
+
+        with patch(
+            "assistant_os.executors.runner_backed_executor.RunnerBackedExecutor.execute",
+            return_value=mock_result,
+        ):
+            from assistant_os.pipelines import code_pipeline
+
+            plan = {
+                "plan_id": "plan-real-registry-check",
+                "action": "CODE_FIX",
+                "raw_text": "fix",
+                "domain_payload": {
+                    "phase": "apply",
+                    "workspace": str(tmp_path),
+                    "target_file": "y.py",
+                    "proposal": {
+                        "proposal_id": "prop-real-registry-unique-003",
+                        "summary": "fix",
+                        "affected_files": ["y.py"],
+                        "patch_preview": "- a\n+ b",
+                        "patch_preview_truncated": False,
+                        "risk_level": "low",
+                        "write_intent_summary": "modify",
+                        "proposal_artifacts": {"operation_types": ["modify"]},
+                    },
+                },
+            }
+
+            result = code_pipeline.execute(plan, "ctx-real-registry-001")
+
+        assert result["ok"] is True
+        inv = result["data"]["audit_summary"]["agent_invocation"]
+
+        # Values must match what AGENT_REGISTRY declares for code_executor
+        assert inv["agent_name"]             == "code_executor"
+        assert inv["agent_version"]          == "1.0.0"
+        assert inv["agent_requires_review"]  is True
+        assert inv["agent_capability_scope"] == ["code_execute"]

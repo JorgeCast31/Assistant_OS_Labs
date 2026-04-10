@@ -711,6 +711,13 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
     # ------------------------------------------------------------------
     from ..agents.registry import get_agent
     _agent = get_agent("code_executor")
+    # Capture invocation metadata once — propagated into audit_summary on every path.
+    _agent_invocation = {
+        "agent_name":             _agent["name"],
+        "agent_version":          _agent["version"],
+        "agent_requires_review":  _agent["requires_review"],
+        "agent_capability_scope": _agent["capability_scope"],
+    }
     try:
         runner_result = _agent["entrypoint"](request)
     except Exception as exc:
@@ -731,6 +738,7 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
                     "plan_id": authorized_plan.plan_id,
                     "policy_id": authorized_plan.policy_id,
                     "capability_scope": authorized_plan.capability_scope,
+                    "agent_invocation": _agent_invocation,
                 },
             },
             error={"type": "RunnerException", "message": str(exc)},
@@ -758,6 +766,7 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
         "capability_scope": authorized_plan.capability_scope,
         "promoted_files": runner_result.promoted_files or [],
         "promotion_status": runner_result.promotion_status,
+        "agent_invocation": _agent_invocation,
     }
 
     if final_status == "needs_review":
