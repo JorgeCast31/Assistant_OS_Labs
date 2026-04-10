@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..runners.metadata_utils import EXECUTIONS_ROOT, patch_execution_metadata
 from ..runners.runner_models import RunnerExecutionRequest
 from ..sandbox.authorized_plan import AuthorizedPlan, KNOWN_POLICY_IDS
 
@@ -171,18 +172,6 @@ def _build_authorized_plan(
     )
 
 
-def _patch_metadata(execution_id: str, fields: Dict[str, Any]) -> None:
-    """Read-update-write metadata.json for *execution_id* with *fields*. Silent on error."""
-    meta_path = EXECUTIONS_ROOT / execution_id / "metadata.json"
-    if not meta_path.exists():
-        return
-    try:
-        data = json.loads(meta_path.read_text(encoding="utf-8"))
-        data.update(fields)
-        meta_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    except (OSError, json.JSONDecodeError) as exc:
-        logger.warning("PATCH_METADATA_ERROR execution_id=%s error=%s", execution_id, exc)
-
 
 def handle_execute(body: Dict[str, Any]) -> Dict[str, Any]:
     """External adapter for n8n / HTTP clients — validate, authorize, run, return.
@@ -263,9 +252,6 @@ def handle_execute(body: Dict[str, Any]) -> Dict[str, Any]:
     logger.info("DONE execution_id=%s final_status=%s agent=%s",
                 execution_id, result.final_status, _agent["name"])
 
-    # Persist request snapshot for rerun capability (best-effort, non-fatal)
-    _patch_metadata(result.execution_id, {"request_snapshot": _build_request_snapshot(body)})
-
     # Agent invocation metadata — mirrors audit_summary.agent_invocation in kernel path.
     agent_invocation = {
         "agent_name":             _agent["name"],
@@ -273,6 +259,14 @@ def handle_execute(body: Dict[str, Any]) -> Dict[str, Any]:
         "agent_requires_review":  _agent["requires_review"],
         "agent_capability_scope": _agent["capability_scope"],
     }
+
+    # Persist request snapshot + agent_invocation to metadata.json (best-effort, non-fatal).
+    # Persisting agent_invocation here closes the trazabilidad gap: GET /executions/{id}
+    # can now read it from disk rather than relying on in-memory state.
+    patch_execution_metadata(result.execution_id, {
+        "request_snapshot": _build_request_snapshot(body),
+        "agent_invocation": agent_invocation,
+    })
 
     return {
         "ok": True,             # normalize envelope (consumed by frontend apiFetch)
@@ -289,9 +283,8 @@ def handle_execute(body: Dict[str, Any]) -> Dict[str, Any]:
 
 # ---------------------------------------------------------------------------
 # Execution listing and detail
+# EXECUTIONS_ROOT is imported from runners.metadata_utils — single definition.
 # ---------------------------------------------------------------------------
-
-EXECUTIONS_ROOT = Path(__file__).parent.parent.parent / "var" / "runner" / "executions"
 
 
 def _safe_exec_id(raw: str) -> Optional[str]:
@@ -396,6 +389,9 @@ def handle_get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
         review_status=review_status,
     )
 
+    # agent_invocation — read from metadata.json if persisted; None for older executions.
+    agent_invocation: Optional[Dict[str, Any]] = metadata.get("agent_invocation")
+
     return {
         "ok": True,
         "metadata": metadata,
@@ -406,6 +402,7 @@ def handle_get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
         "review":               review,
         "review_status":        review_status,
         "execution_assessment": execution_assessment,
+        "agent_invocation":     agent_invocation,
         "rerun_of":             metadata.get("rerun_of"),
         "has_snapshot":         "request_snapshot" in metadata,
     }

@@ -786,3 +786,101 @@ def test_http_review_create_and_get(live_server, tmp_path):
     assert status2 == 200
     assert detail["review"] is not None
     assert detail["review"]["review_action"] == "needs_followup"
+
+
+# ---------------------------------------------------------------------------
+# Agent invocation persistence + GET detail exposure
+# ---------------------------------------------------------------------------
+
+
+class TestAgentInvocationPersistence:
+    """Verify agent_invocation is written to metadata.json and exposed in GET detail."""
+
+    def test_agent_invocation_persisted_to_metadata(self, tmp_path):
+        """handle_execute must write agent_invocation into metadata.json on disk."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "main.py").write_text("pass\n")
+
+        result = handle_execute({
+            "repo_path": str(repo),
+            "request_id": "inv-persist-001",
+        })
+
+        eid = result["execution_id"]
+        meta_path = EXECUTIONS_ROOT / eid / "metadata.json"
+        assert meta_path.exists(), f"metadata.json must exist at {meta_path}"
+
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        assert "agent_invocation" in meta, "agent_invocation must be written to metadata.json"
+
+    def test_agent_invocation_persisted_fields_correct(self, tmp_path):
+        """The four agent_invocation fields written to disk must match the registry."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "main.py").write_text("pass\n")
+
+        result = handle_execute({
+            "repo_path": str(repo),
+            "request_id": "inv-persist-fields-002",
+        })
+
+        eid = result["execution_id"]
+        meta = json.loads(
+            (EXECUTIONS_ROOT / eid / "metadata.json").read_text(encoding="utf-8")
+        )
+        inv = meta["agent_invocation"]
+
+        assert inv["agent_name"]             == "code_executor"
+        assert inv["agent_version"]          == "1.0.0"
+        assert inv["agent_requires_review"]  is True
+        assert inv["agent_capability_scope"] == ["code_execute"]
+
+    def test_get_execution_exposes_agent_invocation(self, tmp_path, monkeypatch):
+        """handle_get_execution must include agent_invocation from metadata.json."""
+        monkeypatch.setattr("assistant_os.api.code_api.EXECUTIONS_ROOT", tmp_path)
+
+        # Build an execution directory with agent_invocation already in metadata
+        eid = "inv-get-003"
+        exec_dir = tmp_path / eid
+        exec_dir.mkdir()
+        (exec_dir / "metadata.json").write_text(
+            json.dumps({
+                "execution_id": eid,
+                "final_status": "success",
+                "agent_invocation": {
+                    "agent_name":             "code_executor",
+                    "agent_version":          "1.0.0",
+                    "agent_requires_review":  True,
+                    "agent_capability_scope": ["code_execute"],
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        detail = handle_get_execution(eid)
+
+        assert "agent_invocation" in detail
+        inv = detail["agent_invocation"]
+        assert inv["agent_name"]             == "code_executor"
+        assert inv["agent_version"]          == "1.0.0"
+        assert inv["agent_requires_review"]  is True
+        assert inv["agent_capability_scope"] == ["code_execute"]
+
+    def test_get_execution_agent_invocation_null_for_legacy(self, tmp_path, monkeypatch):
+        """agent_invocation must be None (not KeyError) for older executions without it."""
+        monkeypatch.setattr("assistant_os.api.code_api.EXECUTIONS_ROOT", tmp_path)
+
+        eid = "inv-legacy-004"
+        exec_dir = tmp_path / eid
+        exec_dir.mkdir()
+        # Older metadata without agent_invocation key
+        (exec_dir / "metadata.json").write_text(
+            json.dumps({"execution_id": eid, "final_status": "success"}),
+            encoding="utf-8",
+        )
+
+        detail = handle_get_execution(eid)
+
+        assert "agent_invocation" in detail
+        assert detail["agent_invocation"] is None

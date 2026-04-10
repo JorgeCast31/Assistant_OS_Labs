@@ -78,6 +78,7 @@ from ..contracts import (
     RISK_HIGH,
 )
 from ..core.context import get_context
+from ..runners.metadata_utils import patch_execution_metadata
 
 # ---------------------------------------------------------------------------
 # Module-level single-use applied-proposal tracker.
@@ -743,6 +744,14 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
             },
             error={"type": "RunnerException", "message": str(exc)},
         )
+
+    # Persist agent_invocation to metadata.json (best-effort, non-fatal).
+    # Closes PATH A trazabilidad gap: GET /api/code/executions/{id} can now
+    # read agent metadata from disk for kernel-originated executions too.
+    patch_execution_metadata(
+        runner_result.execution_id,
+        {"agent_invocation": _agent_invocation},
+    )
 
     # Mark proposal used AFTER runner dispatch (regardless of runner outcome).
     # This prevents retry on partial applies that may have modified the workspace.

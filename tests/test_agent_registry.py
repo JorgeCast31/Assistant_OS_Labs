@@ -1,5 +1,6 @@
 """Tests for assistant_os/agents/registry.py — agent contract hardening."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -425,3 +426,174 @@ class TestCodePipelineViaAgent:
         assert inv["agent_version"]          == "1.0.0"
         assert inv["agent_requires_review"]  is True
         assert inv["agent_capability_scope"] == ["code_execute"]
+
+
+# ---------------------------------------------------------------------------
+# PATH A — kernel metadata persistence
+# ---------------------------------------------------------------------------
+
+
+class TestKernelPathMetadataPersistence:
+    """Verify that code_pipeline persists agent_invocation to metadata.json.
+
+    Uses a pre-created metadata.json (simulating what the runner would write)
+    and patches EXECUTIONS_ROOT in metadata_utils so the persistence lands in
+    a temp directory.  RunnerBackedExecutor.execute is also patched so the
+    test is hermetic and fast.
+    """
+
+    def _make_plan(self, workspace: str, proposal_id: str) -> dict:
+        return {
+            "plan_id": f"plan-{proposal_id}",
+            "action": "CODE_FIX",
+            "raw_text": "fix",
+            "domain_payload": {
+                "phase": "apply",
+                "workspace": workspace,
+                "target_file": "z.py",
+                "proposal": {
+                    "proposal_id": proposal_id,
+                    "summary": "fix",
+                    "affected_files": ["z.py"],
+                    "patch_preview": "- a\n+ b",
+                    "patch_preview_truncated": False,
+                    "risk_level": "low",
+                    "write_intent_summary": "modify",
+                    "proposal_artifacts": {"operation_types": ["modify"]},
+                },
+            },
+        }
+
+    def test_kernel_path_persists_agent_invocation(self, tmp_path, monkeypatch):
+        """After code_pipeline.execute (apply), metadata.json must contain agent_invocation."""
+        from unittest.mock import MagicMock, patch
+        import assistant_os.runners.metadata_utils as mu
+
+        # execution_id used by the mock result
+        eid = "kernel-persist-unique-k001"
+
+        # Pre-create a metadata.json simulating what the runner writes
+        exec_dir = tmp_path / eid
+        exec_dir.mkdir()
+        (exec_dir / "metadata.json").write_text(
+            json.dumps({"execution_id": eid, "final_status": "success"}),
+            encoding="utf-8",
+        )
+
+        # Redirect patch_execution_metadata to write into tmp_path
+        monkeypatch.setattr(mu, "EXECUTIONS_ROOT", tmp_path)
+
+        mock_result = MagicMock()
+        mock_result.execution_id = eid
+        mock_result.final_status = "success"
+        mock_result.error = None
+        mock_result.modified_files = []
+        mock_result.promoted_files = []
+        mock_result.promotion_status = None
+        mock_result.report_json_path = None
+        mock_result.report_md_path = None
+        mock_result.changes_detail = []
+
+        with patch(
+            "assistant_os.executors.runner_backed_executor.RunnerBackedExecutor.execute",
+            return_value=mock_result,
+        ):
+            from assistant_os.pipelines import code_pipeline
+            result = code_pipeline.execute(
+                self._make_plan(str(tmp_path), "prop-kernel-persist-k001"),
+                "ctx-kernel-persist-k001",
+            )
+
+        assert result["ok"] is True
+
+        # Verify agent_invocation was written to metadata.json on disk
+        meta = json.loads((tmp_path / eid / "metadata.json").read_text(encoding="utf-8"))
+        assert "agent_invocation" in meta, "agent_invocation must be persisted by PATH A"
+
+    def test_kernel_path_agent_invocation_fields_correct(self, tmp_path, monkeypatch):
+        """The four fields written by PATH A must match the AGENT_REGISTRY entry."""
+        from unittest.mock import MagicMock, patch
+        import assistant_os.runners.metadata_utils as mu
+
+        eid = "kernel-persist-unique-k002"
+        exec_dir = tmp_path / eid
+        exec_dir.mkdir()
+        (exec_dir / "metadata.json").write_text(
+            json.dumps({"execution_id": eid, "final_status": "success"}),
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(mu, "EXECUTIONS_ROOT", tmp_path)
+
+        mock_result = MagicMock()
+        mock_result.execution_id = eid
+        mock_result.final_status = "success"
+        mock_result.error = None
+        mock_result.modified_files = []
+        mock_result.promoted_files = []
+        mock_result.promotion_status = None
+        mock_result.report_json_path = None
+        mock_result.report_md_path = None
+        mock_result.changes_detail = []
+
+        with patch(
+            "assistant_os.executors.runner_backed_executor.RunnerBackedExecutor.execute",
+            return_value=mock_result,
+        ):
+            from assistant_os.pipelines import code_pipeline
+            code_pipeline.execute(
+                self._make_plan(str(tmp_path), "prop-kernel-persist-k002"),
+                "ctx-kernel-persist-k002",
+            )
+
+        meta = json.loads((tmp_path / eid / "metadata.json").read_text(encoding="utf-8"))
+        inv = meta["agent_invocation"]
+
+        assert inv["agent_name"]             == "code_executor"
+        assert inv["agent_version"]          == "1.0.0"
+        assert inv["agent_requires_review"]  is True
+        assert inv["agent_capability_scope"] == ["code_execute"]
+
+    def test_kernel_path_preserves_existing_metadata_fields(self, tmp_path, monkeypatch):
+        """patch_execution_metadata must not destroy pre-existing metadata fields."""
+        from unittest.mock import MagicMock, patch
+        import assistant_os.runners.metadata_utils as mu
+
+        eid = "kernel-persist-unique-k003"
+        exec_dir = tmp_path / eid
+        exec_dir.mkdir()
+        original_meta = {
+            "execution_id": eid,
+            "final_status": "success",
+            "some_runner_field": "must-survive",
+        }
+        (exec_dir / "metadata.json").write_text(json.dumps(original_meta), encoding="utf-8")
+
+        monkeypatch.setattr(mu, "EXECUTIONS_ROOT", tmp_path)
+
+        mock_result = MagicMock()
+        mock_result.execution_id = eid
+        mock_result.final_status = "success"
+        mock_result.error = None
+        mock_result.modified_files = []
+        mock_result.promoted_files = []
+        mock_result.promotion_status = None
+        mock_result.report_json_path = None
+        mock_result.report_md_path = None
+        mock_result.changes_detail = []
+
+        with patch(
+            "assistant_os.executors.runner_backed_executor.RunnerBackedExecutor.execute",
+            return_value=mock_result,
+        ):
+            from assistant_os.pipelines import code_pipeline
+            code_pipeline.execute(
+                self._make_plan(str(tmp_path), "prop-kernel-persist-k003"),
+                "ctx-kernel-persist-k003",
+            )
+
+        meta = json.loads((tmp_path / eid / "metadata.json").read_text(encoding="utf-8"))
+        assert meta["execution_id"]       == eid
+        assert meta["final_status"]       == "success"
+        assert meta["some_runner_field"]  == "must-survive"
+        assert "agent_invocation"         in meta
