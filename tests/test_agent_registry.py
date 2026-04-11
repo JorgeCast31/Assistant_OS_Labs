@@ -597,3 +597,117 @@ class TestKernelPathMetadataPersistence:
         assert meta["final_status"]       == "success"
         assert meta["some_runner_field"]  == "must-survive"
         assert "agent_invocation"         in meta
+
+
+# ---------------------------------------------------------------------------
+# Sprint E — G2: request_snapshot persistence in kernel path (PATH A)
+# ---------------------------------------------------------------------------
+
+
+class TestKernelPathSnapshotPersistence:
+    """Verify that code_pipeline persists request_snapshot to metadata.json.
+
+    G2: PATH A was persisting agent_invocation but not request_snapshot,
+    which meant kernel-originated executions could not be rerun from the API.
+    After the fix, both fields are written in a single patch_execution_metadata call.
+    """
+
+    def _make_plan(self, workspace: str, proposal_id: str) -> dict:
+        return {
+            "plan_id": f"plan-snap-{proposal_id}",
+            "action": "CODE_FIX",
+            "raw_text": "fix",
+            "domain_payload": {
+                "phase": "apply",
+                "workspace": workspace,
+                "target_file": "z.py",
+                "proposal": {
+                    "proposal_id": proposal_id,
+                    "summary": "fix",
+                    "affected_files": ["z.py"],
+                    "patch_preview": "- a\n+ b",
+                    "patch_preview_truncated": False,
+                    "risk_level": "low",
+                    "write_intent_summary": "modify",
+                    "proposal_artifacts": {"operation_types": ["modify"]},
+                },
+            },
+        }
+
+    def _run_pipeline(self, tmp_path, monkeypatch, eid: str, proposal_id: str):
+        """Shared fixture: patch runner + EXECUTIONS_ROOT, run pipeline, return metadata."""
+        from unittest.mock import MagicMock, patch
+        import assistant_os.runners.metadata_utils as mu
+
+        exec_dir = tmp_path / eid
+        exec_dir.mkdir()
+        (exec_dir / "metadata.json").write_text(
+            json.dumps({"execution_id": eid, "final_status": "success"}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(mu, "EXECUTIONS_ROOT", tmp_path)
+
+        mock_result = MagicMock()
+        mock_result.execution_id = eid
+        mock_result.final_status = "success"
+        mock_result.error = None
+        mock_result.modified_files = []
+        mock_result.promoted_files = []
+        mock_result.promotion_status = None
+        mock_result.report_json_path = None
+        mock_result.report_md_path = None
+        mock_result.changes_detail = []
+
+        with patch(
+            "assistant_os.executors.runner_backed_executor.RunnerBackedExecutor.execute",
+            return_value=mock_result,
+        ):
+            from assistant_os.pipelines import code_pipeline
+            code_pipeline.execute(
+                self._make_plan(str(tmp_path), proposal_id),
+                f"ctx-{proposal_id}",
+            )
+
+        return json.loads((tmp_path / eid / "metadata.json").read_text(encoding="utf-8"))
+
+    def test_kernel_path_persists_request_snapshot(self, tmp_path, monkeypatch):
+        """After PATH A execute, metadata.json must contain request_snapshot."""
+        meta = self._run_pipeline(tmp_path, monkeypatch, "snap-k001", "prop-snap-k001")
+        assert "request_snapshot" in meta, (
+            "request_snapshot must be persisted by PATH A — G2 gap"
+        )
+
+    def test_request_snapshot_has_repo_path(self, tmp_path, monkeypatch):
+        """request_snapshot must include repo_path (required for rerun)."""
+        meta = self._run_pipeline(tmp_path, monkeypatch, "snap-k002", "prop-snap-k002")
+        snap = meta["request_snapshot"]
+        assert "repo_path" in snap
+        assert snap["repo_path"] == str(tmp_path)
+
+    def test_request_snapshot_mode_is_kernel(self, tmp_path, monkeypatch):
+        """mode must be 'kernel' to distinguish PATH A from HTTP-originated executions."""
+        meta = self._run_pipeline(tmp_path, monkeypatch, "snap-k003", "prop-snap-k003")
+        assert meta["request_snapshot"]["mode"] == "kernel"
+
+    def test_request_snapshot_has_plan_id(self, tmp_path, monkeypatch):
+        """plan_id must be present so the snapshot is traceable to the kernel plan."""
+        meta = self._run_pipeline(tmp_path, monkeypatch, "snap-k004", "prop-snap-k004")
+        snap = meta["request_snapshot"]
+        assert "plan_id" in snap
+        assert snap["plan_id"] == "plan-snap-prop-snap-k004"
+
+    def test_agent_invocation_still_present(self, tmp_path, monkeypatch):
+        """Extending the patch must not drop agent_invocation (regression guard)."""
+        meta = self._run_pipeline(tmp_path, monkeypatch, "snap-k005", "prop-snap-k005")
+        assert "agent_invocation" in meta
+        assert "request_snapshot" in meta
+
+    def test_detail_has_has_snapshot_true(self, tmp_path, monkeypatch):
+        """GET execution detail must report has_snapshot=True after PATH A execute."""
+        import assistant_os.api.code_api as api
+        meta = self._run_pipeline(tmp_path, monkeypatch, "snap-k006", "prop-snap-k006")
+
+        monkeypatch.setattr(api, "EXECUTIONS_ROOT", tmp_path)
+        detail = api.handle_get_execution("snap-k006")
+        assert detail is not None
+        assert detail["has_snapshot"] is True

@@ -745,12 +745,34 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
             error={"type": "RunnerException", "message": str(exc)},
         )
 
-    # Persist agent_invocation to metadata.json (best-effort, non-fatal).
-    # Closes PATH A trazabilidad gap: GET /api/code/executions/{id} can now
-    # read agent metadata from disk for kernel-originated executions too.
+    # Persist agent_invocation + request_snapshot to metadata.json (best-effort, non-fatal).
+    # Closes PATH A trazabilidad gaps:
+    #   agent_invocation — GET /api/code/executions/{id} exposes agent metadata.
+    #   request_snapshot — enables rerun from the API for kernel-originated executions.
+    #
+    # PATH A snapshot subset vs PATH B:
+    #   repo_path, changes, plan_id, policy_id, capability_scope, metadata — all present.
+    #   test_spec, validation_spec, code — not carried through the kernel pipeline; None.
+    #   mode = "kernel" distinguishes from HTTP-originated executions ("code_execution").
+    _request_snapshot = {
+        "repo_path":        request.repo_path,
+        "changes":          request.changes,
+        "test_spec":        None,
+        "validation_spec":  None,
+        "source":           "assistant_os",
+        "mode":             "kernel",
+        "metadata":         request.metadata,
+        "plan_id":          authorized_plan.plan_id,
+        "policy_id":        authorized_plan.policy_id,
+        "capability_scope": authorized_plan.capability_scope,
+        "code":             None,
+    }
     patch_execution_metadata(
         runner_result.execution_id,
-        {"agent_invocation": _agent_invocation},
+        {
+            "agent_invocation": _agent_invocation,
+            "request_snapshot": _request_snapshot,
+        },
     )
 
     # Mark proposal used AFTER runner dispatch (regardless of runner outcome).
