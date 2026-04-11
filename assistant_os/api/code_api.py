@@ -17,6 +17,7 @@ import logging
 import logging.handlers
 import os
 import traceback
+import urllib.parse
 import uuid
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -295,8 +296,21 @@ def _safe_exec_id(raw: str) -> Optional[str]:
     return eid
 
 
-def handle_list_executions() -> Dict[str, Any]:
-    """List all execution directories sorted by start time (most recent first)."""
+def handle_list_executions(
+    *,
+    status: Optional[str] = None,
+    review_status: Optional[str] = None,
+    assessment: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    """List execution directories sorted by start time (most recent first).
+
+    Optional keyword filters (all default to None = no filter):
+        status        — match final_status exactly
+        review_status — match review_status exactly
+        assessment    — match execution_assessment exactly
+        limit         — return at most N items (applied after sort and filters)
+    """
     if not EXECUTIONS_ROOT.exists():
         return {"ok": True, "executions": [], "count": 0}
 
@@ -313,9 +327,19 @@ def handle_list_executions() -> Dict[str, Any]:
             logger.warning("LIST_SKIP dir=%s error=%s", d.name, exc)
             continue
 
+        review: Optional[Dict[str, Any]] = None
+        review_path = d / "review.json"
+        if review_path.exists():
+            try:
+                review = json.loads(review_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        final_status = meta.get("final_status") or "unknown"
+        rs = _derive_review_status(review)
         results.append({
             "execution_id":    meta.get("execution_id", d.name),
-            "final_status":    meta.get("final_status") or "unknown",
+            "final_status":    final_status,
             "summary":         meta.get("summary", ""),
             "timestamp":       meta.get("started_at", ""),
             "report_json_path": str(d / "report.json") if (d / "report.json").exists() else None,
@@ -323,10 +347,101 @@ def handle_list_executions() -> Dict[str, Any]:
             "done_path":        str(d / "done.json")    if (d / "done.json").exists()    else None,
             "metadata_path":    str(meta_path),
             "source":           (meta.get("metadata") or {}).get("source", "unknown"),
+            "review_status":        rs,
+            "execution_assessment": _derive_execution_assessment(final_status, rs),
+            "agent_invocation":     meta.get("agent_invocation"),
         })
 
     results.sort(key=lambda x: x["timestamp"] or "", reverse=True)
+
+    if status is not None:
+        results = [r for r in results if r["final_status"] == status]
+    if review_status is not None:
+        results = [r for r in results if r["review_status"] == review_status]
+    if assessment is not None:
+        results = [r for r in results if r["execution_assessment"] == assessment]
+    if limit is not None:
+        results = results[:limit]
+
     return {"ok": True, "executions": results, "count": len(results)}
+
+
+def handle_code_status() -> Dict[str, Any]:
+    """Return aggregated execution counts for operational visibility.
+
+    Reutilizes handle_list_executions() — items are already enriched with
+    review_status and execution_assessment, so no derivation is duplicated here.
+    """
+    executions = handle_list_executions()["executions"]
+
+    by_final: Dict[str, int] = {}
+    by_review: Dict[str, int] = {}
+    by_assessment: Dict[str, int] = {}
+
+    for item in executions:
+        fs = item["final_status"]
+        by_final[fs] = by_final.get(fs, 0) + 1
+
+        # review_status is None for unreviewed executions; surface as "null" string.
+        rs = item["review_status"] if item["review_status"] is not None else "null"
+        by_review[rs] = by_review.get(rs, 0) + 1
+
+        ea = item["execution_assessment"]
+        by_assessment[ea] = by_assessment.get(ea, 0) + 1
+
+    return {
+        "ok":    True,
+        "total": len(executions),
+        "by_final_status":         by_final,
+        "by_review_status":        by_review,
+        "by_execution_assessment": by_assessment,
+    }
+
+
+def _get_exec_dir(execution_id: str) -> Optional[Path]:
+    """Return the execution directory Path if valid and present, else None."""
+    safe_id = _safe_exec_id(execution_id)
+    if not safe_id:
+        return None
+    d = EXECUTIONS_ROOT / safe_id
+    return d if d.is_dir() else None
+
+
+def handle_execution_log(execution_id: str) -> Optional[Dict[str, Any]]:
+    """Return runner.log content for one execution.
+
+    Returns None when the execution or the log file does not exist (→ 404).
+    Raises OSError on read failure (→ caller maps to 500).
+    """
+    exec_dir = _get_exec_dir(execution_id)
+    if exec_dir is None:
+        return None
+    log_path = exec_dir / "runner.log"
+    if not log_path.exists():
+        return None
+    content = log_path.read_text(encoding="utf-8", errors="replace")
+    return {"ok": True, "execution_id": execution_id, "log": content}
+
+
+def handle_execution_report(execution_id: str) -> Optional[Dict[str, Any]]:
+    """Return report.json (preferred) or report.md (fallback) for one execution.
+
+    Priority: report.json → report.md → None (→ 404).
+    Returns None when the execution or neither artefact exists.
+    Raises on read/parse failure (→ caller maps to 500).
+    """
+    exec_dir = _get_exec_dir(execution_id)
+    if exec_dir is None:
+        return None
+    report_json = exec_dir / "report.json"
+    if report_json.exists():
+        report = json.loads(report_json.read_text(encoding="utf-8"))
+        return {"ok": True, "execution_id": execution_id, "report": report}
+    report_md = exec_dir / "report.md"
+    if report_md.exists():
+        content = report_md.read_text(encoding="utf-8", errors="replace")
+        return {"ok": True, "execution_id": execution_id, "report": content}
+    return None
 
 
 def handle_get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
@@ -377,10 +492,7 @@ def handle_get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
 
     # Derive review_status from the human decision stored in review.json.
     # None when no review exists.  Never overrides or conflates with final_status.
-    review_status: Optional[str] = (
-        _REVIEW_STATUS_MAP.get(review.get("review_action", ""))
-        if review else None
-    )
+    review_status: Optional[str] = _derive_review_status(review)
 
     # Derive execution_assessment: combined visible interpretation of the execution.
     # Reads final_status from metadata (system layer) + review_status (human layer).
@@ -461,10 +573,10 @@ def handle_rerun_execution(execution_id: str) -> Dict[str, Any]:
     logger.info("RERUN original_id=%s new_request_id=%s", safe_id, new_request_id)
     response = handle_execute(body)
 
-    # Tag the new execution with rerun_of (best-effort)
+    # Tag the new execution with rerun_of (best-effort, non-fatal).
     new_exec_id = response.get("execution_id")
     if new_exec_id:
-        _patch_metadata(new_exec_id, {"rerun_of": safe_id})
+        patch_execution_metadata(new_exec_id, {"rerun_of": safe_id})
 
     response["rerun_of"] = safe_id
     return response
@@ -479,6 +591,13 @@ _REVIEW_STATUS_MAP: Dict[str, str] = {
     "rejected":        "rejected",
     "needs_followup":  "pending_followup",
 }
+
+
+def _derive_review_status(review: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Derive review_status from a parsed review.json dict. None if no review."""
+    if not review:
+        return None
+    return _REVIEW_STATUS_MAP.get(review.get("review_action", ""))
 
 
 def _derive_execution_assessment(
@@ -673,20 +792,71 @@ class CodeAPIHandler(BaseHTTPRequestHandler):
             self._send(200, {"status": "ok", "service": "code_api"})
         elif path == "/api/code/executions":
             try:
-                self._send(200, handle_list_executions())
+                qs = urllib.parse.parse_qs(
+                    urllib.parse.urlparse(self.path).query,
+                    keep_blank_values=False,
+                )
+                # parse_qs returns lists; take first value for single-value params.
+                f_status     = qs["status"][0]        if "status"        in qs else None
+                f_review     = qs["review_status"][0] if "review_status" in qs else None
+                f_assessment = qs["assessment"][0]    if "assessment"    in qs else None
+                f_limit: Optional[int] = None
+                if "limit" in qs:
+                    try:
+                        f_limit = int(qs["limit"][0])
+                        if f_limit <= 0:
+                            raise ValueError("limit must be positive")
+                    except (ValueError, TypeError):
+                        self._send(400, {"error": "limit must be a positive integer."})
+                        return
+                self._send(200, handle_list_executions(
+                    status=f_status,
+                    review_status=f_review,
+                    assessment=f_assessment,
+                    limit=f_limit,
+                ))
             except Exception as exc:
                 logger.exception("LIST_ERROR")
                 self._send(500, {"ok": False, "error": str(exc)})
+        elif path == "/api/code/status":
+            try:
+                self._send(200, handle_code_status())
+            except Exception as exc:
+                logger.exception("STATUS_ERROR")
+                self._send(500, {"ok": False, "error": str(exc)})
         elif path.startswith("/api/code/executions/"):
-            execution_id = path[len("/api/code/executions/"):]
-            if not execution_id:
+            suffix = path[len("/api/code/executions/"):]
+            if not suffix:
                 self._send(400, {"error": "execution_id required"})
                 return
-            detail = handle_get_execution(execution_id)
-            if detail is None:
-                self._send(404, {"error": f"Execution not found: {execution_id}"})
+            if suffix.endswith("/log"):
+                eid = suffix[:-len("/log")]
+                try:
+                    result = handle_execution_log(eid)
+                    if result is None:
+                        self._send(404, {"error": f"Log not found for: {eid}"})
+                    else:
+                        self._send(200, result)
+                except Exception as exc:
+                    logger.exception("LOG_ERROR id=%s", eid)
+                    self._send(500, {"ok": False, "error": str(exc)})
+            elif suffix.endswith("/report"):
+                eid = suffix[:-len("/report")]
+                try:
+                    result = handle_execution_report(eid)
+                    if result is None:
+                        self._send(404, {"error": f"Report not found for: {eid}"})
+                    else:
+                        self._send(200, result)
+                except Exception as exc:
+                    logger.exception("REPORT_ERROR id=%s", eid)
+                    self._send(500, {"ok": False, "error": str(exc)})
             else:
-                self._send(200, detail)
+                detail = handle_get_execution(suffix)
+                if detail is None:
+                    self._send(404, {"error": f"Execution not found: {suffix}"})
+                else:
+                    self._send(200, detail)
         else:
             self._send(404, {"error": "Not found."})
 
