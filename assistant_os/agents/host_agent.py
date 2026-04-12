@@ -42,12 +42,14 @@ Phase 2.5 additions
 
 from __future__ import annotations
 
+import ntpath
 import os
 import signal
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import PureWindowsPath
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -231,33 +233,47 @@ def validate_allowed_directory(path: str) -> tuple[bool, str]:
     """
     Validate that path equals or is a subdirectory of an ALLOWED_DIRECTORIES entry.
 
+    Cross-platform implementation — uses Windows path semantics regardless of the
+    OS running the code (important for CI running on Linux).
+
     Algorithm
     ---------
     1. Reject empty path immediately.
-    2. Normalize: os.path.normcase(os.path.normpath(path)).
-       normpath resolves ".." and "." components, neutralising traversal attacks
-       at the string level (e.g. "C:\\allowed\\..\\..\\Windows" → "C:\\Windows").
-       normcase lowercases the result on Windows for case-insensitive matching.
-    3. Compare against each normalised allowlist entry using equality (exact match)
-       or prefix + os.sep (subdirectory match).
+    2. Normalize with ntpath.normpath: resolves ".." and "." components using
+       Windows path rules on ANY platform, preventing traversal attacks at the
+       string level (e.g. "C:\\allowed\\..\\..\\Windows" → "C:\\Windows").
+       ntpath is part of the Python standard library and works on Linux/macOS.
+    3. Wrap in PureWindowsPath for comparison:
+       - Equality and is_relative_to() are case-insensitive (Windows semantics).
+       - is_relative_to() is component-based, not string-prefix-based, so
+         "C:\\JorgeEvil" does NOT match "C:\\Jorge" (adjacent-prefix safe).
+
+    Why not os.path
+    ---------------
+    os.path.normcase is a no-op on Linux (does not lowercase).
+    os.path.normpath treats "\\" as a literal character on Linux (not a separator).
+    os.sep is "/" on Linux, breaking the "startswith(allowed + sep)" subdirectory check.
+    ntpath + PureWindowsPath are cross-platform by design and always use Windows rules.
 
     Symlink / junction note
     -----------------------
-    This function does NOT call os.path.realpath().  A symlink whose path string
-    falls inside the allowlist would pass this check even if its target is outside.
-    Resolving symlinks safely requires the path to exist on disk, which breaks
-    unit tests and adds filesystem coupling.  This is a documented limitation:
-    the OS will ultimately enforce the real path when Explorer opens the directory.
+    ntpath.normpath resolves ".." at the string level but does not follow symlinks.
+    A symlink whose path string falls inside the allowlist would pass this check
+    even if its target is outside.  This is a documented limitation.
 
     Returns (True, "") on success, (False, reason_string) on any failure.
     """
     if not path:
         return False, "path is empty"
 
-    norm = os.path.normcase(os.path.normpath(path))
+    # ntpath.normpath resolves ".." and "." with Windows semantics on all platforms
+    norm = PureWindowsPath(ntpath.normpath(path))
+
     for allowed in ALLOWED_DIRECTORIES:
-        allowed_norm = os.path.normcase(os.path.normpath(allowed))
-        if norm == allowed_norm or norm.startswith(allowed_norm + os.sep):
+        allowed_norm = PureWindowsPath(ntpath.normpath(allowed))
+        # PureWindowsPath equality and is_relative_to() are case-insensitive
+        # and component-based — no os.sep dependency
+        if norm == allowed_norm or norm.is_relative_to(allowed_norm):
             return True, ""
 
     return False, f"path {path!r} is not within ALLOWED_DIRECTORIES"
