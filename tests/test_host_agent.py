@@ -1,0 +1,1558 @@
+"""
+Tests — host_agent.py  (Phase 1 + Phase 2 + Phase 2.5 hardening)
+
+Coverage
+--------
+A. Gate: confirmed flag
+B. Gate: agent status (ACTIVE / PAUSED / QUARANTINE) — always HOST_AGENT_ID
+C. Gate: APP_REGISTRY (notepad, calc; rejects unknown)
+D. Intent audit emitted BEFORE Popen; HostAuditError aborts launch
+E. Outcome audit emitted AFTER Popen with pid
+F. pid registered in _IN_FLIGHT after successful launch
+G. HostActionResult correctness (incl. error_code field)
+H. No subprocess launched on any failure path
+I. Registry integration — host_launcher entrypoint delegates correctly
+J. Canonical identity — HOST_AGENT_ID is the only identity used end-to-end
+K. close_pid (Phase 2)
+L. open_directory (Phase 2)
+M. open_url (Phase 2)
+N. Action audit events (Phase 2)
+O. Phase 2 integration
+P. validate_allowed_directory (Phase 2.5)
+Q. validate_allowed_url (Phase 2.5)
+R. Error codes on every failure path (Phase 2.5)
+S. Rejection audit on gate failures (Phase 2.5)
+T. Rate limits (Phase 2.5)
+U. close_pid with stale PID / reconcile (Phase 2.5)
+"""
+
+from __future__ import annotations
+
+import signal
+from unittest.mock import MagicMock, call, patch
+
+import pytest
+
+from assistant_os.agents.host_agent import (
+    APP_REGISTRY,
+    ALLOWED_DIRECTORIES,
+    ALLOWED_URL_DOMAINS,
+    ALLOWED_URL_SCHEMES,
+    HOST_AGENT_ID,
+    HostActionRequest,
+    HostActionResult,
+    _reset_host_agent_state_for_tests,
+    execute_host_action,
+    validate_allowed_directory,
+    validate_allowed_url,
+)
+from assistant_os.agents.host_audit import (
+    HOST_AUDIT_LOG,
+    HostAuditEventType,
+    HostErrorCode,
+)
+from assistant_os.core.control_plane import (
+    AgentStatus,
+    _reset_state_for_tests,
+    activate_agent,
+    get_agent_status,
+    get_in_flight,
+    kill_switch,
+    quarantine_agent,
+    register_in_flight,
+)
+
+
+@pytest.fixture(autouse=True)
+def reset():
+    """Clean state before and after every test."""
+    _reset_state_for_tests()
+    _reset_host_agent_state_for_tests()
+    HOST_AUDIT_LOG.clear()
+    yield
+    _reset_state_for_tests()
+    _reset_host_agent_state_for_tests()
+    HOST_AUDIT_LOG.clear()
+
+
+def _active_request(
+    app_name: str = "notepad",
+    confirmed: bool = True,
+    execution_id: str = "exec-001",
+) -> HostActionRequest:
+    """Build a request with HOST_AGENT_ID pre-activated."""
+    activate_agent(HOST_AGENT_ID)
+    return HostActionRequest(
+        app_name=app_name,
+        execution_id=execution_id,
+        confirmed=confirmed,
+    )
+
+
+# ===========================================================================
+# A. Gate: confirmed flag
+# ===========================================================================
+
+
+class TestConfirmedGate:
+    def test_confirmed_false_returns_error(self):
+        req = _active_request(confirmed=False)
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error is not None
+        mock_popen.assert_not_called()
+
+    def test_confirmed_none_treated_as_falsy(self):
+        """confirmed=None is falsy; must not launch."""
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(
+            app_name="notepad", execution_id="e1",
+            confirmed=None,  # type: ignore[arg-type]
+        )
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is False
+        mock_popen.assert_not_called()
+
+    def test_confirmed_true_proceeds_past_gate(self):
+        """confirmed=True alone is not enough (also needs ACTIVE), but does not fail at gate 1.
+
+        HOST_AGENT_ID is PAUSED by default → fails at gate 2, not gate 1.
+        """
+        req = HostActionRequest(
+            app_name="notepad", execution_id="e1", confirmed=True,
+        )
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        # fails at gate 2 (not ACTIVE), not gate 1
+        assert result.ok is False
+        assert "ACTIVE" in (result.error or "")
+        mock_popen.assert_not_called()
+
+
+# ===========================================================================
+# B. Gate: agent status — always checked against HOST_AGENT_ID
+# ===========================================================================
+
+
+class TestAgentStatusGate:
+    def test_paused_by_default_does_not_launch(self):
+        """HOST_AGENT_ID is PAUSED by default (never activated) → no launch."""
+        req = HostActionRequest(
+            app_name="notepad", execution_id="e1", confirmed=True,
+        )
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert "ACTIVE" in (result.error or "")
+        mock_popen.assert_not_called()
+
+    def test_quarantined_does_not_launch(self):
+        quarantine_agent(HOST_AGENT_ID)
+        req = HostActionRequest(
+            app_name="notepad", execution_id="e1", confirmed=True,
+        )
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert "ACTIVE" in (result.error or "")
+        mock_popen.assert_not_called()
+
+    def test_active_passes_status_gate(self):
+        """HOST_AGENT_ID ACTIVE + valid app + confirmed=True → Popen called."""
+        req = _active_request(app_name="notepad", confirmed=True)
+        mock_proc = MagicMock()
+        mock_proc.pid = 1234
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is True
+        mock_popen.assert_called_once()
+
+    def test_error_message_includes_status_value(self):
+        """Error message names the status of HOST_AGENT_ID."""
+        req = HostActionRequest(
+            app_name="notepad", execution_id="e1", confirmed=True,
+        )
+        result = execute_host_action(req)
+        assert "paused" in (result.error or "").lower()
+
+    def test_error_message_includes_host_agent_id(self):
+        """Error message names HOST_AGENT_ID so it's traceable."""
+        req = HostActionRequest(
+            app_name="notepad", execution_id="e1", confirmed=True,
+        )
+        result = execute_host_action(req)
+        assert HOST_AGENT_ID in (result.error or "")
+
+
+# ===========================================================================
+# C. Gate: APP_REGISTRY
+# ===========================================================================
+
+
+class TestAppRegistryGate:
+    def test_notepad_is_in_registry(self):
+        assert "notepad" in APP_REGISTRY
+        assert APP_REGISTRY["notepad"] == r"C:\Windows\System32\notepad.exe"
+
+    def test_calc_is_in_registry(self):
+        assert "calc" in APP_REGISTRY
+        assert APP_REGISTRY["calc"] == r"C:\Windows\System32\calc.exe"
+
+    def test_explorer_is_in_registry(self):
+        assert "explorer" in APP_REGISTRY
+        assert APP_REGISTRY["explorer"] == r"C:\Windows\explorer.exe"
+
+    def test_unknown_app_name_returns_error(self):
+        req = _active_request(app_name="malware")
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert "APP_REGISTRY" in (result.error or "")
+        assert result.error_code == HostErrorCode.INVALID_APP_NAME
+        mock_popen.assert_not_called()
+
+    def test_shell_command_rejected(self):
+        req = _active_request(app_name="cmd /c del C:\\Windows\\System32")
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is False
+        mock_popen.assert_not_called()
+
+    def test_path_traversal_rejected(self):
+        req = _active_request(app_name="../../evil.exe")
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is False
+        mock_popen.assert_not_called()
+
+    def test_empty_app_name_rejected(self):
+        req = _active_request(app_name="")
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is False
+        mock_popen.assert_not_called()
+
+    def test_notepad_launches_absolute_path(self):
+        req = _active_request(app_name="notepad")
+        mock_proc = MagicMock()
+        mock_proc.pid = 100
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            execute_host_action(req)
+        mock_popen.assert_called_once_with([r"C:\Windows\System32\notepad.exe"])
+
+    def test_calc_launches_absolute_path(self):
+        req = _active_request(app_name="calc")
+        mock_proc = MagicMock()
+        mock_proc.pid = 200
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            execute_host_action(req)
+        mock_popen.assert_called_once_with([r"C:\Windows\System32\calc.exe"])
+
+    def test_popen_called_without_shell_true(self):
+        """Verify shell=True is never passed."""
+        req = _active_request(app_name="notepad")
+        mock_proc = MagicMock()
+        mock_proc.pid = 42
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            execute_host_action(req)
+        _, kwargs = mock_popen.call_args
+        assert kwargs.get("shell", False) is False
+
+
+# ===========================================================================
+# D. Intent audit — emitted BEFORE Popen; HostAuditError aborts launch
+# ===========================================================================
+
+
+class TestIntentAudit:
+    def test_intent_event_emitted_before_popen(self):
+        """Intent audit must be recorded before Popen is called."""
+        call_order = []
+
+        def record_intent(*args, **kwargs):
+            call_order.append("intent")
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 555
+
+        def record_popen(*args, **kwargs):
+            call_order.append("popen")
+            return mock_proc
+
+        req = _active_request(app_name="notepad")
+
+        with (
+            patch("assistant_os.agents.host_agent.emit_host_intent", side_effect=record_intent),
+            patch("subprocess.Popen", side_effect=record_popen),
+            patch("assistant_os.agents.host_agent.emit_host_outcome"),
+            patch("assistant_os.agents.host_agent.register_in_flight"),
+        ):
+            execute_host_action(req)
+
+        assert call_order.index("intent") < call_order.index("popen"), (
+            "intent audit must be emitted BEFORE Popen"
+        )
+
+    def test_host_audit_error_aborts_launch(self):
+        """If intent audit raises HostAuditError, Popen must NOT be called."""
+        from assistant_os.agents.host_audit import HostAuditError
+
+        req = _active_request(app_name="notepad")
+
+        with (
+            patch(
+                "assistant_os.agents.host_agent.emit_host_intent",
+                side_effect=HostAuditError("disk full"),
+            ),
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            result = execute_host_action(req)
+
+        assert result.ok is False
+        assert "intent audit failed" in (result.error or "")
+        mock_popen.assert_not_called()
+
+    def test_intent_audit_receives_host_agent_id(self):
+        """Intent audit must always receive HOST_AGENT_ID — never a caller-supplied value."""
+        req = _active_request(app_name="calc", execution_id="exec-calc-99")
+        mock_proc = MagicMock()
+        mock_proc.pid = 1
+
+        with (
+            patch("assistant_os.agents.host_agent.emit_host_intent") as mock_intent,
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("assistant_os.agents.host_agent.emit_host_outcome"),
+            patch("assistant_os.agents.host_agent.register_in_flight"),
+        ):
+            execute_host_action(req)
+
+        mock_intent.assert_called_once_with(
+            agent_id=HOST_AGENT_ID,
+            app_name="calc",
+            execution_id="exec-calc-99",
+            executable=r"C:\Windows\System32\calc.exe",
+        )
+
+    def test_intent_event_in_host_audit_log(self):
+        req = _active_request(app_name="notepad", execution_id="exec-np-log")
+        mock_proc = MagicMock()
+        mock_proc.pid = 77
+
+        with patch("subprocess.Popen", return_value=mock_proc):
+            execute_host_action(req)
+
+        events = HOST_AUDIT_LOG.events(HostAuditEventType.HOST_INTENT)
+        assert len(events) == 1
+        assert events[0].execution_id == "exec-np-log"
+        assert events[0].agent_id == HOST_AGENT_ID
+
+
+# ===========================================================================
+# E. Outcome audit — emitted AFTER Popen with pid
+# ===========================================================================
+
+
+class TestOutcomeAudit:
+    def test_outcome_event_emitted_after_popen(self):
+        call_order = []
+
+        def record_outcome(*args, **kwargs):
+            call_order.append("outcome")
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 999
+
+        def record_popen(*args, **kwargs):
+            call_order.append("popen")
+            return mock_proc
+
+        req = _active_request(app_name="notepad")
+
+        with (
+            patch("assistant_os.agents.host_agent.emit_host_intent"),
+            patch("subprocess.Popen", side_effect=record_popen),
+            patch("assistant_os.agents.host_agent.emit_host_outcome", side_effect=record_outcome),
+            patch("assistant_os.agents.host_agent.register_in_flight"),
+        ):
+            execute_host_action(req)
+
+        assert call_order.index("popen") < call_order.index("outcome"), (
+            "outcome audit must be emitted AFTER Popen"
+        )
+
+    def test_outcome_event_in_host_audit_log_with_pid(self):
+        req = _active_request(app_name="calc", execution_id="exec-outcome-1")
+        mock_proc = MagicMock()
+        mock_proc.pid = 4242
+
+        with patch("subprocess.Popen", return_value=mock_proc):
+            execute_host_action(req)
+
+        events = HOST_AUDIT_LOG.events(HostAuditEventType.HOST_OUTCOME)
+        assert len(events) == 1
+        assert events[0].pid == 4242
+        assert events[0].execution_id == "exec-outcome-1"
+        assert events[0].agent_id == HOST_AGENT_ID
+
+    def test_outcome_not_emitted_when_intent_fails(self):
+        from assistant_os.agents.host_audit import HostAuditError
+
+        req = _active_request(app_name="notepad")
+
+        with (
+            patch(
+                "assistant_os.agents.host_agent.emit_host_intent",
+                side_effect=HostAuditError("fail"),
+            ),
+            patch("subprocess.Popen"),
+        ):
+            execute_host_action(req)
+
+        assert HOST_AUDIT_LOG.count(HostAuditEventType.HOST_OUTCOME) == 0
+
+    def test_outcome_not_emitted_when_not_active(self):
+        """HOST_AGENT_ID not activated → no outcome event."""
+        req = HostActionRequest(
+            app_name="notepad", execution_id="e1", confirmed=True,
+        )
+        execute_host_action(req)
+        assert HOST_AUDIT_LOG.count(HostAuditEventType.HOST_OUTCOME) == 0
+
+
+# ===========================================================================
+# F. pid registered in _IN_FLIGHT
+# ===========================================================================
+
+
+class TestInFlightRegistration:
+    def test_pid_registered_after_successful_launch(self):
+        req = _active_request(app_name="notepad", execution_id="exec-flight-1")
+        mock_proc = MagicMock()
+        mock_proc.pid = 7777
+
+        with patch("subprocess.Popen", return_value=mock_proc):
+            result = execute_host_action(req)
+
+        assert result.ok is True
+        records = get_in_flight(HOST_AGENT_ID)
+        assert any(r["pid"] == 7777 and r["execution_id"] == "exec-flight-1" for r in records)
+
+    def test_pid_not_registered_when_confirmed_false(self):
+        req = _active_request(app_name="notepad", confirmed=False, execution_id="e-nope")
+        execute_host_action(req)
+        assert get_in_flight(HOST_AGENT_ID) == []
+
+    def test_pid_not_registered_when_not_active(self):
+        req = HostActionRequest(
+            app_name="notepad", execution_id="e-nope", confirmed=True,
+        )
+        execute_host_action(req)
+        assert get_in_flight(HOST_AGENT_ID) == []
+
+    def test_pid_not_registered_when_app_not_in_registry(self):
+        req = _active_request(app_name="evil", execution_id="e-nope")
+        execute_host_action(req)
+        assert get_in_flight(HOST_AGENT_ID) == []
+
+    def test_register_in_flight_called_with_host_agent_id(self):
+        """register_in_flight must always receive HOST_AGENT_ID."""
+        req = _active_request(app_name="calc", execution_id="exec-rif-1")
+        mock_proc = MagicMock()
+        mock_proc.pid = 8888
+
+        with (
+            patch("subprocess.Popen", return_value=mock_proc),
+            patch("assistant_os.agents.host_agent.register_in_flight") as mock_rif,
+        ):
+            execute_host_action(req)
+
+        mock_rif.assert_called_once_with(HOST_AGENT_ID, 8888, "exec-rif-1")
+
+
+# ===========================================================================
+# G. HostActionResult correctness
+# ===========================================================================
+
+
+class TestHostActionResult:
+    def test_successful_result_has_pid(self):
+        req = _active_request(app_name="notepad", execution_id="exec-res-1")
+        mock_proc = MagicMock()
+        mock_proc.pid = 3333
+
+        with patch("subprocess.Popen", return_value=mock_proc):
+            result = execute_host_action(req)
+
+        assert result.ok is True
+        assert result.pid == 3333
+        assert result.execution_id == "exec-res-1"
+        assert result.app_name == "notepad"
+        assert result.error is None
+
+    def test_failure_result_has_no_pid(self):
+        req = _active_request(app_name="notepad", confirmed=False)
+        result = execute_host_action(req)
+        assert result.ok is False
+        assert result.pid is None
+
+    def test_result_echoes_execution_id_on_failure(self):
+        req = _active_request(app_name="notepad", confirmed=False, execution_id="echo-me")
+        result = execute_host_action(req)
+        assert result.execution_id == "echo-me"
+
+    def test_result_echoes_app_name_on_registry_failure(self):
+        req = _active_request(app_name="blocked_app")
+        result = execute_host_action(req)
+        assert result.app_name == "blocked_app"
+
+
+# ===========================================================================
+# H. No subprocess on any failure path (consolidated)
+# ===========================================================================
+
+
+class TestNoSubprocessOnFailure:
+    @pytest.mark.parametrize("confirmed", [False, None, 0, ""])
+    def test_falsy_confirmed_never_calls_popen(self, confirmed):
+        # Confirmed gate fires before status gate — no need to activate.
+        req = HostActionRequest(
+            app_name="notepad", execution_id="e1",
+            confirmed=confirmed,  # type: ignore[arg-type]
+        )
+        with patch("subprocess.Popen") as mock_popen:
+            execute_host_action(req)
+        mock_popen.assert_not_called()
+
+    @pytest.mark.parametrize("app_name", ["", "cmd", "powershell", "evil.exe", "../etc/passwd"])
+    def test_non_allowlisted_app_never_calls_popen(self, app_name):
+        req = _active_request(app_name=app_name)
+        with patch("subprocess.Popen") as mock_popen:
+            execute_host_action(req)
+        mock_popen.assert_not_called()
+
+
+# ===========================================================================
+# I. Registry integration
+# ===========================================================================
+
+
+class TestRegistryIntegration:
+    def test_host_launcher_registered_in_agent_registry(self):
+        from assistant_os.agents.registry import get_agent
+        agent = get_agent("host_launcher")
+        assert agent["name"]            == "host_launcher"
+        assert agent["domain"]          == "HOST"
+        assert agent["input_contract"]  == "HostActionRequest"
+        assert agent["output_contract"] == "HostActionResult"
+        assert callable(agent["entrypoint"])
+
+    def test_host_launcher_entrypoint_delegates_to_execute(self):
+        from assistant_os.agents.registry import get_agent
+
+        req = _active_request(app_name="notepad", execution_id="exec-reg-1")
+        mock_proc = MagicMock()
+        mock_proc.pid = 5050
+
+        with patch("subprocess.Popen", return_value=mock_proc):
+            agent = get_agent("host_launcher")
+            result = agent["entrypoint"](req)
+
+        assert result.ok is True
+        assert result.pid == 5050
+
+    def test_host_launcher_entrypoint_respects_gates(self):
+        """Entrypoint must enforce all gates — not bypass them.
+
+        HOST_AGENT_ID not activated → gate 2 fires.
+        """
+        from assistant_os.agents.registry import get_agent
+
+        req = HostActionRequest(
+            app_name="notepad", execution_id="e1", confirmed=True,
+        )
+        with patch("subprocess.Popen") as mock_popen:
+            agent = get_agent("host_launcher")
+            result = agent["entrypoint"](req)
+
+        assert result.ok is False
+        mock_popen.assert_not_called()
+
+    def test_registry_key_matches_host_agent_id(self):
+        """AGENT_REGISTRY key must equal HOST_AGENT_ID — single canonical name."""
+        from assistant_os.agents.registry import get_agent
+        agent = get_agent(HOST_AGENT_ID)
+        assert agent["name"] == HOST_AGENT_ID
+
+
+# ===========================================================================
+# J. Canonical identity — HOST_AGENT_ID is the only identity end-to-end
+# ===========================================================================
+
+
+class TestCanonicalIdentity:
+    """Verify that HOST_AGENT_ID = 'host_launcher' is the single identity used
+    across _IN_FLIGHT, audit events, and kill_switch.
+
+    These tests are the primary regression guard against identity fragmentation.
+    They must fail if any layer starts using a different agent_id.
+    """
+
+    def test_host_agent_id_constant_is_host_launcher(self):
+        assert HOST_AGENT_ID == "host_launcher"
+
+    def test_in_flight_registered_under_host_agent_id(self):
+        """After a real launch, _IN_FLIGHT contains the pid under HOST_AGENT_ID only."""
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(app_name="notepad", execution_id="exec-canon-1", confirmed=True)
+        mock_proc = MagicMock()
+        mock_proc.pid = 6666
+
+        with patch("subprocess.Popen", return_value=mock_proc):
+            execute_host_action(req)
+
+        records = get_in_flight(HOST_AGENT_ID)
+        assert any(r["pid"] == 6666 for r in records), (
+            f"pid must be registered under HOST_AGENT_ID={HOST_AGENT_ID!r}"
+        )
+        # Verify no other key holds the pid
+        assert get_in_flight("host-agent-test") == []
+        assert get_in_flight("ag") == []
+        assert get_in_flight("agent-1") == []
+
+    def test_kill_switch_sees_pids_from_real_launches(self):
+        """kill_switch(HOST_AGENT_ID) must see the pid of a process launched by this executor."""
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(app_name="notepad", execution_id="exec-kill-1", confirmed=True)
+        mock_proc = MagicMock()
+        mock_proc.pid = 9001
+
+        with patch("subprocess.Popen", return_value=mock_proc):
+            execute_host_action(req)
+
+        with patch("os.kill") as mock_kill:
+            result = kill_switch(HOST_AGENT_ID)
+
+        mock_kill.assert_called_once_with(9001, signal.SIGTERM)
+        assert len(result.abort_results) == 1
+        assert result.abort_results[0].pid == 9001
+        assert result.abort_results[0].execution_id == "exec-kill-1"
+
+    def test_audit_intent_event_uses_host_agent_id(self):
+        """Every HOST_INTENT event must carry HOST_AGENT_ID as agent_id."""
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(app_name="calc", execution_id="exec-audit-canon-1", confirmed=True)
+        mock_proc = MagicMock()
+        mock_proc.pid = 100
+
+        with patch("subprocess.Popen", return_value=mock_proc):
+            execute_host_action(req)
+
+        for event in HOST_AUDIT_LOG.events(HostAuditEventType.HOST_INTENT):
+            assert event.agent_id == HOST_AGENT_ID, (
+                f"intent event agent_id must be {HOST_AGENT_ID!r}, got {event.agent_id!r}"
+            )
+
+    def test_audit_outcome_event_uses_host_agent_id(self):
+        """Every HOST_OUTCOME event must carry HOST_AGENT_ID as agent_id."""
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(app_name="notepad", execution_id="exec-audit-canon-2", confirmed=True)
+        mock_proc = MagicMock()
+        mock_proc.pid = 200
+
+        with patch("subprocess.Popen", return_value=mock_proc):
+            execute_host_action(req)
+
+        for event in HOST_AUDIT_LOG.events(HostAuditEventType.HOST_OUTCOME):
+            assert event.agent_id == HOST_AGENT_ID, (
+                f"outcome event agent_id must be {HOST_AGENT_ID!r}, got {event.agent_id!r}"
+            )
+
+    def test_kill_switch_quarantines_host_agent_id(self):
+        """After kill_switch, HOST_AGENT_ID must be QUARANTINE — no new launches possible."""
+        activate_agent(HOST_AGENT_ID)
+        with patch("os.kill"):
+            kill_switch(HOST_AGENT_ID)
+        assert get_agent_status(HOST_AGENT_ID) == AgentStatus.QUARANTINE
+
+    def test_multiple_launches_all_visible_to_kill_switch(self):
+        """Two launches → kill_switch(HOST_AGENT_ID) sees both pids."""
+        activate_agent(HOST_AGENT_ID)
+
+        mock_proc_1 = MagicMock()
+        mock_proc_1.pid = 1001
+        mock_proc_2 = MagicMock()
+        mock_proc_2.pid = 1002
+
+        with patch("subprocess.Popen", side_effect=[mock_proc_1, mock_proc_2]):
+            execute_host_action(HostActionRequest(
+                app_name="notepad", execution_id="exec-m1", confirmed=True,
+            ))
+            execute_host_action(HostActionRequest(
+                app_name="calc", execution_id="exec-m2", confirmed=True,
+            ))
+
+        with patch("os.kill") as mock_kill:
+            result = kill_switch(HOST_AGENT_ID)
+
+        assert mock_kill.call_count == 2
+        pids = {r.pid for r in result.abort_results}
+        assert pids == {1001, 1002}
+
+
+# ===========================================================================
+# K. close_pid
+# ===========================================================================
+
+
+def _make_close_pid_request(pid: int, execution_id: str = "exec-cp-1") -> HostActionRequest:
+    """Build a confirmed close_pid request with HOST_AGENT_ID pre-activated."""
+    activate_agent(HOST_AGENT_ID)
+    return HostActionRequest(
+        execution_id=execution_id,
+        action="close_pid",
+        confirmed=True,
+        pid=pid,
+    )
+
+
+class TestClosePid:
+    def test_close_pid_sigterms_registered_pid(self):
+        activate_agent(HOST_AGENT_ID)
+        register_in_flight(HOST_AGENT_ID, 5500, "exec-kill-me")
+        req = HostActionRequest(execution_id="exec-kill-me", action="close_pid", confirmed=True, pid=5500)
+        with patch("os.kill") as mock_kill:
+            result = execute_host_action(req)
+        assert result.ok is True
+        # reconcile calls os.kill(5500, 0) first; then close_pid calls os.kill(5500, SIGTERM)
+        sigterm_calls = [c for c in mock_kill.call_args_list if c.args[1] == signal.SIGTERM]
+        assert len(sigterm_calls) == 1
+        assert sigterm_calls[0] == call(5500, signal.SIGTERM)
+
+    def test_close_pid_deregisters_pid_from_in_flight(self):
+        activate_agent(HOST_AGENT_ID)
+        register_in_flight(HOST_AGENT_ID, 4400, "exec-dereg")
+        req = HostActionRequest(execution_id="exec-dereg", action="close_pid", confirmed=True, pid=4400)
+        with patch("os.kill"):
+            execute_host_action(req)
+        assert not any(r["pid"] == 4400 for r in get_in_flight(HOST_AGENT_ID))
+
+    def test_close_pid_rejects_unregistered_pid(self):
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(execution_id="exec-unowned", action="close_pid", confirmed=True, pid=9999)
+        with patch("os.kill") as mock_kill:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert "managed process" in (result.error or "")
+        mock_kill.assert_not_called()
+
+    def test_close_pid_rejects_none_pid(self):
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(execution_id="exec-none-pid", action="close_pid", confirmed=True, pid=None)
+        with patch("os.kill") as mock_kill:
+            result = execute_host_action(req)
+        assert result.ok is False
+        mock_kill.assert_not_called()
+
+    def test_close_pid_requires_confirmed(self):
+        activate_agent(HOST_AGENT_ID)
+        register_in_flight(HOST_AGENT_ID, 3300, "exec-unconfirmed")
+        req = HostActionRequest(execution_id="exec-unconfirmed", action="close_pid", confirmed=False, pid=3300)
+        with patch("os.kill") as mock_kill:
+            result = execute_host_action(req)
+        assert result.ok is False
+        mock_kill.assert_not_called()
+
+    def test_close_pid_aborts_on_audit_error(self):
+        from assistant_os.agents.host_audit import HostAuditError
+        activate_agent(HOST_AGENT_ID)
+        register_in_flight(HOST_AGENT_ID, 2200, "exec-audit-fail")
+        req = HostActionRequest(execution_id="exec-audit-fail", action="close_pid", confirmed=True, pid=2200)
+        with (
+            patch("assistant_os.agents.host_agent.emit_action_intent",
+                  side_effect=HostAuditError("disk full")),
+            patch("os.kill") as mock_kill,
+        ):
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert "intent audit failed" in (result.error or "")
+        # reconcile may call os.kill(pid, 0) — only SIGTERM must be absent
+        sigterm_calls = [c for c in mock_kill.call_args_list if c.args[1] == signal.SIGTERM]
+        assert sigterm_calls == []
+
+    def test_close_pid_result_echoes_pid(self):
+        activate_agent(HOST_AGENT_ID)
+        register_in_flight(HOST_AGENT_ID, 1100, "exec-echo")
+        req = HostActionRequest(execution_id="exec-echo", action="close_pid", confirmed=True, pid=1100)
+        with patch("os.kill"):
+            result = execute_host_action(req)
+        assert result.pid == 1100
+        assert result.action == "close_pid"
+        assert result.execution_id == "exec-echo"
+
+
+# ===========================================================================
+# L. open_directory
+# ===========================================================================
+
+
+_ALLOWED_DIR = r"C:\Users\Jorge\Documents"
+_BLOCKED_DIR = r"C:\Windows\System32"
+
+
+class TestOpenDirectory:
+    def _req(self, path: str, execution_id: str = "exec-od-1") -> HostActionRequest:
+        activate_agent(HOST_AGENT_ID)
+        return HostActionRequest(
+            execution_id=execution_id,
+            action="open_directory",
+            confirmed=True,
+            path=path,
+        )
+
+    def test_allowed_directory_opens_explorer(self):
+        req = self._req(_ALLOWED_DIR)
+        mock_proc = MagicMock()
+        mock_proc.pid = 7700
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is True
+        mock_popen.assert_called_once_with(
+            [APP_REGISTRY["explorer"], _ALLOWED_DIR]
+        )
+
+    def test_allowed_subdirectory_is_permitted(self):
+        subdir = r"C:\Users\Jorge\Documents\Projects"
+        req = self._req(subdir)
+        mock_proc = MagicMock()
+        mock_proc.pid = 8800
+        with patch("subprocess.Popen", return_value=mock_proc):
+            result = execute_host_action(req)
+        assert result.ok is True
+
+    def test_blocked_directory_rejected(self):
+        req = self._req(_BLOCKED_DIR)
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert "ALLOWED_DIRECTORIES" in (result.error or "")
+        mock_popen.assert_not_called()
+
+    def test_empty_path_rejected(self):
+        req = self._req("")
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is False
+        mock_popen.assert_not_called()
+
+    def test_path_traversal_rejected(self):
+        req = self._req(r"C:\Users\Jorge\Documents\..\..\..\Windows\System32")
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is False
+        mock_popen.assert_not_called()
+
+    def test_pid_registered_in_flight(self):
+        req = self._req(_ALLOWED_DIR, execution_id="exec-od-flight")
+        mock_proc = MagicMock()
+        mock_proc.pid = 6600
+        with patch("subprocess.Popen", return_value=mock_proc):
+            result = execute_host_action(req)
+        assert result.ok is True
+        records = get_in_flight(HOST_AGENT_ID)
+        assert any(r["pid"] == 6600 and r["execution_id"] == "exec-od-flight" for r in records)
+
+    def test_requires_confirmed(self):
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(
+            execution_id="exec-od-nc", action="open_directory", confirmed=False, path=_ALLOWED_DIR
+        )
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is False
+        mock_popen.assert_not_called()
+
+    def test_aborts_on_audit_error(self):
+        from assistant_os.agents.host_audit import HostAuditError
+        req = self._req(_ALLOWED_DIR)
+        with (
+            patch("assistant_os.agents.host_agent.emit_action_intent",
+                  side_effect=HostAuditError("io error")),
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            result = execute_host_action(req)
+        assert result.ok is False
+        mock_popen.assert_not_called()
+
+    def test_popen_no_shell_true(self):
+        req = self._req(_ALLOWED_DIR)
+        mock_proc = MagicMock()
+        mock_proc.pid = 5500
+        with patch("subprocess.Popen", return_value=mock_proc) as mock_popen:
+            execute_host_action(req)
+        _, kwargs = mock_popen.call_args
+        assert kwargs.get("shell", False) is False
+
+
+# ===========================================================================
+# M. open_url
+# ===========================================================================
+
+
+_ALLOWED_URL = "https://github.com/test/repo"
+_BLOCKED_URL = "https://evil.com/phish"
+
+
+class TestOpenUrl:
+    def _req(self, url: str, execution_id: str = "exec-url-1") -> HostActionRequest:
+        activate_agent(HOST_AGENT_ID)
+        return HostActionRequest(
+            execution_id=execution_id,
+            action="open_url",
+            confirmed=True,
+            url=url,
+        )
+
+    def test_allowed_url_opens_via_rundll32(self):
+        req = self._req(_ALLOWED_URL)
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is True
+        mock_popen.assert_called_once_with(
+            ["rundll32.exe", "url.dll,FileProtocolHandler", _ALLOWED_URL]
+        )
+
+    def test_blocked_domain_rejected(self):
+        req = self._req(_BLOCKED_URL)
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert "ALLOWED_URL_DOMAINS" in (result.error or "")
+        mock_popen.assert_not_called()
+
+    def test_empty_url_rejected(self):
+        req = self._req("")
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is False
+        mock_popen.assert_not_called()
+
+    def test_subdomain_of_allowed_domain_permitted(self):
+        req = self._req("https://docs.github.com/en/actions")
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is True
+
+    def test_requires_confirmed(self):
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(
+            execution_id="exec-url-nc", action="open_url", confirmed=False, url=_ALLOWED_URL
+        )
+        with patch("subprocess.Popen") as mock_popen:
+            result = execute_host_action(req)
+        assert result.ok is False
+        mock_popen.assert_not_called()
+
+    def test_no_pid_registered_for_url(self):
+        """rundll32 is ephemeral; no pid should be registered in _IN_FLIGHT."""
+        req = self._req(_ALLOWED_URL, execution_id="exec-url-pid")
+        with patch("subprocess.Popen"):
+            execute_host_action(req)
+        assert get_in_flight(HOST_AGENT_ID) == []
+
+    def test_aborts_on_audit_error(self):
+        from assistant_os.agents.host_audit import HostAuditError
+        req = self._req(_ALLOWED_URL)
+        with (
+            patch("assistant_os.agents.host_agent.emit_action_intent",
+                  side_effect=HostAuditError("io error")),
+            patch("subprocess.Popen") as mock_popen,
+        ):
+            result = execute_host_action(req)
+        assert result.ok is False
+        mock_popen.assert_not_called()
+
+    def test_popen_no_shell_true(self):
+        req = self._req(_ALLOWED_URL)
+        with patch("subprocess.Popen") as mock_popen:
+            execute_host_action(req)
+        _, kwargs = mock_popen.call_args
+        assert kwargs.get("shell", False) is False
+
+    def test_result_echoes_execution_id(self):
+        req = self._req(_ALLOWED_URL, execution_id="exec-url-echo")
+        with patch("subprocess.Popen"):
+            result = execute_host_action(req)
+        assert result.execution_id == "exec-url-echo"
+        assert result.action == "open_url"
+
+
+# ===========================================================================
+# N. Fase 2 — action audit events (close_pid, open_directory, open_url)
+# ===========================================================================
+
+
+class TestActionAudit:
+    def test_close_pid_audit_intent_emitted_before_kill(self):
+        call_order = []
+
+        def record_intent(*a, **kw):
+            call_order.append("intent")
+
+        def record_kill(pid, sig):
+            # Only track the real kill (SIGTERM), not the reconcile liveness probe (sig 0)
+            if sig == signal.SIGTERM:
+                call_order.append("kill")
+
+        activate_agent(HOST_AGENT_ID)
+        register_in_flight(HOST_AGENT_ID, 3000, "exec-ca-1")
+        req = HostActionRequest(execution_id="exec-ca-1", action="close_pid", confirmed=True, pid=3000)
+
+        with (
+            patch("assistant_os.agents.host_agent.emit_action_intent", side_effect=record_intent),
+            patch("os.kill", side_effect=record_kill),
+            patch("assistant_os.agents.host_agent.emit_action_outcome"),
+            patch("assistant_os.agents.host_agent.deregister_in_flight"),
+        ):
+            execute_host_action(req)
+
+        assert call_order.index("intent") < call_order.index("kill")
+
+    def test_close_pid_audit_outcome_emitted_after_kill(self):
+        call_order = []
+
+        def record_kill(pid, sig):
+            call_order.append("kill")
+
+        def record_outcome(*a, **kw):
+            call_order.append("outcome")
+
+        activate_agent(HOST_AGENT_ID)
+        register_in_flight(HOST_AGENT_ID, 3001, "exec-ca-2")
+        req = HostActionRequest(execution_id="exec-ca-2", action="close_pid", confirmed=True, pid=3001)
+
+        with (
+            patch("assistant_os.agents.host_agent.emit_action_intent"),
+            patch("os.kill", side_effect=record_kill),
+            patch("assistant_os.agents.host_agent.emit_action_outcome", side_effect=record_outcome),
+            patch("assistant_os.agents.host_agent.deregister_in_flight"),
+        ):
+            execute_host_action(req)
+
+        assert call_order.index("kill") < call_order.index("outcome")
+
+    def test_open_directory_audit_events_emitted(self):
+        from assistant_os.agents.host_audit import HostAuditEventType
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(
+            execution_id="exec-dir-audit", action="open_directory",
+            confirmed=True, path=_ALLOWED_DIR,
+        )
+        mock_proc = MagicMock()
+        mock_proc.pid = 1001
+        with patch("subprocess.Popen", return_value=mock_proc):
+            execute_host_action(req)
+
+        events = HOST_AUDIT_LOG.events(HostAuditEventType.HOST_ACTION_INTENT)
+        assert any(e.action == "open_directory" and e.execution_id == "exec-dir-audit" for e in events)
+        events_out = HOST_AUDIT_LOG.events(HostAuditEventType.HOST_ACTION_OUTCOME)
+        assert any(e.action == "open_directory" and e.result == "opened" for e in events_out)
+
+    def test_open_url_audit_events_emitted(self):
+        from assistant_os.agents.host_audit import HostAuditEventType
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(
+            execution_id="exec-url-audit", action="open_url",
+            confirmed=True, url=_ALLOWED_URL,
+        )
+        with patch("subprocess.Popen"):
+            execute_host_action(req)
+
+        events = HOST_AUDIT_LOG.events(HostAuditEventType.HOST_ACTION_INTENT)
+        assert any(e.action == "open_url" and e.execution_id == "exec-url-audit" for e in events)
+        events_out = HOST_AUDIT_LOG.events(HostAuditEventType.HOST_ACTION_OUTCOME)
+        assert any(e.action == "open_url" and e.result == "opened" for e in events_out)
+
+    def test_close_pid_audit_events_emitted(self):
+        from assistant_os.agents.host_audit import HostAuditEventType
+        activate_agent(HOST_AGENT_ID)
+        register_in_flight(HOST_AGENT_ID, 9090, "exec-cp-audit")
+        req = HostActionRequest(
+            execution_id="exec-cp-audit", action="close_pid",
+            confirmed=True, pid=9090,
+        )
+        with patch("os.kill"):
+            execute_host_action(req)
+
+        events = HOST_AUDIT_LOG.events(HostAuditEventType.HOST_ACTION_INTENT)
+        assert any(e.action == "close_pid" and e.execution_id == "exec-cp-audit" for e in events)
+        events_out = HOST_AUDIT_LOG.events(HostAuditEventType.HOST_ACTION_OUTCOME)
+        assert any(e.action == "close_pid" and e.result == "terminated" for e in events_out)
+
+
+# ===========================================================================
+# O. Fase 2 — integration: open_app backward compat + kill_switch sees Fase 2 pids
+# ===========================================================================
+
+
+class TestPhase2Integration:
+    def test_open_app_still_works_with_default_action(self):
+        """HostActionRequest with no explicit action defaults to open_app."""
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(app_name="notepad", execution_id="exec-bc-1", confirmed=True)
+        mock_proc = MagicMock()
+        mock_proc.pid = 1234
+        with patch("subprocess.Popen", return_value=mock_proc):
+            result = execute_host_action(req)
+        assert result.ok is True
+        assert result.action == "open_app"
+
+    def test_kill_switch_sees_open_directory_pid(self):
+        """PIDs from open_directory must be visible to kill_switch."""
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(
+            execution_id="exec-od-ks", action="open_directory",
+            confirmed=True, path=_ALLOWED_DIR,
+        )
+        mock_proc = MagicMock()
+        mock_proc.pid = 8888
+        with patch("subprocess.Popen", return_value=mock_proc):
+            execute_host_action(req)
+
+        with patch("os.kill") as mock_kill:
+            result = kill_switch(HOST_AGENT_ID)
+
+        pids = {r.pid for r in result.abort_results}
+        assert 8888 in pids
+
+    def test_unknown_action_returns_error(self):
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(execution_id="exec-unk", action="nuke_everything", confirmed=True)
+        result = execute_host_action(req)
+        assert result.ok is False
+        assert "unknown action" in (result.error or "").lower()
+        assert result.error_code == HostErrorCode.UNKNOWN_ACTION
+
+
+# ===========================================================================
+# P. validate_allowed_directory (Phase 2.5)
+# ===========================================================================
+
+
+class TestValidateAllowedDirectory:
+    def test_exact_allowed_path_returns_true(self):
+        ok, reason = validate_allowed_directory(r"C:\Users\Jorge\Documents")
+        assert ok is True
+        assert reason == ""
+
+    def test_subdirectory_of_allowed_returns_true(self):
+        ok, _ = validate_allowed_directory(r"C:\Users\Jorge\Documents\Projects\foo")
+        assert ok is True
+
+    def test_blocked_path_returns_false(self):
+        ok, reason = validate_allowed_directory(r"C:\Windows\System32")
+        assert ok is False
+        assert reason != ""
+
+    def test_empty_path_returns_false(self):
+        ok, reason = validate_allowed_directory("")
+        assert ok is False
+        assert "empty" in reason.lower()
+
+    def test_path_traversal_resolves_and_is_blocked(self):
+        # "Documents/../.." → resolves to "C:\Users" — not in allowlist
+        ok, _ = validate_allowed_directory(r"C:\Users\Jorge\Documents\..\..\..\Windows")
+        assert ok is False
+
+    def test_traversal_within_allowed_to_outside_is_blocked(self):
+        ok, _ = validate_allowed_directory(r"C:\Users\Jorge\Documents" + r"\..\..")
+        assert ok is False
+
+    def test_case_insensitive(self):
+        # Windows paths are case-insensitive — normcase handles this
+        ok, _ = validate_allowed_directory(r"c:\users\jorge\documents")
+        assert ok is True
+
+    def test_reason_contains_path_on_failure(self):
+        _, reason = validate_allowed_directory(r"C:\Windows\Temp")
+        assert "ALLOWED_DIRECTORIES" in reason or r"C:\Windows\Temp" in reason
+
+    def test_desktop_allowed(self):
+        ok, _ = validate_allowed_directory(r"C:\Users\Jorge\Desktop")
+        assert ok is True
+
+    def test_downloads_allowed(self):
+        ok, _ = validate_allowed_directory(r"C:\Users\Jorge\Downloads")
+        assert ok is True
+
+    def test_adjacent_prefix_not_confused(self):
+        # "C:\Users\JorgeEvil" must NOT match "C:\Users\Jorge\*"
+        ok, _ = validate_allowed_directory(r"C:\Users\JorgeEvil\Documents")
+        assert ok is False
+
+
+# ===========================================================================
+# Q. validate_allowed_url (Phase 2.5)
+# ===========================================================================
+
+
+class TestValidateAllowedUrl:
+    def test_valid_https_url_returns_true(self):
+        ok, reason, code = validate_allowed_url("https://github.com/repo")
+        assert ok is True
+        assert reason == ""
+        assert code is None
+
+    def test_http_scheme_rejected(self):
+        ok, reason, code = validate_allowed_url("http://github.com/repo")
+        assert ok is False
+        assert code == HostErrorCode.URL_SCHEME_NOT_ALLOWED
+        assert "http" in reason
+
+    def test_ftp_scheme_rejected(self):
+        ok, _, code = validate_allowed_url("ftp://github.com/file.txt")
+        assert ok is False
+        assert code == HostErrorCode.URL_SCHEME_NOT_ALLOWED
+
+    def test_javascript_scheme_rejected(self):
+        ok, _, code = validate_allowed_url("javascript:alert(1)")
+        assert ok is False
+        assert code == HostErrorCode.URL_SCHEME_NOT_ALLOWED
+
+    def test_file_scheme_rejected(self):
+        ok, _, code = validate_allowed_url("file:///C:/Windows/System32/cmd.exe")
+        assert ok is False
+        assert code == HostErrorCode.URL_SCHEME_NOT_ALLOWED
+
+    def test_unknown_domain_rejected(self):
+        ok, _, code = validate_allowed_url("https://evil.com/phish")
+        assert ok is False
+        assert code == HostErrorCode.URL_DOMAIN_NOT_ALLOWED
+
+    def test_subdomain_of_allowed_permitted(self):
+        ok, _, _ = validate_allowed_url("https://docs.github.com/en/actions")
+        assert ok is True
+
+    def test_deep_subdomain_permitted(self):
+        ok, _, _ = validate_allowed_url("https://api.docs.github.com/v3")
+        assert ok is True
+
+    def test_empty_url_returns_invalid(self):
+        ok, _, code = validate_allowed_url("")
+        assert ok is False
+        assert code == HostErrorCode.URL_INVALID
+
+    def test_allowed_schemes_constant_contains_only_https(self):
+        assert "https" in ALLOWED_URL_SCHEMES
+        assert "http" not in ALLOWED_URL_SCHEMES
+
+    def test_domain_not_matching_allowed_by_prefix(self):
+        # "github.com.evil.com" must NOT match "github.com"
+        ok, _, code = validate_allowed_url("https://github.com.evil.com/")
+        assert ok is False
+        assert code == HostErrorCode.URL_DOMAIN_NOT_ALLOWED
+
+    def test_url_with_no_hostname_returns_invalid(self):
+        ok, _, code = validate_allowed_url("https:///path/only")
+        assert ok is False
+        assert code == HostErrorCode.URL_INVALID
+
+    def test_stackoverflow_allowed(self):
+        ok, _, _ = validate_allowed_url("https://stackoverflow.com/questions/123")
+        assert ok is True
+
+    def test_docs_python_org_allowed(self):
+        ok, _, _ = validate_allowed_url("https://docs.python.org/3/library/os.html")
+        assert ok is True
+
+
+# ===========================================================================
+# R. Error codes on every failure path (Phase 2.5)
+# ===========================================================================
+
+
+class TestErrorCodes:
+    def test_confirmed_false_gives_confirmed_required(self):
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(app_name="notepad", execution_id="e1", confirmed=False)
+        result = execute_host_action(req)
+        assert result.error_code == HostErrorCode.CONFIRMED_REQUIRED
+
+    def test_not_active_gives_control_plane_blocked(self):
+        req = HostActionRequest(app_name="notepad", execution_id="e1", confirmed=True)
+        result = execute_host_action(req)
+        assert result.error_code == HostErrorCode.CONTROL_PLANE_BLOCKED
+
+    def test_invalid_app_name_gives_invalid_app_name(self):
+        req = _active_request(app_name="evil")
+        result = execute_host_action(req)
+        assert result.error_code == HostErrorCode.INVALID_APP_NAME
+
+    def test_none_pid_gives_invalid_pid(self):
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(execution_id="e1", action="close_pid", confirmed=True, pid=None)
+        result = execute_host_action(req)
+        assert result.error_code == HostErrorCode.INVALID_PID
+
+    def test_unregistered_pid_gives_pid_not_owned(self):
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(execution_id="e1", action="close_pid", confirmed=True, pid=9999)
+        with patch("os.kill"):
+            result = execute_host_action(req)
+        assert result.error_code == HostErrorCode.PID_NOT_OWNED
+
+    def test_directory_not_allowed_gives_directory_not_allowed(self):
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(execution_id="e1", action="open_directory",
+                                confirmed=True, path=r"C:\Windows\System32")
+        result = execute_host_action(req)
+        assert result.error_code == HostErrorCode.DIRECTORY_NOT_ALLOWED
+
+    def test_http_url_gives_url_scheme_not_allowed(self):
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(execution_id="e1", action="open_url",
+                                confirmed=True, url="http://github.com/repo")
+        result = execute_host_action(req)
+        assert result.error_code == HostErrorCode.URL_SCHEME_NOT_ALLOWED
+
+    def test_evil_domain_gives_url_domain_not_allowed(self):
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(execution_id="e1", action="open_url",
+                                confirmed=True, url="https://evil.com/phish")
+        result = execute_host_action(req)
+        assert result.error_code == HostErrorCode.URL_DOMAIN_NOT_ALLOWED
+
+    def test_unknown_action_gives_unknown_action(self):
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(execution_id="e1", action="rm_rf", confirmed=True)
+        result = execute_host_action(req)
+        assert result.error_code == HostErrorCode.UNKNOWN_ACTION
+
+    def test_successful_result_has_no_error_code(self):
+        req = _active_request(app_name="notepad")
+        mock_proc = MagicMock()
+        mock_proc.pid = 42
+        with patch("subprocess.Popen", return_value=mock_proc):
+            result = execute_host_action(req)
+        assert result.ok is True
+        assert result.error_code is None
+
+
+# ===========================================================================
+# S. Rejection audit on gate failures (Phase 2.5)
+# ===========================================================================
+
+
+class TestRejectionAudit:
+    def test_confirmed_false_emits_rejection_event(self):
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(app_name="notepad", execution_id="exec-rej-1", confirmed=False)
+        execute_host_action(req)
+        events = HOST_AUDIT_LOG.events(HostAuditEventType.HOST_REJECTION)
+        assert len(events) == 1
+        assert events[0].error_code == HostErrorCode.CONFIRMED_REQUIRED
+        assert events[0].execution_id == "exec-rej-1"
+
+    def test_not_active_emits_rejection_event(self):
+        req = HostActionRequest(app_name="notepad", execution_id="exec-rej-2", confirmed=True)
+        execute_host_action(req)
+        events = HOST_AUDIT_LOG.events(HostAuditEventType.HOST_REJECTION)
+        assert len(events) == 1
+        assert events[0].error_code == HostErrorCode.CONTROL_PLANE_BLOCKED
+
+    def test_rejection_event_carries_host_agent_id(self):
+        req = HostActionRequest(app_name="notepad", execution_id="exec-rej-3", confirmed=False)
+        execute_host_action(req)
+        for event in HOST_AUDIT_LOG.events(HostAuditEventType.HOST_REJECTION):
+            assert event.agent_id == HOST_AGENT_ID
+
+    def test_rejection_event_carries_action(self):
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(execution_id="exec-rej-4", action="open_url",
+                                confirmed=False, url="https://github.com")
+        execute_host_action(req)
+        events = HOST_AUDIT_LOG.events(HostAuditEventType.HOST_REJECTION)
+        assert events[0].action == "open_url"
+
+    def test_successful_action_emits_no_rejection_event(self):
+        req = _active_request(app_name="notepad", execution_id="exec-ok-1")
+        mock_proc = MagicMock()
+        mock_proc.pid = 99
+        with patch("subprocess.Popen", return_value=mock_proc):
+            result = execute_host_action(req)
+        assert result.ok is True
+        assert HOST_AUDIT_LOG.count(HostAuditEventType.HOST_REJECTION) == 0
+
+    def test_unknown_action_emits_rejection_event(self):
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(execution_id="exec-unk-2", action="delete_all", confirmed=True)
+        execute_host_action(req)
+        events = HOST_AUDIT_LOG.events(HostAuditEventType.HOST_REJECTION)
+        assert len(events) == 1
+        assert events[0].error_code == HostErrorCode.UNKNOWN_ACTION
+
+
+# ===========================================================================
+# T. Rate limits (Phase 2.5)
+# ===========================================================================
+
+
+class TestRateLimits:
+    """Rate limits: max 10 per 60s for open_app, open_directory, open_url.
+    close_pid has no rate limit.
+    """
+
+    def _flood_action(self, action: str, count: int, base_exec_id: str = "exec-flood") -> list:
+        """Issue `count` confirmed requests for `action` and return results."""
+        results = []
+        activate_agent(HOST_AGENT_ID)
+        for i in range(count):
+            if action == "open_app":
+                req = HostActionRequest(
+                    execution_id=f"{base_exec_id}-{i}", action=action,
+                    confirmed=True, app_name="notepad",
+                )
+            elif action == "open_directory":
+                req = HostActionRequest(
+                    execution_id=f"{base_exec_id}-{i}", action=action,
+                    confirmed=True, path=r"C:\Users\Jorge\Documents",
+                )
+            else:  # open_url
+                req = HostActionRequest(
+                    execution_id=f"{base_exec_id}-{i}", action=action,
+                    confirmed=True, url="https://github.com/x",
+                )
+            mock_proc = MagicMock()
+            mock_proc.pid = 10000 + i
+            with patch("subprocess.Popen", return_value=mock_proc):
+                results.append(execute_host_action(req))
+        return results
+
+    def test_open_app_within_limit_all_succeed(self):
+        results = self._flood_action("open_app", count=5)
+        assert all(r.ok for r in results)
+
+    def test_open_app_exceeds_limit_rejected(self):
+        results = self._flood_action("open_app", count=11)
+        # First 10 succeed; 11th is rejected
+        assert all(r.ok for r in results[:10])
+        assert results[10].ok is False
+        assert results[10].error_code == HostErrorCode.RATE_LIMIT_EXCEEDED
+
+    def test_open_directory_exceeds_limit_rejected(self):
+        results = self._flood_action("open_directory", count=11)
+        assert results[10].ok is False
+        assert results[10].error_code == HostErrorCode.RATE_LIMIT_EXCEEDED
+
+    def test_open_url_exceeds_limit_rejected(self):
+        results = self._flood_action("open_url", count=11)
+        assert results[10].ok is False
+        assert results[10].error_code == HostErrorCode.RATE_LIMIT_EXCEEDED
+
+    def test_rate_limit_exceeded_emits_rejection_event(self):
+        self._flood_action("open_app", count=11)
+        rejection_events = HOST_AUDIT_LOG.events(HostAuditEventType.HOST_REJECTION)
+        rate_rejections = [e for e in rejection_events
+                           if e.error_code == HostErrorCode.RATE_LIMIT_EXCEEDED]
+        assert len(rate_rejections) >= 1
+
+    def test_close_pid_has_no_rate_limit(self):
+        """close_pid is exempt from rate limiting — must never be blocked by it."""
+        activate_agent(HOST_AGENT_ID)
+        # Simulate 20 close_pid calls — none should be rate-limited
+        for i in range(20):
+            pid = 20000 + i
+            register_in_flight(HOST_AGENT_ID, pid, f"exec-rl-cp-{i}")
+            req = HostActionRequest(
+                execution_id=f"exec-rl-cp-{i}", action="close_pid",
+                confirmed=True, pid=pid,
+            )
+            with patch("os.kill"):
+                result = execute_host_action(req)
+            assert result.error_code != HostErrorCode.RATE_LIMIT_EXCEEDED, (
+                f"close_pid was rate-limited on call {i}"
+            )
+
+    def test_rate_limit_reset_between_tests(self):
+        """_reset_host_agent_state_for_tests clears counters — autouse fixture ensures isolation."""
+        # If reset works, we can issue 10 calls without hitting the limit
+        results = self._flood_action("open_app", count=10)
+        assert all(r.ok for r in results)
+
+
+# ===========================================================================
+# U. close_pid with stale PID / reconcile (Phase 2.5)
+# ===========================================================================
+
+
+class TestClosePidReconcile:
+    def test_close_pid_on_naturally_exited_process_returns_already_exited(self):
+        """If a process dies between register and close_pid, reconcile removes it,
+        and the ownership check correctly returns PID_NOT_OWNED (or PROCESS_ALREADY_EXITED
+        if it dies after the reconcile window but before os.kill)."""
+        activate_agent(HOST_AGENT_ID)
+        register_in_flight(HOST_AGENT_ID, 7777, "exec-stale-1")
+
+        # Simulate: process is dead when reconcile runs (os.kill signal 0 → OSError)
+        # and also dead when the real kill runs
+        req = HostActionRequest(
+            execution_id="exec-stale-1", action="close_pid",
+            confirmed=True, pid=7777,
+        )
+        with patch("os.kill", side_effect=OSError("no such process")):
+            result = execute_host_action(req)
+
+        # After reconcile, 7777 is removed → PID_NOT_OWNED
+        assert result.ok is False
+        assert result.error_code in (
+            HostErrorCode.PID_NOT_OWNED,
+            HostErrorCode.PROCESS_ALREADY_EXITED,
+        )
+
+    def test_close_pid_process_dies_in_kill_window_returns_already_exited(self):
+        """Process alive during reconcile, dead when os.kill fires → PROCESS_ALREADY_EXITED."""
+        activate_agent(HOST_AGENT_ID)
+        register_in_flight(HOST_AGENT_ID, 8888, "exec-race-1")
+
+        call_count = {"n": 0}
+
+        def fake_kill(pid, sig):
+            call_count["n"] += 1
+            if sig == 0:
+                return  # reconcile check: alive
+            raise OSError("process gone")  # actual SIGTERM: dead
+
+        req = HostActionRequest(
+            execution_id="exec-race-1", action="close_pid",
+            confirmed=True, pid=8888,
+        )
+        with patch("os.kill", side_effect=fake_kill):
+            result = execute_host_action(req)
+
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.PROCESS_ALREADY_EXITED
+
+    def test_reconcile_called_before_ownership_check(self):
+        """Verify reconcile runs before the ownership check by confirming a
+        dead registered PID is rejected without calling os.kill(pid, SIGTERM)."""
+        activate_agent(HOST_AGENT_ID)
+        register_in_flight(HOST_AGENT_ID, 5555, "exec-reconcile-check")
+
+        sigterm_called = []
+
+        def fake_kill(pid, sig):
+            if sig == signal.SIGTERM:
+                sigterm_called.append(pid)
+            else:
+                raise OSError("dead")  # signal 0 → process dead → reconcile removes it
+
+        req = HostActionRequest(
+            execution_id="exec-reconcile-check", action="close_pid",
+            confirmed=True, pid=5555,
+        )
+        with patch("os.kill", side_effect=fake_kill):
+            result = execute_host_action(req)
+
+        assert result.ok is False
+        assert 5555 not in sigterm_called  # never reached SIGTERM because reconcile cleaned it

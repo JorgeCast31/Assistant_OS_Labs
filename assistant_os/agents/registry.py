@@ -118,6 +118,23 @@ def _code_executor_entrypoint(request: Any) -> Any:
     return RunnerBackedExecutor().execute(request)
 
 
+def _host_launcher_entrypoint(request: Any) -> Any:
+    """Launch a host application via the controlled HOST executor.
+
+    Contract
+    --------
+    Input : HostActionRequest
+    Output: HostActionResult
+
+    Delegates to execute_host_action without altering any control logic.
+    All invariant enforcement (confirmed, ACTIVE, allowlist, audit) lives
+    in host_agent.execute_host_action — this is a thin named boundary only.
+    Import is deferred to avoid circular imports at load time.
+    """
+    from .host_agent import execute_host_action
+    return execute_host_action(request)
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -138,6 +155,26 @@ AGENT_REGISTRY: Dict[str, AgentDefinition] = {
         "capability_scope": ["code_execute"],
         # Entrypoint — the only callable surface
         "entrypoint": _code_executor_entrypoint,
+    },
+    "host_launcher": {
+        # Identity
+        "name":        "host_launcher",
+        "domain":      "HOST",
+        "version":     "1.0.0",
+        "description": (
+            "Launches allowed host applications (notepad, calc) under strict "
+            "control: confirmed gate, ACTIVE status gate, allowlist resolution, "
+            "intent/outcome audit, and in-flight registration for kill_switch."
+        ),
+        # Contract — what this agent consumes and produces
+        "input_contract":  "HostActionRequest",
+        "output_contract": "HostActionResult",
+        # Review policy — host launches are operator-controlled; no async review queue
+        "requires_review": False,
+        # Capability scope — host_launch_app declares the OS-level capability
+        "capability_scope": ["host_launch_app"],
+        # Entrypoint — the only callable surface
+        "entrypoint": _host_launcher_entrypoint,
     },
 }
 
