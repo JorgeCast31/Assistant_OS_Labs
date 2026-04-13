@@ -120,6 +120,21 @@ ALLOWED_URL_SCHEMES: frozenset[str] = frozenset({"https"})
 
 
 # ---------------------------------------------------------------------------
+# ALLOWED_EXTENSIONS — Phase 3A read-only filesystem
+# ---------------------------------------------------------------------------
+
+# Only document/data formats.  Executables (.exe, .bat, .cmd, .ps1, .vbs, …)
+# are intentionally excluded — opening them via rundll32 would still trigger
+# execution.  To add a new extension, justify the addition here.
+ALLOWED_EXTENSIONS: frozenset[str] = frozenset({
+    ".txt", ".md", ".pdf", ".json", ".csv",
+})
+
+MAX_READ_SIZE_BYTES: int = 1_048_576   # 1 MB hard cap for read_text_file
+LIST_DIRECTORY_LIMIT: int = 100        # max entries returned by list_directory
+
+
+# ---------------------------------------------------------------------------
 # Rate limits  (Phase 2.5 — P5)
 # ---------------------------------------------------------------------------
 
@@ -128,9 +143,13 @@ ALLOWED_URL_SCHEMES: frozenset[str] = frozenset({"https"})
 # an expansion of capability, and rate-limiting it could prevent kill_switch
 # from completing cleanly.
 _ACTION_RATE_LIMITS: dict[str, tuple[int, float]] = {
-    "open_app":       (10, 60.0),
-    "open_directory": (10, 60.0),
-    "open_url":       (10, 60.0),
+    "open_app":        (10, 60.0),
+    "open_directory":  (10, 60.0),
+    "open_url":        (10, 60.0),
+    # Phase 3A — filesystem read-only
+    "list_directory":  (20, 60.0),
+    "open_file":       (10, 60.0),
+    "read_text_file":  (20, 60.0),
 }
 
 # action → list of call timestamps (epoch seconds)
@@ -214,6 +233,8 @@ class HostActionResult:
     app_name     : echoed from request (open_app only)
     error        : human-readable reason for failure (None on success)
     error_code   : structured HostErrorCode (None on success)
+    entries      : directory listing (list_directory only)
+    content      : file text content (read_text_file only)
     """
     ok:           bool
     action:       str = ""
@@ -222,6 +243,8 @@ class HostActionResult:
     app_name:     str = ""
     error:        Optional[str] = None
     error_code:   Optional[HostErrorCode] = None
+    entries:      Optional[list] = None
+    content:      Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +355,36 @@ def validate_allowed_url(url: str) -> tuple[bool, str, Optional[HostErrorCode]]:
         f"url domain {hostname!r} is not in ALLOWED_URL_DOMAINS",
         HostErrorCode.URL_DOMAIN_NOT_ALLOWED,
     )
+
+
+# ---------------------------------------------------------------------------
+# File path validation helper  (Phase 3A)
+# ---------------------------------------------------------------------------
+
+
+def validate_allowed_file_path(path: str) -> tuple[bool, str]:
+    """
+    Validate that path is a file within ALLOWED_DIRECTORIES.
+
+    Reuses the same ntpath + PureWindowsPath normalisation as
+    validate_allowed_directory, providing identical traversal protection.
+
+    The check is is_relative_to (strict containment), not equality, because a
+    file can never equal a directory root in a meaningful operation.
+
+    Returns (True, "") on success, (False, reason) on failure.
+    """
+    if not path:
+        return False, "path is empty"
+
+    norm = PureWindowsPath(ntpath.normpath(path))
+
+    for allowed in ALLOWED_DIRECTORIES:
+        allowed_norm = PureWindowsPath(ntpath.normpath(allowed))
+        if norm.is_relative_to(allowed_norm):
+            return True, ""
+
+    return False, f"path {path!r} is not within ALLOWED_DIRECTORIES"
 
 
 # ---------------------------------------------------------------------------
@@ -565,14 +618,312 @@ def _handle_open_url(request: HostActionRequest) -> HostActionResult:
 
 
 # ---------------------------------------------------------------------------
+# Phase 3A — read-only filesystem handlers
+# ---------------------------------------------------------------------------
+
+
+def _handle_list_directory(request: HostActionRequest) -> HostActionResult:
+    """
+    list_directory: scan a permitted directory, return up to LIST_DIRECTORY_LIMIT entries.
+
+    Validation order
+    ----------------
+    1. validate_allowed_directory → DIRECTORY_NOT_ALLOWED
+    2. os.path.isdir              → DIRECTORY_NOT_FOUND
+    3. emit_action_intent         → AUDIT_FAILURE aborts
+    4. os.scandir (no-exec, no recursion)
+    5. emit_action_outcome
+
+    symlinks are reported as their apparent type (follow_symlinks=False so
+    a symlink pointing outside the allowlist does not yield readable content).
+    """
+    ok, reason = validate_allowed_directory(request.path)
+    if not ok:
+        return HostActionResult(
+            ok=False, action="list_directory",
+            execution_id=request.execution_id,
+            error=reason,
+            error_code=HostErrorCode.DIRECTORY_NOT_ALLOWED,
+        )
+
+    norm_path = ntpath.normpath(request.path)
+
+    if not os.path.isdir(norm_path):
+        return HostActionResult(
+            ok=False, action="list_directory",
+            execution_id=request.execution_id,
+            error=f"directory {request.path!r} does not exist",
+            error_code=HostErrorCode.DIRECTORY_NOT_FOUND,
+        )
+
+    try:
+        emit_action_intent(
+            agent_id=HOST_AGENT_ID,
+            execution_id=request.execution_id,
+            action="list_directory",
+            target=request.path,
+        )
+    except HostAuditError as exc:
+        return HostActionResult(
+            ok=False, action="list_directory",
+            execution_id=request.execution_id,
+            error=f"intent audit failed — abort: {exc}",
+            error_code=HostErrorCode.AUDIT_FAILURE,
+        )
+
+    entries: list = []
+    try:
+        with os.scandir(norm_path) as it:
+            for entry in it:
+                if len(entries) >= LIST_DIRECTORY_LIMIT:
+                    break
+                is_dir = entry.is_dir(follow_symlinks=False)
+                entry_type = "dir" if is_dir else "file"
+                try:
+                    size = entry.stat(follow_symlinks=False).st_size if not is_dir else None
+                except OSError:
+                    size = None
+                extension = (
+                    os.path.splitext(entry.name)[1].lower()
+                    if not is_dir else None
+                )
+                entries.append({
+                    "name":      entry.name,
+                    "type":      entry_type,
+                    "size":      size,
+                    "extension": extension,
+                })
+    except OSError as exc:
+        return HostActionResult(
+            ok=False, action="list_directory",
+            execution_id=request.execution_id,
+            error=f"could not read directory: {exc}",
+            error_code=HostErrorCode.DIRECTORY_NOT_FOUND,
+        )
+
+    emit_action_outcome(
+        agent_id=HOST_AGENT_ID,
+        execution_id=request.execution_id,
+        action="list_directory",
+        target=request.path,
+        result=f"listed:{len(entries)}",
+        pid=None,
+    )
+
+    return HostActionResult(
+        ok=True, action="list_directory",
+        execution_id=request.execution_id,
+        entries=entries,
+    )
+
+
+def _handle_open_file(request: HostActionRequest) -> HostActionResult:
+    """
+    open_file: open a whitelisted file with its default application.
+
+    Uses rundll32 url.dll,FileProtocolHandler — same pattern as open_url,
+    no shell=True, no direct execution of the file bytes.
+
+    Validation order
+    ----------------
+    1. validate_allowed_file_path → FILE_NOT_ALLOWED
+    2. extension in ALLOWED_EXTENSIONS → EXTENSION_NOT_ALLOWED
+    3. os.path.isfile              → FILE_NOT_FOUND
+    4. emit_action_intent         → AUDIT_FAILURE aborts
+    5. subprocess.Popen([rundll32, handler, path])
+    6. emit_action_outcome
+
+    rundll32 is ephemeral; pid is not tracked in _IN_FLIGHT.
+    """
+    ok, reason = validate_allowed_file_path(request.path)
+    if not ok:
+        return HostActionResult(
+            ok=False, action="open_file",
+            execution_id=request.execution_id,
+            error=reason,
+            error_code=HostErrorCode.FILE_NOT_ALLOWED,
+        )
+
+    ext = os.path.splitext(request.path)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        return HostActionResult(
+            ok=False, action="open_file",
+            execution_id=request.execution_id,
+            error=f"extension {ext!r} is not in ALLOWED_EXTENSIONS",
+            error_code=HostErrorCode.EXTENSION_NOT_ALLOWED,
+        )
+
+    norm_path = ntpath.normpath(request.path)
+
+    if not os.path.isfile(norm_path):
+        return HostActionResult(
+            ok=False, action="open_file",
+            execution_id=request.execution_id,
+            error=f"file {request.path!r} does not exist",
+            error_code=HostErrorCode.FILE_NOT_FOUND,
+        )
+
+    try:
+        emit_action_intent(
+            agent_id=HOST_AGENT_ID,
+            execution_id=request.execution_id,
+            action="open_file",
+            target=request.path,
+        )
+    except HostAuditError as exc:
+        return HostActionResult(
+            ok=False, action="open_file",
+            execution_id=request.execution_id,
+            error=f"intent audit failed — abort: {exc}",
+            error_code=HostErrorCode.AUDIT_FAILURE,
+        )
+
+    # Open via rundll32 — no shell=True, no direct execution of file bytes
+    subprocess.Popen(["rundll32.exe", "url.dll,FileProtocolHandler", norm_path])
+
+    emit_action_outcome(
+        agent_id=HOST_AGENT_ID,
+        execution_id=request.execution_id,
+        action="open_file",
+        target=request.path,
+        result="opened",
+        pid=None,  # rundll32 is ephemeral
+    )
+
+    return HostActionResult(
+        ok=True, action="open_file",
+        execution_id=request.execution_id,
+    )
+
+
+def _handle_read_text_file(request: HostActionRequest) -> HostActionResult:
+    """
+    read_text_file: read a small text file and return its content as a string.
+
+    Validation order
+    ----------------
+    1. validate_allowed_file_path → FILE_NOT_ALLOWED
+    2. extension in ALLOWED_EXTENSIONS → EXTENSION_NOT_ALLOWED
+    3. os.path.isfile              → FILE_NOT_FOUND
+    4. os.path.getsize ≤ MAX_READ_SIZE_BYTES → FILE_TOO_LARGE
+    5. emit_action_intent         → AUDIT_FAILURE aborts
+    6. open(utf-8)                → INVALID_ENCODING on UnicodeDecodeError
+    7. emit_action_outcome
+
+    No write, no exec.  Content never leaves the return value.
+    """
+    ok, reason = validate_allowed_file_path(request.path)
+    if not ok:
+        return HostActionResult(
+            ok=False, action="read_text_file",
+            execution_id=request.execution_id,
+            error=reason,
+            error_code=HostErrorCode.FILE_NOT_ALLOWED,
+        )
+
+    ext = os.path.splitext(request.path)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        return HostActionResult(
+            ok=False, action="read_text_file",
+            execution_id=request.execution_id,
+            error=f"extension {ext!r} is not in ALLOWED_EXTENSIONS",
+            error_code=HostErrorCode.EXTENSION_NOT_ALLOWED,
+        )
+
+    norm_path = ntpath.normpath(request.path)
+
+    if not os.path.isfile(norm_path):
+        return HostActionResult(
+            ok=False, action="read_text_file",
+            execution_id=request.execution_id,
+            error=f"file {request.path!r} does not exist",
+            error_code=HostErrorCode.FILE_NOT_FOUND,
+        )
+
+    try:
+        size = os.path.getsize(norm_path)
+    except OSError as exc:
+        return HostActionResult(
+            ok=False, action="read_text_file",
+            execution_id=request.execution_id,
+            error=f"could not stat file: {exc}",
+            error_code=HostErrorCode.FILE_NOT_FOUND,
+        )
+
+    if size > MAX_READ_SIZE_BYTES:
+        return HostActionResult(
+            ok=False, action="read_text_file",
+            execution_id=request.execution_id,
+            error=(
+                f"file size {size} bytes exceeds MAX_READ_SIZE_BYTES "
+                f"({MAX_READ_SIZE_BYTES})"
+            ),
+            error_code=HostErrorCode.FILE_TOO_LARGE,
+        )
+
+    try:
+        emit_action_intent(
+            agent_id=HOST_AGENT_ID,
+            execution_id=request.execution_id,
+            action="read_text_file",
+            target=request.path,
+        )
+    except HostAuditError as exc:
+        return HostActionResult(
+            ok=False, action="read_text_file",
+            execution_id=request.execution_id,
+            error=f"intent audit failed — abort: {exc}",
+            error_code=HostErrorCode.AUDIT_FAILURE,
+        )
+
+    try:
+        with open(norm_path, encoding="utf-8") as fh:
+            content = fh.read()
+    except UnicodeDecodeError as exc:
+        emit_action_outcome(
+            agent_id=HOST_AGENT_ID,
+            execution_id=request.execution_id,
+            action="read_text_file",
+            target=request.path,
+            result="encoding_error",
+            pid=None,
+        )
+        return HostActionResult(
+            ok=False, action="read_text_file",
+            execution_id=request.execution_id,
+            error=f"file is not valid utf-8: {exc}",
+            error_code=HostErrorCode.INVALID_ENCODING,
+        )
+
+    emit_action_outcome(
+        agent_id=HOST_AGENT_ID,
+        execution_id=request.execution_id,
+        action="read_text_file",
+        target=request.path,
+        result="read",
+        pid=None,
+    )
+
+    return HostActionResult(
+        ok=True, action="read_text_file",
+        execution_id=request.execution_id,
+        content=content,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public executor — dispatcher
 # ---------------------------------------------------------------------------
 
 _ACTION_HANDLERS = {
-    "open_app":       _handle_open_app,
-    "close_pid":      _handle_close_pid,
-    "open_directory": _handle_open_directory,
-    "open_url":       _handle_open_url,
+    "open_app":        _handle_open_app,
+    "close_pid":       _handle_close_pid,
+    "open_directory":  _handle_open_directory,
+    "open_url":        _handle_open_url,
+    # Phase 3A — read-only filesystem
+    "list_directory":  _handle_list_directory,
+    "open_file":       _handle_open_file,
+    "read_text_file":  _handle_read_text_file,
 }
 
 

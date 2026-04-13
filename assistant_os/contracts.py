@@ -299,6 +299,14 @@ ACTION_CODE_CREATE  = "CODE_CREATE"       # Create a new file / class / function
 ACTION_COMMAND = "COMMAND"                # Generic prefixed command (CODE/DOC/JOBS/BIZ)
 ACTION_CLASSIFY = "CLASSIFY"              # Classification only (no execution)
 ACTION_UNKNOWN = "UNKNOWN"                # Unknown action
+# HOST domain action constants (OpenClaw / host_launcher)
+ACTION_HOST_OPEN_APP        = "HOST_OPEN_APP"        # Launch app from APP_REGISTRY
+ACTION_HOST_CLOSE_PID       = "HOST_CLOSE_PID"       # SIGTERM a managed process
+ACTION_HOST_OPEN_DIRECTORY  = "HOST_OPEN_DIRECTORY"  # Open allowed directory in explorer
+ACTION_HOST_OPEN_URL        = "HOST_OPEN_URL"        # Open allowed URL (https only)
+ACTION_HOST_LIST_DIRECTORY  = "HOST_LIST_DIRECTORY"  # List contents of allowed directory (read-only)
+ACTION_HOST_OPEN_FILE       = "HOST_OPEN_FILE"       # Open file with default app (allowlisted ext)
+ACTION_HOST_READ_TEXT_FILE  = "HOST_READ_TEXT_FILE"  # Read text file content (read-only, ≤1 MB)
 
 # Target database constants
 TARGET_DB_WORK = "work"                   # Main production work database
@@ -476,8 +484,15 @@ _AUTO_EXECUTE_WHITELIST: frozenset[tuple[str, str]] = frozenset({
     (ACTION_FIN_COMMIT,    RISK_MEDIUM),  # Post-confirmation: user already approved
     (ACTION_FIN_CONFIRM,   RISK_MEDIUM),  # Post-confirmation: user already approved
     (ACTION_FIN_BATCH,     RISK_MEDIUM),  # Post-confirmation batch store
-    (ACTION_CODE_EXPLAIN,  RISK_LOW),     # Read-only: no side effects
-    (ACTION_CODE_REVIEW,   RISK_LOW),     # Read-only: no side effects
+    (ACTION_CODE_EXPLAIN,        RISK_LOW),    # Read-only: no side effects
+    (ACTION_CODE_REVIEW,         RISK_LOW),    # Read-only: no side effects
+    # HOST domain — read-only actions (no process launch, no side effects)
+    (ACTION_HOST_LIST_DIRECTORY, RISK_LOW),    # Read-only directory scan
+    (ACTION_HOST_READ_TEXT_FILE, RISK_LOW),    # Read-only file read
+    # HOST domain — process-launching actions require explicit user confirmation
+    # ACTION_HOST_OPEN_APP, ACTION_HOST_OPEN_DIRECTORY, ACTION_HOST_OPEN_URL,
+    # ACTION_HOST_OPEN_FILE → RISK_MEDIUM, confirm required (not whitelisted)
+    # ACTION_HOST_CLOSE_PID → RISK_MEDIUM, confirm required (not whitelisted)
 })
 
 
@@ -540,13 +555,21 @@ UI_INTENT_MAP: dict[str, str] = {
     ACTION_FIN_COMMIT:       "commit",
     ACTION_FIN_CONFIRM:      "confirm",
     ACTION_FIN_CHAPERON:     "chaperon",
-    ACTION_CODE_EXPLAIN:     "explain",
-    ACTION_CODE_REVIEW:      "review",
-    ACTION_CODE_FIX:         "fix",
-    ACTION_CODE_CREATE:      "create",
-    ACTION_COMMAND:          "command",
-    ACTION_CLASSIFY:         "classify",
-    ACTION_UNKNOWN:          "unknown",
+    ACTION_CODE_EXPLAIN:         "explain",
+    ACTION_CODE_REVIEW:          "review",
+    ACTION_CODE_FIX:             "fix",
+    ACTION_CODE_CREATE:          "create",
+    ACTION_COMMAND:              "command",
+    ACTION_CLASSIFY:             "classify",
+    ACTION_UNKNOWN:              "unknown",
+    # HOST domain
+    ACTION_HOST_OPEN_APP:        "open_app",
+    ACTION_HOST_CLOSE_PID:       "close_pid",
+    ACTION_HOST_OPEN_DIRECTORY:  "open_directory",
+    ACTION_HOST_OPEN_URL:        "open_url",
+    ACTION_HOST_LIST_DIRECTORY:  "list_directory",
+    ACTION_HOST_OPEN_FILE:       "open_file",
+    ACTION_HOST_READ_TEXT_FILE:  "read_text_file",
 }
 
 
@@ -658,12 +681,15 @@ RESULT_TYPE_FIN_CONFIRM  = "fin_confirm"   # FIN confirm (store) result
 RESULT_TYPE_FIN_CHAPERON = "fin_chaperon"  # FIN chaperon analysis result
 RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED = "plan_confirmation_required"  # Interpreter: awaiting user confirm
 RESULT_TYPE_PLAN_GENERATED             = "plan_generated"           # Classifier: plan produced, no execution
+RESULT_TYPE_CONFIRM_ERROR              = "confirm_error"            # Confirm path: plan not found or expired
 
 # CODE domain result types
 RESULT_TYPE_CODE_EXPLAIN = "code_explain"  # Read-only: code explanation
 RESULT_TYPE_CODE_REVIEW  = "code_review"   # Read-only: code review / audit
 RESULT_TYPE_CODE_PREVIEW = "code_preview"  # Mutating: change proposal preview (pre-confirm)
 RESULT_TYPE_CODE_APPLY   = "code_apply"    # Mutating: change applied (post-confirm)
+# HOST domain result types (OpenClaw)
+RESULT_TYPE_HOST_ACTION  = "host_action"   # All HOST domain actions (action in data["action"])
 
 
 

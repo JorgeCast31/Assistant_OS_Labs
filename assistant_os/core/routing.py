@@ -28,6 +28,7 @@ from typing import Callable, Optional
 from ..pipelines.work_pipeline import execute as _work_execute
 from ..pipelines.fin_pipeline import execute as _fin_execute
 from ..pipelines.code_pipeline import execute as _code_execute
+from ..pipelines.host_pipeline import execute as _host_execute
 
 # ---------------------------------------------------------------------------
 # Domain Registry
@@ -38,6 +39,7 @@ DOMAIN_PIPELINES: dict[str, Callable] = {
     "WORK": _work_execute,
     "FIN":  _fin_execute,
     "CODE": _code_execute,
+    "HOST": _host_execute,
 }
 
 
@@ -60,6 +62,8 @@ def action_domain(action: str) -> str:
         return "FIN"
     if action.startswith("CODE_"):
         return "CODE"
+    if action.startswith("HOST_"):
+        return "HOST"
     return "UNKNOWN"
 
 
@@ -90,4 +94,7 @@ def get_pipeline(domain: str) -> Optional[Callable]:
     if domain == "CODE" and stored is _code_execute:
         from ..pipelines import code_pipeline
         return code_pipeline.execute
+    if domain == "HOST" and stored is _host_execute:
+        from ..pipelines import host_pipeline
+        return host_pipeline.execute
     return stored
