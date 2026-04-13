@@ -499,6 +499,9 @@ def _adapt_result_to_response(dr: "DomainResult", context_id: str) -> dict:
             "ts": now_iso(),
         }
 
+    if domain == "HOST":
+        return _host_dr_to_response(dr)
+
     # Fallback: unknown domain/result_type
     return {
         "context_id": context_id,
@@ -508,6 +511,174 @@ def _adapt_result_to_response(dr: "DomainResult", context_id: str) -> dict:
         "error": dr.get("error"),
         "ts": now_iso(),
     }
+
+
+# ---------------------------------------------------------------------------
+# HOST HTTP layer — Phase 4B contract helpers
+#
+# All HOST HTTP responses use the canonical shape:
+#   { ok, domain, result_type, data, error: {type, message, code} | null }
+#
+# These helpers are the sole source of HOST response construction. Neither
+# _handle_host_action nor _handle_host_confirm build dicts directly.
+# ---------------------------------------------------------------------------
+
+# Actions accepted by the HTTP API. ONLY short names — no HOST_ prefix aliases.
+_HOST_VALID_ACTIONS: frozenset = frozenset({
+    "open_app", "close_pid", "open_directory", "open_url",
+    "list_directory", "open_file", "read_text_file",
+})
+
+# Short name → canonical ACTION_HOST_* constant value
+_HOST_SHORT_TO_CANONICAL: dict = {
+    "open_app":       "HOST_OPEN_APP",
+    "close_pid":      "HOST_CLOSE_PID",
+    "open_directory": "HOST_OPEN_DIRECTORY",
+    "open_url":       "HOST_OPEN_URL",
+    "list_directory": "HOST_LIST_DIRECTORY",
+    "open_file":      "HOST_OPEN_FILE",
+    "read_text_file": "HOST_READ_TEXT_FILE",
+}
+
+# Canonical action → risk level (definitive, not overridable by callers)
+_HOST_ACTION_RISK: dict = {
+    "HOST_OPEN_APP":       "medium",
+    "HOST_CLOSE_PID":      "medium",
+    "HOST_OPEN_DIRECTORY": "medium",
+    "HOST_OPEN_URL":       "medium",
+    "HOST_LIST_DIRECTORY": "low",
+    "HOST_OPEN_FILE":      "medium",
+    "HOST_READ_TEXT_FILE": "low",
+}
+
+# error type/code → structured CODE value (enriched in HTTP layer, not pipeline)
+_HOST_ERROR_CODE_MAP: dict = {
+    "PlanNotFound":            "PLAN_NOT_FOUND",
+    "ControlPlaneBlocked":     "CONTROL_PLANE_BLOCKED",
+    "control_plane_blocked":   "CONTROL_PLANE_BLOCKED",   # HostErrorCode enum value
+    "InvalidHostPayload":      "INVALID_HOST_PAYLOAD",
+    "directory_not_found":     "DIRECTORY_NOT_FOUND",
+    "file_not_allowed":        "FILE_NOT_ALLOWED",
+    "extension_not_allowed":   "EXTENSION_NOT_ALLOWED",
+    "file_not_found":          "FILE_NOT_FOUND",
+    "file_too_large":          "FILE_TOO_LARGE",
+    "invalid_encoding":        "INVALID_ENCODING",
+    "rate_limit_exceeded":     "RATE_LIMIT_EXCEEDED",
+    "BadRequest":              "BAD_REQUEST",
+    "Unauthorized":            "UNAUTHORIZED",
+    "Forbidden":               "FORBIDDEN",
+    "PipelineError":           "PIPELINE_ERROR",
+    "HostPipelineError":       "PIPELINE_ERROR",
+    "HostActionFailed":        "HOST_ACTION_FAILED",
+}
+
+# Constant for pre-pipeline (HTTP-layer) errors that have no DomainResult
+_HOST_RESULT_TYPE_ERROR = "host_error"
+
+
+def _host_error(type_: str, message: str, code: str | None = None) -> dict:
+    """Build a structured HOST error object: {type, message, code}."""
+    return {
+        "type":    type_,
+        "message": message,
+        "code":    code or _HOST_ERROR_CODE_MAP.get(type_, type_.upper()),
+    }
+
+
+def _host_response(
+    ok: bool,
+    result_type: str,
+    data: dict,
+    error: "dict | None",
+) -> dict:
+    """Build the canonical HOST HTTP response body.
+
+    Contract (all cases):
+      {
+        "ok":          bool,
+        "domain":      "HOST",
+        "result_type": str,
+        "data":        dict,
+        "error":       {"type": str, "message": str, "code": str} | null
+      }
+
+    Invariants:
+    - domain is always "HOST"
+    - result_type is always present (may be "" for pre-pipeline errors)
+    - error is always present (null or structured dict with type/message/code)
+    - no extra fields (no "status", "agent", "message", "ts", "context_id")
+    """
+    return {
+        "ok":          ok,
+        "domain":      "HOST",
+        "result_type": result_type,
+        "data":        data if data is not None else {},
+        "error":       error,
+    }
+
+
+def _host_dr_to_response(dr: "DomainResult") -> dict:
+    """Convert a HOST DomainResult to the canonical HOST response shape.
+
+    - Normalizes dr["error"] to include 'code'.
+    - Handles control_plane_blocked from both dr["error"]["type"] and
+      dr["data"]["error_code"] (both are produced depending on the code path).
+    """
+    dr_data   = dr.get("data") or {}
+    raw_error = dr.get("error")
+
+    if raw_error:
+        error = _host_error(
+            type_=raw_error.get("type", "UnknownError"),
+            message=raw_error.get("message", ""),
+        )
+    elif not dr.get("ok"):
+        # Fallback: error_code in data with no dr["error"]
+        ec = dr_data.get("error_code", "")
+        error = _host_error(ec, f"Agent error: {ec}") if ec else _host_error("UnknownError", "Unexpected failure")
+    else:
+        error = None
+
+    return _host_response(
+        ok=dr.get("ok", False),
+        result_type=dr.get("result_type", ""),
+        data=dr_data,
+        error=error,
+    )
+
+
+def _host_http_status(dr: "DomainResult") -> int:
+    """Map a HOST DomainResult to the correct HTTP status code.
+
+    Definitive mapping:
+      202  plan_confirmation_required
+      200  host_action ok=True (or any ok=True)
+      404  confirm_error + PlanNotFound
+      409  control_plane_blocked
+      400  InvalidHostPayload
+      500  everything else
+    """
+    from .contracts import (
+        RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED,
+        RESULT_TYPE_CONFIRM_ERROR,
+    )
+    result_type = dr.get("result_type", "")
+    dr_error    = dr.get("error") or {}
+    dr_data     = dr.get("data") or {}
+    error_type  = dr_error.get("type", "")
+    error_code  = dr_data.get("error_code", "")
+
+    if result_type == RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED:
+        return 202
+    if dr.get("ok"):
+        return 200
+    if result_type == RESULT_TYPE_CONFIRM_ERROR and error_type == "PlanNotFound":
+        return 404
+    if error_type == "control_plane_blocked" or error_code == "control_plane_blocked":
+        return 409
+    if error_type == "InvalidHostPayload":
+        return 400
+    return 500
 
 
 # ---------------------------------------------------------------------------
@@ -1091,6 +1262,16 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_work_schema_commit(remote)
             return
         
+        # Route: /host/action (execute HOST action through orchestrator)
+        if path == "/host/action":
+            self._handle_host_action(remote)
+            return
+
+        # Route: /host/confirm (confirm a pending HOST plan by plan_id)
+        if path == "/host/confirm":
+            self._handle_host_confirm(remote)
+            return
+
         # Route: /codeops/plan (plan code task - no execution)
         if path == "/codeops/plan":
             self._handle_codeops_plan(remote)
@@ -3600,6 +3781,225 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "branch": None,
                 "error": f"Internal error: {e}",
             })
+
+    # -------------------------------------------------------------------------
+    # HOST domain handlers (Phase 4A)
+    # -------------------------------------------------------------------------
+
+    def _handle_host_action(self, remote: str) -> None:
+        """Handle POST /host/action — execute a HOST action through the orchestrator.
+
+        API contract (Phase 4B)
+        -----------------------
+        Request body:
+          {
+            "action":  str   — required, one of: open_app | close_pid | open_directory |
+                               open_url | list_directory | open_file | read_text_file
+            "payload": dict  — required, action-specific payload
+          }
+
+        Response shape (all cases):
+          { "ok": bool, "domain": "HOST", "result_type": str,
+            "data": dict, "error": {"type", "message", "code"} | null }
+
+        HTTP status:
+          200  action executed (ok=True)
+          202  plan_confirmation_required (RISK_MEDIUM, use /host/confirm with data.plan_id)
+          400  missing/invalid fields, unknown action
+          401  missing or invalid auth token
+          409  CONTROL_PLANE_BLOCKED
+          500  unexpected pipeline error
+
+        Invariants:
+        - NEVER calls host_pipeline or host_agent directly
+        - action field accepts ONLY short names (no HOST_ prefix)
+        - risk_level is NOT overridable by callers — determined by action
+        - single response shape for ALL outcomes
+        """
+        # --- Auth ---
+        auth_error = self._check_auth()
+        if auth_error:
+            http_s, raw = auth_error
+            err = (raw.get("error") or {})
+            self._send_json_response(http_s, _host_response(
+                ok=False, result_type=_HOST_RESULT_TYPE_ERROR, data={},
+                error=_host_error(err.get("type", "Unauthorized"), err.get("message", "Authentication required")),
+            ))
+            return
+
+        # --- Content-Type ---
+        if "application/json" not in self.headers.get("Content-Type", ""):
+            self._send_json_response(400, _host_response(
+                ok=False, result_type=_HOST_RESULT_TYPE_ERROR, data={},
+                error=_host_error("BadRequest", "Content-Type must be application/json"),
+            ))
+            return
+
+        # --- Read body ---
+        body_result = self._read_body()
+        if body_result[1] is not None:
+            http_s, raw = body_result[1]
+            err = (raw.get("error") or {})
+            self._send_json_response(http_s, _host_response(
+                ok=False, result_type=_HOST_RESULT_TYPE_ERROR, data={},
+                error=_host_error(err.get("type", "BadRequest"), err.get("message", "Failed to read body")),
+            ))
+            return
+        body = body_result[0]
+
+        # --- Parse JSON ---
+        try:
+            req_data = json.loads(body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            self._send_json_response(400, _host_response(
+                ok=False, result_type=_HOST_RESULT_TYPE_ERROR, data={},
+                error=_host_error("BadRequest", f"Invalid JSON: {exc}"),
+            ))
+            return
+
+        if not isinstance(req_data, dict):
+            self._send_json_response(400, _host_response(
+                ok=False, result_type=_HOST_RESULT_TYPE_ERROR, data={},
+                error=_host_error("BadRequest", "Request body must be a JSON object"),
+            ))
+            return
+
+        # --- Validate: action (required, must be a known short name) ---
+        action = req_data.get("action")
+        if not action or not isinstance(action, str) or action not in _HOST_VALID_ACTIONS:
+            known = ", ".join(sorted(_HOST_VALID_ACTIONS))
+            msg = f'Invalid or missing "action". Must be one of: {known}'
+            self._send_json_response(400, _host_response(
+                ok=False, result_type=_HOST_RESULT_TYPE_ERROR, data={},
+                error=_host_error("BadRequest", msg),
+            ))
+            return
+
+        # --- Validate: payload (required, must be a dict) ---
+        payload = req_data.get("payload")
+        if payload is None or not isinstance(payload, dict):
+            self._send_json_response(400, _host_response(
+                ok=False, result_type=_HOST_RESULT_TYPE_ERROR, data={},
+                error=_host_error("BadRequest", 'Missing required field: "payload" (must be an object)'),
+            ))
+            return
+
+        # --- Resolve canonical action and risk level (not overridable) ---
+        canonical_action = _HOST_SHORT_TO_CANONICAL[action]
+        risk_level = _HOST_ACTION_RISK[canonical_action]
+
+        # --- Build CanonicalRequest and call orchestrator ---
+        from .contracts import normalize_request
+        from .core.orchestrator import handle_request as _handle_request
+
+        req = normalize_request(
+            text="",
+            metadata={
+                "action":               canonical_action,
+                "domain":               "HOST",
+                "risk_level":           risk_level,
+                "requires_confirmation": risk_level != "low",
+                "domain_payload":       payload,
+            },
+        )
+        dr = _handle_request(req)
+
+        # --- Adapt DomainResult → canonical HOST response shape ---
+        self._send_json_response(_host_http_status(dr), _host_dr_to_response(dr))
+
+    def _handle_host_confirm(self, remote: str) -> None:
+        """Handle POST /host/confirm — confirm a pending HOST plan by plan_id.
+
+        API contract (Phase 4B)
+        -----------------------
+        Request body:
+          { "plan_id": str }  — UUID from /host/action 202 response data.plan_id
+
+        Response shape (all cases):
+          { "ok": bool, "domain": "HOST", "result_type": str,
+            "data": dict, "error": {"type", "message", "code"} | null }
+
+        HTTP status:
+          200  confirmed action executed
+          400  missing or invalid plan_id
+          401  missing or invalid auth token
+          404  plan_id not found or expired (single-use: already consumed)
+          409  CONTROL_PLANE_BLOCKED (agent quarantined between passes)
+          500  unexpected pipeline error
+
+        Invariants:
+        - plan_id is single-use (removed before execution — Phase 3C)
+        - NEVER calls host_pipeline or host_agent directly
+        - single response shape for ALL outcomes
+        """
+        # --- Auth ---
+        auth_error = self._check_auth()
+        if auth_error:
+            http_s, raw = auth_error
+            err = (raw.get("error") or {})
+            self._send_json_response(http_s, _host_response(
+                ok=False, result_type=_HOST_RESULT_TYPE_ERROR, data={},
+                error=_host_error(err.get("type", "Unauthorized"), err.get("message", "Authentication required")),
+            ))
+            return
+
+        # --- Content-Type ---
+        if "application/json" not in self.headers.get("Content-Type", ""):
+            self._send_json_response(400, _host_response(
+                ok=False, result_type=_HOST_RESULT_TYPE_ERROR, data={},
+                error=_host_error("BadRequest", "Content-Type must be application/json"),
+            ))
+            return
+
+        # --- Read body ---
+        body_result = self._read_body()
+        if body_result[1] is not None:
+            http_s, raw = body_result[1]
+            err = (raw.get("error") or {})
+            self._send_json_response(http_s, _host_response(
+                ok=False, result_type=_HOST_RESULT_TYPE_ERROR, data={},
+                error=_host_error(err.get("type", "BadRequest"), err.get("message", "Failed to read body")),
+            ))
+            return
+        body = body_result[0]
+
+        # --- Parse JSON ---
+        try:
+            req_data = json.loads(body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            self._send_json_response(400, _host_response(
+                ok=False, result_type=_HOST_RESULT_TYPE_ERROR, data={},
+                error=_host_error("BadRequest", f"Invalid JSON: {exc}"),
+            ))
+            return
+
+        if not isinstance(req_data, dict):
+            self._send_json_response(400, _host_response(
+                ok=False, result_type=_HOST_RESULT_TYPE_ERROR, data={},
+                error=_host_error("BadRequest", "Request body must be a JSON object"),
+            ))
+            return
+
+        # --- Validate: plan_id (required, non-empty string) ---
+        plan_id = req_data.get("plan_id")
+        if not plan_id or not isinstance(plan_id, str):
+            self._send_json_response(400, _host_response(
+                ok=False, result_type=_HOST_RESULT_TYPE_ERROR, data={},
+                error=_host_error("BadRequest", 'Missing required field: "plan_id" (must be a non-empty string)'),
+            ))
+            return
+
+        # --- Build CanonicalRequest and call orchestrator confirm path ---
+        from .contracts import normalize_request
+        from .core.orchestrator import handle_request as _handle_request
+
+        dr = _handle_request(normalize_request(
+            text="",
+            metadata={"confirm_plan_id": plan_id},
+        ))
+
+        # --- Adapt DomainResult → canonical HOST response shape ---
+        self._send_json_response(_host_http_status(dr), _host_dr_to_response(dr))
 
 
 # ---------------------------------------------------------------------------
