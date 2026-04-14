@@ -15,13 +15,18 @@ to their zero-values when absent.
     {
         "action":    str   — "open_app" | "close_pid" | "open_directory"
                             | "open_url" | "list_directory" | "open_file"
-                            | "read_text_file",
+                            | "read_text_file"
+                            | "write_text_file" | "append_text_file"
+                            | "create_directory",
         "confirmed": bool  — must be True for execution to proceed,
         "app_name":  str   — required for "open_app",
         "pid":       int   — required for "close_pid",
         "path":      str   — required for "open_directory" | "list_directory"
-                            | "open_file" | "read_text_file",
+                            | "open_file" | "read_text_file"
+                            | "write_text_file" | "append_text_file"
+                            | "create_directory",
         "url":       str   — required for "open_url",
+        "content":   str   — required for "write_text_file" | "append_text_file",
     }
 
 Invariants
@@ -45,6 +50,9 @@ from ..contracts import (
     ACTION_HOST_LIST_DIRECTORY,
     ACTION_HOST_OPEN_FILE,
     ACTION_HOST_READ_TEXT_FILE,
+    ACTION_HOST_WRITE_TEXT_FILE,   # Phase 5A/5B
+    ACTION_HOST_APPEND_TEXT_FILE,  # Phase 5A/5B
+    ACTION_HOST_CREATE_DIRECTORY,  # Phase 5A/5B
     RESULT_TYPE_HOST_ACTION,
 )
 from ..agents.host_agent import HostActionRequest, execute_host_action
@@ -62,6 +70,10 @@ _PLAN_TO_AGENT_ACTION: dict[str, str] = {
     ACTION_HOST_LIST_DIRECTORY:  "list_directory",
     ACTION_HOST_OPEN_FILE:       "open_file",
     ACTION_HOST_READ_TEXT_FILE:  "read_text_file",
+    # Phase 5A/5B — sandboxed write
+    ACTION_HOST_WRITE_TEXT_FILE:  "write_text_file",
+    ACTION_HOST_APPEND_TEXT_FILE: "append_text_file",
+    ACTION_HOST_CREATE_DIRECTORY: "create_directory",
 }
 
 # Fields that MUST be present (and non-empty / non-None) per agent action.
@@ -74,6 +86,13 @@ _REQUIRED_NON_EMPTY: dict[str, list[str]] = {
     "list_directory":  ["path"],
     "open_file":       ["path"],
     "read_text_file":  ["path"],
+    # Phase 5A/5B — sandboxed write
+    # content is intentionally NOT required here for write_text_file:
+    # an empty string is a valid write (create empty file).  The agent
+    # enforces size and encoding; an absent "content" key defaults to "".
+    "write_text_file":  ["path"],
+    "append_text_file": ["path"],    # content="" is valid (no-op append)
+    "create_directory": ["path"],
 }
 
 
@@ -179,6 +198,7 @@ def _dispatch(plan: dict, context_id: str) -> DomainResult:
         pid=payload.get("pid"),
         path=payload.get("path", ""),
         url=payload.get("url", ""),
+        content=payload.get("content", ""),  # Phase 5A/5B: write/append content
     )
 
     agent_result = execute_host_action(request)
@@ -202,6 +222,18 @@ def _wrap_agent_result(agent_result, plan: dict, agent_action: str) -> DomainRes
         data["content"] = agent_result.content
     if agent_result.error_code is not None:
         data["error_code"] = agent_result.error_code.value
+    # Phase 5A/5B — write action result fields (never include file content)
+    if agent_result.bytes_written is not None:
+        data["bytes_written"] = agent_result.bytes_written
+    if agent_result.write_mode is not None:
+        data["write_mode"] = agent_result.write_mode
+    # Include path for write actions so the caller knows what was written.
+    # Never include the content itself — only metadata.
+    _domain_payload = plan.get("domain_payload") or {}
+    if agent_action in ("write_text_file", "append_text_file", "create_directory"):
+        path = _domain_payload.get("path", "")
+        if path:
+            data["path"] = path
 
     plan_id  = plan.get("plan_id")
     trace_id = plan.get("trace_id")

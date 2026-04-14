@@ -527,6 +527,8 @@ def _adapt_result_to_response(dr: "DomainResult", context_id: str) -> dict:
 _HOST_VALID_ACTIONS: frozenset = frozenset({
     "open_app", "close_pid", "open_directory", "open_url",
     "list_directory", "open_file", "read_text_file",
+    # Phase 5A/5B — sandboxed write (all require confirmation)
+    "write_text_file", "append_text_file", "create_directory",
 })
 
 # Short name → canonical ACTION_HOST_* constant value
@@ -538,9 +540,16 @@ _HOST_SHORT_TO_CANONICAL: dict = {
     "list_directory": "HOST_LIST_DIRECTORY",
     "open_file":      "HOST_OPEN_FILE",
     "read_text_file": "HOST_READ_TEXT_FILE",
+    # Phase 5A/5B
+    "write_text_file":  "HOST_WRITE_TEXT_FILE",
+    "append_text_file": "HOST_APPEND_TEXT_FILE",
+    "create_directory": "HOST_CREATE_DIRECTORY",
 }
 
 # Canonical action → risk level (definitive, not overridable by callers)
+# Write actions are RISK_MEDIUM: they mutate filesystem state but are
+# contained in the sandbox and individually reversible by the user.
+# They are intentionally NOT low-risk: no write action should auto-execute.
 _HOST_ACTION_RISK: dict = {
     "HOST_OPEN_APP":       "medium",
     "HOST_CLOSE_PID":      "medium",
@@ -549,6 +558,10 @@ _HOST_ACTION_RISK: dict = {
     "HOST_LIST_DIRECTORY": "low",
     "HOST_OPEN_FILE":      "medium",
     "HOST_READ_TEXT_FILE": "low",
+    # Phase 5A/5B — write actions: always RISK_MEDIUM (confirm required)
+    "HOST_WRITE_TEXT_FILE":  "medium",
+    "HOST_APPEND_TEXT_FILE": "medium",
+    "HOST_CREATE_DIRECTORY": "medium",
 }
 
 # error type/code → structured CODE value (enriched in HTTP layer, not pipeline)
@@ -558,6 +571,7 @@ _HOST_ERROR_CODE_MAP: dict = {
     "control_plane_blocked":   "CONTROL_PLANE_BLOCKED",   # HostErrorCode enum value
     "InvalidHostPayload":      "INVALID_HOST_PAYLOAD",
     "directory_not_found":     "DIRECTORY_NOT_FOUND",
+    "directory_not_allowed":   "DIRECTORY_NOT_ALLOWED",
     "file_not_allowed":        "FILE_NOT_ALLOWED",
     "extension_not_allowed":   "EXTENSION_NOT_ALLOWED",
     "file_not_found":          "FILE_NOT_FOUND",
@@ -570,6 +584,10 @@ _HOST_ERROR_CODE_MAP: dict = {
     "PipelineError":           "PIPELINE_ERROR",
     "HostPipelineError":       "PIPELINE_ERROR",
     "HostActionFailed":        "HOST_ACTION_FAILED",
+    # Phase 5A/5B — write action error codes
+    "write_not_allowed":        "WRITE_NOT_ALLOWED",
+    "path_conflict":            "PATH_CONFLICT",
+    "directory_already_exists": "DIRECTORY_ALREADY_EXISTS",
 }
 
 # Constant for pre-pipeline (HTTP-layer) errors that have no DomainResult
@@ -653,10 +671,10 @@ def _host_http_status(dr: "DomainResult") -> int:
     Definitive mapping:
       202  plan_confirmation_required
       200  host_action ok=True (or any ok=True)
-      404  confirm_error + PlanNotFound
-      409  control_plane_blocked
-      400  InvalidHostPayload
-      500  everything else
+      404  confirm_error + PlanNotFound | file_not_found (append)
+      409  control_plane_blocked | path_conflict | directory_already_exists
+      400  InvalidHostPayload | write/read validation errors
+      500  unexpected pipeline errors
     """
     from .contracts import (
         RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED,
@@ -672,11 +690,27 @@ def _host_http_status(dr: "DomainResult") -> int:
         return 202
     if dr.get("ok"):
         return 200
+    # 404 — resource not found
     if result_type == RESULT_TYPE_CONFIRM_ERROR and error_type == "PlanNotFound":
         return 404
-    if error_type == "control_plane_blocked" or error_code == "control_plane_blocked":
+    if error_type == "file_not_found" or error_code == "file_not_found":
+        return 404
+    # 409 — conflict / control plane blocked
+    if error_type in ("control_plane_blocked", "path_conflict", "directory_already_exists"):
         return 409
-    if error_type == "InvalidHostPayload":
+    if error_code in ("control_plane_blocked", "path_conflict", "directory_already_exists"):
+        return 409
+    # 400 — client / payload validation errors
+    _400_error_types = frozenset({
+        "InvalidHostPayload",
+        "file_not_allowed", "extension_not_allowed", "file_too_large",
+        "invalid_encoding", "directory_not_allowed", "directory_not_found",
+        "write_not_allowed", "confirmed_required", "rate_limit_exceeded",
+        "invalid_app_name", "invalid_pid", "pid_not_owned",
+        "process_already_exited", "url_invalid", "url_scheme_not_allowed",
+        "url_domain_not_allowed",
+    })
+    if error_type in _400_error_types or error_code in _400_error_types:
         return 400
     return 500
 

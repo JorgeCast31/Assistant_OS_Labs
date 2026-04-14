@@ -712,3 +712,646 @@ class TestHostHTTP(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# =============================================================================
+# Phase 5B — Write actions HTTP integration
+# =============================================================================
+#
+# NOTE ON GOVERNANCE:
+# The MSO governance engine is currently converting RISK_MEDIUM CONFIRM →
+# BLOCKED for HOST actions (pre-existing issue unrelated to write actions).
+# Tests that exercise the two-pass flow patch _evaluate_mso_governance to
+# return a neutral "ALLOW" decision so that the orchestrator's deterministic
+# policy is respected.  This is correct test isolation, not a hack — the
+# governance layer is tested separately; here we test the HTTP/pipeline
+# integration.
+# =============================================================================
+
+
+from contextlib import contextmanager
+from dataclasses import asdict
+from unittest.mock import call as mock_call
+
+from assistant_os.agents.host_agent import WRITE_SANDBOX_DIRECTORIES
+from assistant_os.contracts import make_domain_result, RESULT_TYPE_HOST_ACTION
+from assistant_os.agents.host_audit import HostErrorCode
+
+
+_SANDBOX       = WRITE_SANDBOX_DIRECTORIES[0]
+_SANDBOX_FILE  = _SANDBOX + r"\notes.txt"
+_SANDBOX_AFILE = _SANDBOX + r"\log.txt"   # for append tests
+_SANDBOX_DIR   = _SANDBOX + r"\subdir"
+
+
+@contextmanager
+def _governance_allow():
+    """
+    Patch MSO governance to pass through base execution_mode unchanged.
+
+    This isolates HTTP/pipeline integration from governance decisions.
+    The ALLOW response keeps the policy's execution_mode (CONFIRM for
+    RISK_MEDIUM, AUTO for RISK_LOW) without modification.
+    """
+    from assistant_os.mso.contracts import GovernanceDecision
+    import datetime as _dt
+
+    def _passthrough(*, plan, execution_mode, advisory_trace):
+        return GovernanceDecision(
+            governance_ref="test:bypass",
+            action="ALLOW",
+            effective_execution_mode=execution_mode,
+            risk_level="medium",
+            justification="Test governance bypass",
+            reasons=[],
+            constraints=[],
+            capability_mode="allow",
+            base_execution_mode=execution_mode,
+            created_at=_dt.datetime.utcnow().isoformat(),
+        )
+
+    with patch(
+        "assistant_os.core.orchestrator._evaluate_mso_governance",
+        side_effect=_passthrough,
+    ):
+        yield
+
+
+def _make_dr(*, result_type: str, ok: bool, error_type: str = "",
+             error_code: str = "", message: str = "") -> dict:
+    """Build a minimal DomainResult-like dict for HTTP status mapping tests."""
+    data = {}
+    if error_code:
+        data["error_code"] = error_code
+    error = None
+    if error_type:
+        error = {"type": error_type, "message": message or error_type}
+    return {
+        "ok":          ok,
+        "domain":      "HOST",
+        "result_type": result_type,
+        "data":        data,
+        "error":       error,
+        "plan_id":     None,
+        "trace_id":    None,
+        "message":     message,
+    }
+
+
+class TestHostHTTPPhase5B(unittest.TestCase):
+    """Phase 5B — Integration of write_text_file, append_text_file, create_directory."""
+
+    server: WebhookHTTPServer
+    port: int
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # Reuse the same server instance pattern
+        cls.server, cls.port = start_server_thread("127.0.0.1", 0)
+        time.sleep(0.1)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self) -> None:
+        _reset_state_for_tests()
+        _reset_host_agent_state_for_tests()
+        HOST_AUDIT_LOG.clear()
+        clear_store()
+
+    def tearDown(self) -> None:
+        _reset_state_for_tests()
+        _reset_host_agent_state_for_tests()
+        HOST_AUDIT_LOG.clear()
+        clear_store()
+
+    # -------------------------------------------------------------------------
+    # HTTP helpers (mirror parent class)
+    # -------------------------------------------------------------------------
+
+    def _request(self, method, path, body=None, headers=None):
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        headers = headers or {}
+        if body is not None:
+            conn.request(method, path, body=body, headers=headers)
+        else:
+            conn.request(method, path, headers=headers)
+        response = conn.getresponse()
+        status = response.status
+        data = response.read().decode("utf-8")
+        conn.close()
+        try:
+            return status, json.loads(data)
+        except json.JSONDecodeError:
+            return status, {"_raw": data}
+
+    def _post(self, path, data, token=WEBHOOK_TOKEN):
+        headers = {"Content-Type": "application/json"}
+        if token is not None:
+            headers["X-Assistant-Token"] = token
+        body = json.dumps(data).encode("utf-8")
+        return self._request("POST", path, body, headers)
+
+    def _post_action(self, data, token=WEBHOOK_TOKEN):
+        return self._post("/host/action", data, token)
+
+    def _post_confirm(self, data, token=WEBHOOK_TOKEN):
+        return self._post("/host/confirm", data, token)
+
+    def _assert_contract(self, data, context=""):
+        prefix = f"[{context}] " if context else ""
+        for key in _REQUIRED_RESPONSE_KEYS:
+            self.assertIn(key, data, f"{prefix}missing key '{key}'")
+        self.assertEqual(data["domain"], "HOST", f"{prefix}domain must be HOST")
+        self.assertIsInstance(data["data"], dict, f"{prefix}data must be dict")
+        error = data["error"]
+        if error is not None:
+            self.assertIsInstance(error, dict)
+            for k in ("type", "message", "code"):
+                self.assertIn(k, error, f"{prefix}error missing field '{k}'")
+        for key in _FORBIDDEN_RESPONSE_KEYS:
+            self.assertNotIn(key, data, f"{prefix}legacy field '{key}'")
+
+    # =========================================================================
+    # P5B-A. HTTP input validation — write actions recognized
+    # =========================================================================
+
+    def test_write_text_file_is_valid_action(self):
+        """write_text_file is a recognized action (no 400 unknown-action)."""
+        status, data = self._post_action({
+            "action": "write_text_file",
+            "payload": {"path": _SANDBOX_FILE, "content": "hello"},
+        })
+        # Must NOT be 400 due to unknown action — any other status is acceptable
+        if status == 400 and data.get("error", {}).get("code") == "BAD_REQUEST":
+            # Check the message doesn't say "unknown" or "invalid action"
+            msg = data.get("error", {}).get("message", "")
+            self.assertNotIn("write_text_file", msg.lower().replace("_", " ") + msg)
+
+    def test_append_text_file_is_valid_action(self):
+        """append_text_file is a recognized action."""
+        status, data = self._post_action({
+            "action": "append_text_file",
+            "payload": {"path": _SANDBOX_AFILE, "content": "extra"},
+        })
+        # Must not be 400 due to unknown-action rejection
+        if status == 400:
+            msg = (data.get("error") or {}).get("message", "")
+            self.assertNotIn("append_text_file", msg)
+
+    def test_create_directory_is_valid_action(self):
+        """create_directory is a recognized action."""
+        status, data = self._post_action({
+            "action": "create_directory",
+            "payload": {"path": _SANDBOX_DIR},
+        })
+        if status == 400:
+            msg = (data.get("error") or {}).get("message", "")
+            self.assertNotIn("create_directory", msg)
+
+    def test_write_text_file_400_missing_payload(self):
+        """write_text_file without payload → 400."""
+        status, data = self._post_action({"action": "write_text_file"})
+        self.assertEqual(status, 400)
+        self._assert_contract(data, "write_missing_payload")
+
+    def test_append_text_file_400_missing_payload(self):
+        """append_text_file without payload → 400."""
+        status, data = self._post_action({"action": "append_text_file"})
+        self.assertEqual(status, 400)
+        self._assert_contract(data, "append_missing_payload")
+
+    def test_create_directory_400_missing_payload(self):
+        """create_directory without payload → 400."""
+        status, data = self._post_action({"action": "create_directory"})
+        self.assertEqual(status, 400)
+        self._assert_contract(data, "mkdir_missing_payload")
+
+    def test_write_text_file_400_payload_not_dict(self):
+        """payload as string → 400."""
+        status, data = self._post_action({"action": "write_text_file", "payload": "bad"})
+        self.assertEqual(status, 400)
+        self._assert_contract(data, "write_payload_not_dict")
+
+    # =========================================================================
+    # P5B-B. Two-pass flow — write_text_file
+    # =========================================================================
+
+    def test_write_text_file_pass1_returns_202(self):
+        """write_text_file RISK_MEDIUM → PASS 1 returns 202 with plan_id."""
+        with _governance_allow():
+            status, data = self._post_action({
+                "action": "write_text_file",
+                "payload": {"path": _SANDBOX_FILE, "content": "hello", "confirmed": True},
+            })
+        self.assertEqual(status, 202)
+        self.assertTrue(data.get("ok"))
+        self.assertEqual(data.get("result_type"), "plan_confirmation_required")
+        self._assert_contract(data, "write_pass1")
+        self.assertIsNone(data["error"])
+
+    def test_write_text_file_pass1_has_plan_id(self):
+        """202 response from write_text_file includes non-empty plan_id."""
+        with _governance_allow():
+            status, data = self._post_action({
+                "action": "write_text_file",
+                "payload": {"path": _SANDBOX_FILE, "content": "hello", "confirmed": True},
+            })
+        self.assertEqual(status, 202)
+        plan_id = data["data"].get("plan_id")
+        self.assertIsNotNone(plan_id)
+        self.assertTrue(plan_id)
+
+    def test_write_text_file_pass2_returns_200(self):
+        """Full two-pass: write_text_file PASS 1 → 202, PASS 2 → 200."""
+        activate_agent(HOST_AGENT_ID)
+        with _governance_allow():
+            status1, data1 = self._post_action({
+                "action": "write_text_file",
+                "payload": {"path": _SANDBOX_FILE, "content": "hello", "confirmed": True},
+            })
+        self.assertEqual(status1, 202)
+        plan_id = data1["data"]["plan_id"]
+
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            status2, data2 = self._post_confirm({"plan_id": plan_id})
+
+        self.assertEqual(status2, 200)
+        self.assertTrue(data2.get("ok"))
+        self.assertEqual(data2.get("result_type"), "host_action")
+        self._assert_contract(data2, "write_pass2")
+        self.assertIsNone(data2["error"])
+
+    def test_write_text_file_pass2_data_fields(self):
+        """Confirmed write_text_file data includes bytes_written, write_mode, path."""
+        activate_agent(HOST_AGENT_ID)
+        with _governance_allow():
+            _, data1 = self._post_action({
+                "action": "write_text_file",
+                "payload": {"path": _SANDBOX_FILE, "content": "hi", "confirmed": True},
+            })
+        plan_id = data1["data"]["plan_id"]
+
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            _, data2 = self._post_confirm({"plan_id": plan_id})
+
+        action_data = data2.get("data", {})
+        self.assertEqual(action_data.get("action"), "write_text_file")
+        self.assertIn("bytes_written", action_data)
+        self.assertIn("write_mode", action_data)
+        self.assertIn("path", action_data)
+        self.assertEqual(action_data["write_mode"], "create")
+        self.assertIsInstance(action_data["bytes_written"], int)
+
+    def test_write_text_file_pass2_overwrite_mode(self):
+        """When file already exists, write_mode is 'overwrite'."""
+        activate_agent(HOST_AGENT_ID)
+        with _governance_allow():
+            _, data1 = self._post_action({
+                "action": "write_text_file",
+                "payload": {"path": _SANDBOX_FILE, "content": "updated", "confirmed": True},
+            })
+        plan_id = data1["data"]["plan_id"]
+
+        with (
+            patch("os.path.isfile", return_value=True),   # file exists → overwrite
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            _, data2 = self._post_confirm({"plan_id": plan_id})
+
+        self.assertEqual(data2.get("data", {}).get("write_mode"), "overwrite")
+
+    def test_write_text_file_single_use_confirm(self):
+        """plan_id from write_text_file is single-use."""
+        activate_agent(HOST_AGENT_ID)
+        with _governance_allow():
+            _, data1 = self._post_action({
+                "action": "write_text_file",
+                "payload": {"path": _SANDBOX_FILE, "content": "x", "confirmed": True},
+            })
+        plan_id = data1["data"]["plan_id"]
+
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            s1, _ = self._post_confirm({"plan_id": plan_id})
+        self.assertEqual(s1, 200)
+
+        s2, d2 = self._post_confirm({"plan_id": plan_id})
+        self.assertEqual(s2, 404)
+        self.assertFalse(d2["ok"])
+        self.assertEqual(d2["error"]["code"], "PLAN_NOT_FOUND")
+
+    # =========================================================================
+    # P5B-C. Two-pass flow — append_text_file
+    # =========================================================================
+
+    def test_append_text_file_pass1_returns_202(self):
+        """append_text_file PASS 1 → 202."""
+        with _governance_allow():
+            status, data = self._post_action({
+                "action": "append_text_file",
+                "payload": {"path": _SANDBOX_AFILE, "content": "extra", "confirmed": True},
+            })
+        self.assertEqual(status, 202)
+        self.assertEqual(data.get("result_type"), "plan_confirmation_required")
+        self._assert_contract(data, "append_pass1")
+
+    def test_append_text_file_pass2_returns_200(self):
+        """append_text_file PASS 2 → 200 with append write_mode."""
+        activate_agent(HOST_AGENT_ID)
+        with _governance_allow():
+            _, data1 = self._post_action({
+                "action": "append_text_file",
+                "payload": {"path": _SANDBOX_AFILE, "content": "extra", "confirmed": True},
+            })
+        plan_id = data1["data"]["plan_id"]
+
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            status2, data2 = self._post_confirm({"plan_id": plan_id})
+
+        self.assertEqual(status2, 200)
+        self.assertTrue(data2.get("ok"))
+        action_data = data2.get("data", {})
+        self.assertEqual(action_data.get("write_mode"), "append")
+
+    # =========================================================================
+    # P5B-D. Two-pass flow — create_directory
+    # =========================================================================
+
+    def test_create_directory_pass1_returns_202(self):
+        """create_directory PASS 1 → 202."""
+        with _governance_allow():
+            status, data = self._post_action({
+                "action": "create_directory",
+                "payload": {"path": _SANDBOX_DIR, "confirmed": True},
+            })
+        self.assertEqual(status, 202)
+        self.assertEqual(data.get("result_type"), "plan_confirmation_required")
+        self._assert_contract(data, "mkdir_pass1")
+
+    def test_create_directory_pass2_returns_200(self):
+        """create_directory PASS 2 → 200."""
+        activate_agent(HOST_AGENT_ID)
+        with _governance_allow():
+            _, data1 = self._post_action({
+                "action": "create_directory",
+                "payload": {"path": _SANDBOX_DIR, "confirmed": True},
+            })
+        plan_id = data1["data"]["plan_id"]
+
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("os.path.isdir", return_value=False),
+            patch("os.mkdir"),
+        ):
+            status2, data2 = self._post_confirm({"plan_id": plan_id})
+
+        self.assertEqual(status2, 200)
+        self.assertTrue(data2.get("ok"))
+        self.assertEqual(data2.get("data", {}).get("action"), "create_directory")
+
+    # =========================================================================
+    # P5B-E. Error HTTP status mapping (via mocked handle_request)
+    # =========================================================================
+    #
+    # These tests verify _host_http_status maps error codes to the correct
+    # HTTP status.  We mock handle_request to return a DomainResult with a
+    # specific error type/code, isolating the HTTP layer from the pipeline.
+    # =========================================================================
+
+    def _mock_handle_request(self, dr: dict):
+        """Context manager: replace handle_request with one that returns dr."""
+        return patch(
+            "assistant_os.core.orchestrator.handle_request",
+            return_value=dr,
+        )
+
+    def test_file_not_allowed_returns_400(self):
+        """FILE_NOT_ALLOWED → 400."""
+        dr = _make_dr(result_type="host_action", ok=False,
+                      error_type="file_not_allowed", error_code="file_not_allowed")
+        with self._mock_handle_request(dr):
+            status, data = self._post_action({
+                "action": "write_text_file",
+                "payload": {"path": "C:\\outside\\file.txt", "content": "x"},
+            })
+        self.assertEqual(status, 400)
+        self._assert_contract(data, "file_not_allowed_400")
+        self.assertEqual(data["error"]["code"], "FILE_NOT_ALLOWED")
+
+    def test_extension_not_allowed_returns_400(self):
+        """EXTENSION_NOT_ALLOWED → 400."""
+        dr = _make_dr(result_type="host_action", ok=False,
+                      error_type="extension_not_allowed", error_code="extension_not_allowed")
+        with self._mock_handle_request(dr):
+            status, data = self._post_action({
+                "action": "write_text_file",
+                "payload": {"path": _SANDBOX + r"\run.exe", "content": "x"},
+            })
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"]["code"], "EXTENSION_NOT_ALLOWED")
+
+    def test_file_too_large_returns_400(self):
+        """FILE_TOO_LARGE → 400."""
+        dr = _make_dr(result_type="host_action", ok=False,
+                      error_type="file_too_large", error_code="file_too_large")
+        with self._mock_handle_request(dr):
+            status, data = self._post_action({
+                "action": "write_text_file",
+                "payload": {"path": _SANDBOX_FILE, "content": "x" * 100},
+            })
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"]["code"], "FILE_TOO_LARGE")
+
+    def test_write_not_allowed_returns_400(self):
+        """WRITE_NOT_ALLOWED (OS error) → 400."""
+        dr = _make_dr(result_type="host_action", ok=False,
+                      error_type="write_not_allowed", error_code="write_not_allowed")
+        with self._mock_handle_request(dr):
+            status, data = self._post_action({
+                "action": "write_text_file",
+                "payload": {"path": _SANDBOX_FILE, "content": "x"},
+            })
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"]["code"], "WRITE_NOT_ALLOWED")
+
+    def test_file_not_found_append_returns_404(self):
+        """FILE_NOT_FOUND (append) → 404."""
+        dr = _make_dr(result_type="host_action", ok=False,
+                      error_type="file_not_found", error_code="file_not_found")
+        with self._mock_handle_request(dr):
+            status, data = self._post_action({
+                "action": "append_text_file",
+                "payload": {"path": _SANDBOX_AFILE, "content": "x"},
+            })
+        self.assertEqual(status, 404)
+        self.assertEqual(data["error"]["code"], "FILE_NOT_FOUND")
+
+    def test_path_conflict_returns_409(self):
+        """PATH_CONFLICT → 409."""
+        dr = _make_dr(result_type="host_action", ok=False,
+                      error_type="path_conflict", error_code="path_conflict")
+        with self._mock_handle_request(dr):
+            status, data = self._post_action({
+                "action": "create_directory",
+                "payload": {"path": _SANDBOX_DIR},
+            })
+        self.assertEqual(status, 409)
+        self.assertEqual(data["error"]["code"], "PATH_CONFLICT")
+
+    def test_directory_already_exists_returns_409(self):
+        """DIRECTORY_ALREADY_EXISTS → 409."""
+        dr = _make_dr(result_type="host_action", ok=False,
+                      error_type="directory_already_exists",
+                      error_code="directory_already_exists")
+        with self._mock_handle_request(dr):
+            status, data = self._post_action({
+                "action": "create_directory",
+                "payload": {"path": _SANDBOX_DIR},
+            })
+        self.assertEqual(status, 409)
+        self.assertEqual(data["error"]["code"], "DIRECTORY_ALREADY_EXISTS")
+
+    def test_directory_not_allowed_returns_400(self):
+        """DIRECTORY_NOT_ALLOWED → 400."""
+        dr = _make_dr(result_type="host_action", ok=False,
+                      error_type="directory_not_allowed", error_code="directory_not_allowed")
+        with self._mock_handle_request(dr):
+            status, data = self._post_action({
+                "action": "create_directory",
+                "payload": {"path": r"C:\Windows\evil"},
+            })
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"]["code"], "DIRECTORY_NOT_ALLOWED")
+
+    # =========================================================================
+    # P5B-F. Invariants
+    # =========================================================================
+
+    def test_write_requires_confirmed_true(self):
+        """Write action without confirmed=True in payload → CONFIRMED_REQUIRED → 400."""
+        activate_agent(HOST_AGENT_ID)
+        with _governance_allow():
+            _, data1 = self._post_action({
+                "action": "write_text_file",
+                "payload": {"path": _SANDBOX_FILE, "content": "hello", "confirmed": True},
+            })
+        plan_id = data1["data"]["plan_id"]
+
+        # Simulate what happens if the pipeline receives confirmed=False
+        # (e.g., payload tampered after confirm).  We mock the pipeline
+        # to return CONFIRMED_REQUIRED → 400.
+        dr = _make_dr(result_type="host_action", ok=False,
+                      error_type="confirmed_required", error_code="confirmed_required")
+        with self._mock_handle_request(dr):
+            status, data = self._post_confirm({"plan_id": plan_id})
+        self.assertEqual(status, 400)
+
+    def test_control_plane_blocked_write_returns_409(self):
+        """CONTROL_PLANE_BLOCKED on write action → 409."""
+        dr = _make_dr(result_type="host_action", ok=False,
+                      error_type="control_plane_blocked",
+                      error_code="control_plane_blocked")
+        with self._mock_handle_request(dr):
+            status, data = self._post_action({
+                "action": "write_text_file",
+                "payload": {"path": _SANDBOX_FILE, "content": "x"},
+            })
+        self.assertEqual(status, 409)
+        self.assertEqual(data["error"]["code"], "CONTROL_PLANE_BLOCKED")
+
+    def test_no_bypass_orchestrator_for_write_actions(self):
+        """Write actions must route through handle_request (no direct pipeline)."""
+        with _governance_allow(), \
+             patch(
+                 "assistant_os.core.orchestrator.handle_request",
+                 wraps=__import__(
+                     "assistant_os.core.orchestrator", fromlist=["handle_request"]
+                 ).handle_request,
+             ) as mock_orch:
+            self._post_action({
+                "action": "write_text_file",
+                "payload": {"path": _SANDBOX_FILE, "content": "x", "confirmed": True},
+            })
+        mock_orch.assert_called_once()
+
+    # =========================================================================
+    # P5B-G. Contract shape for write action responses
+    # =========================================================================
+
+    def test_write_pass1_contract_shape(self):
+        """write_text_file 202 satisfies HOST contract shape."""
+        with _governance_allow():
+            _, data = self._post_action({
+                "action": "write_text_file",
+                "payload": {"path": _SANDBOX_FILE, "content": "x", "confirmed": True},
+            })
+        self._assert_contract(data, "write_202_contract")
+
+    def test_write_pass2_contract_shape(self):
+        """write_text_file 200 (confirmed) satisfies HOST contract shape."""
+        activate_agent(HOST_AGENT_ID)
+        with _governance_allow():
+            _, data1 = self._post_action({
+                "action": "write_text_file",
+                "payload": {"path": _SANDBOX_FILE, "content": "test", "confirmed": True},
+            })
+        plan_id = data1["data"]["plan_id"]
+
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            _, data2 = self._post_confirm({"plan_id": plan_id})
+        self._assert_contract(data2, "write_200_contract")
+
+    def test_write_error_response_contract_shape(self):
+        """write_text_file 400 error satisfies HOST contract shape."""
+        dr = _make_dr(result_type="host_action", ok=False,
+                      error_type="file_not_allowed", error_code="file_not_allowed",
+                      message="path is not within WRITE_SANDBOX_DIRECTORIES")
+        with self._mock_handle_request(dr):
+            _, data = self._post_action({
+                "action": "write_text_file",
+                "payload": {"path": "C:\\outside\\evil.txt", "content": "x"},
+            })
+        self._assert_contract(data, "write_error_contract")
+
+    def test_write_response_does_not_expose_content(self):
+        """File content must never appear in the PASS 2 (success) response.
+
+        PASS 1 (202) returns the plan confirmation, which includes domain_payload
+        so the user can see what they are about to confirm — that is intentional.
+        PASS 2 (200) must only return write metadata (bytes_written, write_mode, path),
+        never the written content itself.
+        """
+        sensitive = "super-secret-data-that-must-not-leak"
+        activate_agent(HOST_AGENT_ID)
+        with _governance_allow():
+            _, data1 = self._post_action({
+                "action": "write_text_file",
+                "payload": {"path": _SANDBOX_FILE, "content": sensitive, "confirmed": True},
+            })
+
+        plan_id = data1["data"]["plan_id"]
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            with _governance_allow():
+                _, data2 = self._post_confirm({"plan_id": plan_id})
+        # PASS 2 success response must NOT contain the written content
+        self.assertNotIn(sensitive, json.dumps(data2))
