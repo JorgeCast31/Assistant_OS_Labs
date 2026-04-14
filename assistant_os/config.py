@@ -64,6 +64,15 @@ CODE_PROPOSE_MODEL: str = os.environ.get(
 CODE_PROPOSE_MAX_TOKENS: int = int(os.environ.get("CODE_PROPOSE_MAX_TOKENS", "2048"))
 
 # ---------------------------------------------------------------------------
+# MSO / Local LLM Preparation (disabled-by-default, no behavior wired yet)
+# ---------------------------------------------------------------------------
+MSO_ENABLED: bool = os.environ.get("MSO_ENABLED", "false").lower() == "true"
+LOCAL_LLM_PROVIDER: str = os.environ.get("LOCAL_LLM_PROVIDER", "").strip()
+LOCAL_LLM_BASE_URL: str = os.environ.get("LOCAL_LLM_BASE_URL", "").strip()
+LOCAL_LLM_MODEL: str = os.environ.get("LOCAL_LLM_MODEL", "").strip()
+LOCAL_LLM_TIMEOUT_SECONDS: float = float(os.environ.get("LOCAL_LLM_TIMEOUT_SECONDS", "4.0"))
+
+# ---------------------------------------------------------------------------
 # Google Sheets Integration (FIN module)
 # ---------------------------------------------------------------------------
 # Service account credentials JSON file path (from .env)
