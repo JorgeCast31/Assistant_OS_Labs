@@ -47,6 +47,12 @@ def _req(text: str) -> dict:
 # ---------------------------------------------------------------------------
 
 class TestOrchestratorAutoExecute(unittest.TestCase):
+    def setUp(self):
+        from assistant_os.mso.task_registry import reset_task_registry
+        from assistant_os.mso.trace_aggregator import reset_trace_aggregator
+
+        reset_task_registry()
+        reset_trace_aggregator()
 
     @patch("assistant_os.integrations.work_gateway.check_notion_available", return_value=True)
     @patch("assistant_os.integrations.work_gateway.query_work_db",
@@ -85,6 +91,12 @@ class TestOrchestratorAutoExecute(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestOrchestratorConfirmRequired(unittest.TestCase):
+    def setUp(self):
+        from assistant_os.mso.task_registry import reset_task_registry
+        from assistant_os.mso.trace_aggregator import reset_trace_aggregator
+
+        reset_task_registry()
+        reset_trace_aggregator()
 
     @patch("assistant_os.classifier.classify_text",
            return_value={
@@ -135,6 +147,12 @@ class TestOrchestratorPolicyIsAuthoritative(unittest.TestCase):
     We verify by patching build_policy to return a forced execution_mode and
     confirming that the orchestrator respects it, not plan.requires_confirmation.
     """
+    def setUp(self):
+        from assistant_os.mso.task_registry import reset_task_registry
+        from assistant_os.mso.trace_aggregator import reset_trace_aggregator
+
+        reset_task_registry()
+        reset_trace_aggregator()
 
     @patch("assistant_os.core.policy.build_policy")
     @patch("assistant_os.integrations.work_gateway.check_notion_available", return_value=True)

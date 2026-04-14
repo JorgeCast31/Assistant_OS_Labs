@@ -229,6 +229,37 @@ def execute(plan: dict, context_id: str) -> DomainResult:
 
 
 # ---------------------------------------------------------------------------
+# Executor context
+# ---------------------------------------------------------------------------
+
+def _build_executor_context(plan: dict, payload: dict) -> str:
+    """Build executor context, optionally enriched by a non-authoritative MSO package."""
+    base_context = str(plan.get("raw_text", "")).strip()
+    code_package: dict = payload.get("_mso_code_package") or {}
+    if not code_package:
+        return base_context
+
+    lines = ["[MSO advisory package - non-authoritative]"]
+    if code_package.get("task_summary"):
+        lines.append(f"Task summary: {code_package['task_summary']}")
+    if code_package.get("repo_context"):
+        lines.append(f"Repo context: {code_package['repo_context']}")
+    constraints = code_package.get("constraints") or []
+    if constraints:
+        lines.append(f"Constraints: {'; '.join(str(item) for item in constraints)}")
+    if code_package.get("expected_artifact"):
+        lines.append(f"Expected artifact: {code_package['expected_artifact']}")
+    risk_notes = code_package.get("risk_notes") or []
+    if risk_notes:
+        lines.append(f"Risk notes: {'; '.join(str(item) for item in risk_notes)}")
+
+    advisory_block = "\n".join(lines)
+    if not base_context:
+        return advisory_block
+    return f"{base_context}\n\n{advisory_block}"
+
+
+# ---------------------------------------------------------------------------
 # Read-only path
 # ---------------------------------------------------------------------------
 
@@ -249,7 +280,7 @@ def _execute_read_only(plan: dict, context_id: str, result_type: str) -> DomainR
         "action": action,
         "target_file": payload.get("target_file", ""),
         "workspace": payload.get("workspace", ""),
-        "context": plan.get("raw_text", ""),
+        "context": _build_executor_context(plan, payload),
     })
 
     if not tool_result.ok:
@@ -358,7 +389,7 @@ def _build_code_preview(plan: dict, payload: dict) -> DomainResult:
         "action": action,
         "target_file": target_file,
         "workspace": workspace,
-        "context": plan.get("raw_text", ""),
+        "context": _build_executor_context(plan, payload),
         "allowed_write_scope": allowed_scope,
     })
 
