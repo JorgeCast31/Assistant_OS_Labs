@@ -66,13 +66,21 @@ class HostErrorCode(str, Enum):
     PID_NOT_OWNED           = "pid_not_owned"
     PROCESS_ALREADY_EXITED  = "process_already_exited"
 
-    # open_directory
+    # open_directory / list_directory
     DIRECTORY_NOT_ALLOWED   = "directory_not_allowed"
+    DIRECTORY_NOT_FOUND     = "directory_not_found"
 
     # open_url
     URL_INVALID             = "url_invalid"
     URL_SCHEME_NOT_ALLOWED  = "url_scheme_not_allowed"
     URL_DOMAIN_NOT_ALLOWED  = "url_domain_not_allowed"
+
+    # open_file / read_text_file
+    FILE_NOT_ALLOWED        = "file_not_allowed"
+    EXTENSION_NOT_ALLOWED   = "extension_not_allowed"
+    FILE_NOT_FOUND          = "file_not_found"
+    FILE_TOO_LARGE          = "file_too_large"
+    INVALID_ENCODING        = "invalid_encoding"
 
 
 # ---------------------------------------------------------------------------

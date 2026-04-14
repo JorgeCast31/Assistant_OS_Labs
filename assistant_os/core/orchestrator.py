@@ -17,6 +17,16 @@ Transport adaption (DomainResult → Response) happens in webhook_server._adapt_
 Public API
 ----------
 handle_request(req: CanonicalRequest, *, forced_operation: str = "") -> DomainResult
+
+Confirmation flow (Phase 3C)
+-----------------------------
+When a plan requires user confirmation (execution_mode=confirm), the orchestrator:
+  1. Stores the plan in context_store keyed by plan["plan_id"].
+  2. Returns DomainResult{result_type="plan_confirmation_required", data.plan_id}.
+
+On the next call, the caller supplies metadata["confirm_plan_id"] = plan_id.
+The orchestrator retrieves the plan, removes it (single-use), and executes the pipeline.
+This guarantees that ALL execution goes through the orchestrator — no direct pipeline calls.
 """
 
 from __future__ import annotations
@@ -32,6 +42,7 @@ from ..contracts import (
     ACTION_UNKNOWN,
     RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED,
     RESULT_TYPE_PLAN_GENERATED,
+    RESULT_TYPE_CONFIRM_ERROR,
     EXECUTION_MODE_AUTO,
     EXECUTION_MODE_BLOCKED,
     EXECUTION_MODE_CONFIRM,
@@ -317,12 +328,22 @@ def handle_request(
     text = req["text"]
 
     # ---------------------------------------------------------------------------
+    # Confirm path (Phase 3C): execute a previously stored plan.
+    # Checked FIRST so confirm_plan_id takes priority over action/NL paths.
+    # ---------------------------------------------------------------------------
+    meta = req.get("metadata", {})
+    if meta.get("confirm_plan_id"):
+        return _execute_confirmed_plan(
+            plan_id=meta["confirm_plan_id"],
+            context_id=context_id,
+        )
+
+    # ---------------------------------------------------------------------------
     # Structured path: when metadata["action"] is present, skip NL classification
     # and planning. Build plan directly from req["filters"] + req["metadata"].
     # This handles structured HTTP endpoints where the action and filters are
     # already known (pre-parsed), bypassing NL text parsing entirely.
     # ---------------------------------------------------------------------------
-    meta = req.get("metadata", {})
     if meta.get("action"):
         from ..contracts import make_plan, RISK_LOW
         structured_action = meta["action"]
@@ -336,6 +357,8 @@ def handle_request(
             raw_text=text,
             requires_confirmation=meta.get("requires_confirmation", False),
         )
+        if meta.get("domain_payload"):
+            structured_plan["domain_payload"] = meta["domain_payload"]
         structured_intent = {
             "operation": structured_action,
             "domain": meta.get("domain", derived_domain),
@@ -382,6 +405,8 @@ def handle_request(
                 )
 
         if execution_mode in (EXECUTION_MODE_CONFIRM, EXECUTION_MODE_CLARIFY):
+            _store_pending_plan(structured_plan, structured_action, text)
+            plan_id = structured_plan.get("plan_id", "")
             result = make_domain_result(
                 ok=True,
                 result_type=RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED,
@@ -390,6 +415,7 @@ def handle_request(
                 data={
                     "type": "plan_confirmation_required",
                     "plan": dict(structured_plan),
+                    "plan_id": plan_id,
                     "confirmation_message": f"¿Confirmar: {structured_plan.get('preview')}?",
                     "advisory_trace": advisory_trace or {},
                     "governance_trace": governance_trace,
@@ -508,6 +534,8 @@ def handle_request(
     # "clarify" means required info is missing; treated as pending confirmation
     # until a dedicated clarify response type is introduced.
     if execution_mode in (EXECUTION_MODE_CONFIRM, EXECUTION_MODE_CLARIFY):
+        _store_pending_plan(plan, action, text)
+        plan_id = plan.get("plan_id", "")
         result = make_domain_result(
             ok=True,
             result_type=RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED,
@@ -516,6 +544,7 @@ def handle_request(
             data={
                 "type": "plan_confirmation_required",
                 "plan": dict(plan),
+                "plan_id": plan_id,
                 "confirmation_message": f"¿Confirmar: {plan.get('preview')}?",
                 "advisory_trace": advisory_trace or {},
                 "governance_trace": governance_trace,
@@ -576,3 +605,91 @@ def handle_request(
         result=result,
         executed=False,
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3C — confirmation flow helpers (module-private)
+# ---------------------------------------------------------------------------
+
+
+def _store_pending_plan(plan: dict, operation: str, raw_text: str) -> None:
+    """
+    Persist plan in context_store keyed by plan["plan_id"].
+
+    Called whenever the orchestrator returns plan_confirmation_required so
+    the caller can later submit metadata["confirm_plan_id"] to execute it.
+
+    Best-effort: if the store fails (disk error, etc.) the plan is simply
+    not persisted — the caller receives plan_confirmation_required and the
+    subsequent confirm call will return a "plan not found" error.
+    """
+    from ..context_store import store_pending_plan
+    plan_id = plan.get("plan_id")
+    if not plan_id:
+        return  # Defensive: plan without plan_id cannot be confirmed by id
+    try:
+        store_pending_plan(
+            context_id=plan_id,
+            plan=plan,
+            operation=operation,
+            raw_text=raw_text,
+        )
+    except Exception:
+        pass  # Best-effort — never block the confirmation_required response
+
+
+def _execute_confirmed_plan(plan_id: str, context_id: str) -> DomainResult:
+    """
+    Execute a previously stored plan identified by plan_id.
+
+    Invariants
+    ----------
+    - Single-use: plan is removed BEFORE pipeline execution to prevent replay.
+    - plan_id is preserved end-to-end (plan["plan_id"] == the original plan_id).
+    - No policy re-evaluation: the plan already passed policy in pass 1.
+    - Control plane / confirmed gates still fire inside the pipeline.
+
+    Error paths
+    -----------
+    - plan not found or expired → ok=False, result_type=confirm_error
+    - no registered pipeline for domain → ok=False, result_type=confirm_error
+    """
+    from ..context_store import get_pending_plan, remove_pending_plan
+    from .routing import get_pipeline, action_domain
+
+    stored = get_pending_plan(plan_id)
+    if stored is None:
+        return make_domain_result(
+            ok=False,
+            result_type=RESULT_TYPE_CONFIRM_ERROR,
+            domain="UNKNOWN",
+            message=f"No pending plan found for plan_id {plan_id!r} (not found or expired)",
+            data={"plan_id": plan_id},
+            error={
+                "type": "PlanNotFound",
+                "message": f"No pending plan: {plan_id!r}",
+            },
+        )
+
+    plan = stored["plan"]
+    action = plan.get("action", "")
+    domain = action_domain(action)
+
+    pipeline = get_pipeline(domain)
+    if pipeline is None:
+        return make_domain_result(
+            ok=False,
+            result_type=RESULT_TYPE_CONFIRM_ERROR,
+            domain=domain,
+            message=f"No pipeline registered for domain {domain!r}",
+            data={"plan_id": plan_id, "action": action, "domain": domain},
+            error={
+                "type": "NoPipeline",
+                "message": f"No pipeline for domain: {domain!r}",
+            },
+        )
+
+    # Single-use: remove before executing to prevent replay on pipeline error.
+    remove_pending_plan(plan_id)
+
+    return pipeline(plan, context_id)
