@@ -1,5 +1,6 @@
 """
-host_agent.py — HOST domain executor for Phase 1 + Phase 2 + Phase 2.5 hardening.
+host_agent.py — HOST domain executor for Phase 1 + Phase 2 + Phase 2.5 hardening
+              + Phase 3A read-only filesystem + Phase 5A sandboxed write.
 
 Canonical identity
 ------------------
@@ -10,19 +11,25 @@ The caller never supplies an agent_id.
 
 Supported actions
 -----------------
-"open_app"        — launch app from APP_REGISTRY (absolute paths)
-"close_pid"       — SIGTERM a process owned by this agent
-"open_directory"  — open an allowed directory in explorer
-"open_url"        — open an allowed URL in default browser (https only)
+"open_app"         — launch app from APP_REGISTRY (absolute paths)
+"close_pid"        — SIGTERM a process owned by this agent
+"open_directory"   — open an allowed directory in explorer
+"open_url"         — open an allowed URL in default browser (https only)
+"list_directory"   — list contents of an allowed directory (read-only)
+"open_file"        — open a whitelisted file with its default application
+"read_text_file"   — read a small text file and return its content
+"write_text_file"  — create or overwrite a text file inside the write sandbox
+"append_text_file" — append content to an existing text file in the write sandbox
+"create_directory" — create a single subdirectory inside the write sandbox
 
 Invariants enforced (all actions)
 ----------------------------------
 1. confirmed must be True
 2. HOST_AGENT_ID must be ACTIVE in control_plane
-3. Rate limit not exceeded (open_app, open_directory, open_url)
-4. action-specific validation (registry / allowlist / ownership)
+3. Rate limit not exceeded (action-specific)
+4. action-specific validation (registry / allowlist / sandbox / ownership)
 5. intent audit emitted BEFORE execution; HostAuditError → abort
-6. execution (Popen or os.kill)
+6. execution (Popen / os.kill / open / mkdir)
 7. register_in_flight for launched processes
 8. outcome audit AFTER execution
 9. gate-level rejections are audited via emit_host_rejection
@@ -30,14 +37,16 @@ Invariants enforced (all actions)
 app_name, path, url are NEVER treated as shell commands.
 No shell=True anywhere.
 
-Phase 2.5 additions
--------------------
-- HostErrorCode on every HostActionResult failure
-- validate_allowed_directory() — public, dedicated, normcase+normpath
-- validate_allowed_url()       — public, dedicated, scheme + domain check
-- reconcile_in_flight()        — called by close_pid before liveness attempt
-- Rate limiting                — sliding window per action type
-- Rejection audit              — Gate 1/2 failures emit HostRejectionEvent
+Phase 5A additions
+------------------
+- WRITE_SANDBOX_DIRECTORIES — dedicated write sandbox, separate from read allowlist
+- ALLOWED_WRITE_EXTENSIONS  — .txt / .md / .json only
+- MAX_WRITE_SIZE_BYTES       — 64 KB hard cap per write operation
+- validate_allowed_write_path()      — containment + traversal-safe
+- validate_allowed_write_directory() — containment + traversal-safe
+- _handle_write_text_file   — create/overwrite with overwrite explicitly allowed
+- _handle_append_text_file  — append-only, file must pre-exist
+- _handle_create_directory  — single-level mkdir, no recursion
 """
 
 from __future__ import annotations
@@ -135,6 +144,38 @@ LIST_DIRECTORY_LIMIT: int = 100        # max entries returned by list_directory
 
 
 # ---------------------------------------------------------------------------
+# WRITE_SANDBOX_DIRECTORIES — Phase 5A
+# ---------------------------------------------------------------------------
+#
+# Deliberately NARROWER than ALLOWED_DIRECTORIES (the read allowlist).
+# Only paths inside this list are writable.  ALLOWED_DIRECTORIES is not
+# affected: its entries remain read-only via list_directory / read_text_file.
+#
+# Rationale for a dedicated sandbox:
+#   - Read operations are low-risk; write operations can persist state.
+#   - Keeping sandboxes separate allows independent tightening without
+#     changing read semantics.
+#   - The sandbox path is explicit and version-controlled here.
+#
+WRITE_SANDBOX_DIRECTORIES: list[str] = [
+    r"C:\Users\Jorge\Documents\assistant_sandbox",
+]
+
+# Only these extensions may be written.  Executables, scripts, and binary
+# formats are intentionally excluded.  Reason: even a text write to a .bat
+# or .ps1 file could be subsequently executed by the user or another tool.
+# ".txt", ".md", ".json" cover all legitimate assistant output use cases.
+ALLOWED_WRITE_EXTENSIONS: frozenset[str] = frozenset({
+    ".txt", ".md", ".json",
+})
+
+# 64 KB per write operation.  Generous enough for structured text, notes,
+# and small JSON blobs; small enough to prevent accidental disk exhaustion
+# and to keep audit metadata (content length) meaningful.
+MAX_WRITE_SIZE_BYTES: int = 65_536
+
+
+# ---------------------------------------------------------------------------
 # Rate limits  (Phase 2.5 — P5)
 # ---------------------------------------------------------------------------
 
@@ -150,6 +191,10 @@ _ACTION_RATE_LIMITS: dict[str, tuple[int, float]] = {
     "list_directory":  (20, 60.0),
     "open_file":       (10, 60.0),
     "read_text_file":  (20, 60.0),
+    # Phase 5A — filesystem write (sandboxed)
+    "write_text_file":  (10, 60.0),
+    "append_text_file": (10, 60.0),
+    "create_directory": (10, 60.0),
 }
 
 # action → list of call timestamps (epoch seconds)
@@ -201,11 +246,14 @@ class HostActionRequest:
     ------
     execution_id : correlates audit events and _IN_FLIGHT entries
     action       : "open_app" | "close_pid" | "open_directory" | "open_url"
+                   | "list_directory" | "open_file" | "read_text_file"
+                   | "write_text_file" | "append_text_file" | "create_directory"
     confirmed    : must be True for execution to proceed
     app_name     : (open_app only) logical name — must be in APP_REGISTRY
     pid          : (close_pid only) PID to terminate — must be in _IN_FLIGHT
-    path         : (open_directory only) directory path — must be in allowlist
+    path         : (open_directory / filesystem ops) path — must be in allowlist/sandbox
     url          : (open_url only) URL — scheme https, domain in allowlist
+    content      : (write_text_file / append_text_file only) text to write
 
     Note: agent_id is NOT a caller-supplied field.  The executor always
     operates under HOST_AGENT_ID = "host_launcher".
@@ -217,6 +265,7 @@ class HostActionRequest:
     pid:          Optional[int] = None
     path:         str = ""
     url:          str = ""
+    content:      str = ""
 
 
 @dataclass
@@ -236,15 +285,17 @@ class HostActionResult:
     entries      : directory listing (list_directory only)
     content      : file text content (read_text_file only)
     """
-    ok:           bool
-    action:       str = ""
-    pid:          Optional[int] = None
-    execution_id: str = ""
-    app_name:     str = ""
-    error:        Optional[str] = None
-    error_code:   Optional[HostErrorCode] = None
-    entries:      Optional[list] = None
-    content:      Optional[str] = None
+    ok:            bool
+    action:        str = ""
+    pid:           Optional[int] = None
+    execution_id:  str = ""
+    app_name:      str = ""
+    error:         Optional[str] = None
+    error_code:    Optional[HostErrorCode] = None
+    entries:       Optional[list] = None
+    content:       Optional[str] = None
+    bytes_written: Optional[int] = None   # Phase 5A: bytes written (write/append ops)
+    write_mode:    Optional[str] = None   # Phase 5A: "create" | "overwrite" | "append"
 
 
 # ---------------------------------------------------------------------------
@@ -385,6 +436,68 @@ def validate_allowed_file_path(path: str) -> tuple[bool, str]:
             return True, ""
 
     return False, f"path {path!r} is not within ALLOWED_DIRECTORIES"
+
+
+# ---------------------------------------------------------------------------
+# Write-path validation helpers  (Phase 5A)
+# ---------------------------------------------------------------------------
+
+
+def validate_allowed_write_path(path: str) -> tuple[bool, str]:
+    """
+    Validate that path is a file location strictly inside WRITE_SANDBOX_DIRECTORIES.
+
+    Semantics are identical to validate_allowed_file_path but use a different
+    allowlist (WRITE_SANDBOX_DIRECTORIES instead of ALLOWED_DIRECTORIES).
+
+    Algorithm
+    ---------
+    Same ntpath + PureWindowsPath normalisation as the read helpers:
+    - ntpath.normpath resolves ".." with Windows rules on all platforms.
+    - PureWindowsPath.is_relative_to() is case-insensitive and component-based.
+    - Equality (path == sandbox root) is explicitly rejected: a file must live
+      *inside* the sandbox, not at its root.
+
+    Returns (True, "") on success, (False, reason) on failure.
+    """
+    if not path:
+        return False, "path is empty"
+
+    norm = PureWindowsPath(ntpath.normpath(path))
+
+    for sandbox in WRITE_SANDBOX_DIRECTORIES:
+        sandbox_norm = PureWindowsPath(ntpath.normpath(sandbox))
+        # is_relative_to covers norm == sandbox_norm AND strict descendant.
+        # We additionally reject exact equality (the sandbox root itself is a
+        # directory, not a valid file target).
+        if norm == sandbox_norm:
+            return False, f"path {path!r} is the sandbox root, not a file inside it"
+        if norm.is_relative_to(sandbox_norm):
+            return True, ""
+
+    return False, f"path {path!r} is not within WRITE_SANDBOX_DIRECTORIES"
+
+
+def validate_allowed_write_directory(path: str) -> tuple[bool, str]:
+    """
+    Validate that path is equal to or strictly inside WRITE_SANDBOX_DIRECTORIES.
+
+    Used by create_directory: the target directory may be the sandbox root
+    itself (already exists case, caught later) or a subdirectory within it.
+
+    Returns (True, "") on success, (False, reason) on failure.
+    """
+    if not path:
+        return False, "path is empty"
+
+    norm = PureWindowsPath(ntpath.normpath(path))
+
+    for sandbox in WRITE_SANDBOX_DIRECTORIES:
+        sandbox_norm = PureWindowsPath(ntpath.normpath(sandbox))
+        if norm == sandbox_norm or norm.is_relative_to(sandbox_norm):
+            return True, ""
+
+    return False, f"path {path!r} is not within WRITE_SANDBOX_DIRECTORIES"
 
 
 # ---------------------------------------------------------------------------
@@ -912,6 +1025,353 @@ def _handle_read_text_file(request: HostActionRequest) -> HostActionResult:
 
 
 # ---------------------------------------------------------------------------
+# Phase 5A — sandboxed write handlers
+# ---------------------------------------------------------------------------
+
+
+def _handle_write_text_file(request: HostActionRequest) -> HostActionResult:
+    """
+    write_text_file: create or overwrite a text file inside the write sandbox.
+
+    Design decisions
+    ----------------
+    - Overwrite IS permitted when the existing file is inside the sandbox and
+      the extension is allowed.  The write_mode field distinguishes "create"
+      from "overwrite" in the audit trail.
+    - Content is validated for utf-8 encodability (surrogates rejected).
+    - Audit records path + content length in bytes; full content is NEVER logged.
+
+    Validation order
+    ----------------
+    1. validate_allowed_write_path     → FILE_NOT_ALLOWED
+    2. extension in ALLOWED_WRITE_EXTENSIONS → EXTENSION_NOT_ALLOWED
+    3. content encodable as utf-8      → INVALID_ENCODING
+    4. encoded length ≤ MAX_WRITE_SIZE_BYTES → FILE_TOO_LARGE
+    5. emit_action_intent              → AUDIT_FAILURE aborts
+    6. open(path, "w", utf-8)          → WRITE_NOT_ALLOWED on OSError
+    7. emit_action_outcome
+    """
+    ok, reason = validate_allowed_write_path(request.path)
+    if not ok:
+        return HostActionResult(
+            ok=False, action="write_text_file",
+            execution_id=request.execution_id,
+            error=reason,
+            error_code=HostErrorCode.FILE_NOT_ALLOWED,
+        )
+
+    ext = os.path.splitext(request.path)[1].lower()
+    if ext not in ALLOWED_WRITE_EXTENSIONS:
+        return HostActionResult(
+            ok=False, action="write_text_file",
+            execution_id=request.execution_id,
+            error=f"extension {ext!r} is not in ALLOWED_WRITE_EXTENSIONS",
+            error_code=HostErrorCode.EXTENSION_NOT_ALLOWED,
+        )
+
+    try:
+        encoded = request.content.encode("utf-8", errors="strict")
+    except (UnicodeEncodeError, UnicodeDecodeError) as exc:
+        return HostActionResult(
+            ok=False, action="write_text_file",
+            execution_id=request.execution_id,
+            error=f"content is not encodable as utf-8: {exc}",
+            error_code=HostErrorCode.INVALID_ENCODING,
+        )
+
+    if len(encoded) > MAX_WRITE_SIZE_BYTES:
+        return HostActionResult(
+            ok=False, action="write_text_file",
+            execution_id=request.execution_id,
+            error=(
+                f"content size {len(encoded)} bytes exceeds MAX_WRITE_SIZE_BYTES "
+                f"({MAX_WRITE_SIZE_BYTES})"
+            ),
+            error_code=HostErrorCode.FILE_TOO_LARGE,
+        )
+
+    norm_path = ntpath.normpath(request.path)
+    write_mode = "overwrite" if os.path.isfile(norm_path) else "create"
+
+    try:
+        emit_action_intent(
+            agent_id=HOST_AGENT_ID,
+            execution_id=request.execution_id,
+            action="write_text_file",
+            target=request.path,
+        )
+    except HostAuditError as exc:
+        return HostActionResult(
+            ok=False, action="write_text_file",
+            execution_id=request.execution_id,
+            error=f"intent audit failed — abort: {exc}",
+            error_code=HostErrorCode.AUDIT_FAILURE,
+        )
+
+    try:
+        with open(norm_path, "w", encoding="utf-8") as fh:
+            fh.write(request.content)
+    except OSError as exc:
+        emit_action_outcome(
+            agent_id=HOST_AGENT_ID,
+            execution_id=request.execution_id,
+            action="write_text_file",
+            target=request.path,
+            result="write_failed",
+            pid=None,
+        )
+        return HostActionResult(
+            ok=False, action="write_text_file",
+            execution_id=request.execution_id,
+            error=f"could not write file: {exc}",
+            error_code=HostErrorCode.WRITE_NOT_ALLOWED,
+        )
+
+    bytes_written = len(encoded)
+
+    emit_action_outcome(
+        agent_id=HOST_AGENT_ID,
+        execution_id=request.execution_id,
+        action="write_text_file",
+        target=request.path,
+        result=f"{write_mode}:{bytes_written}b",
+        pid=None,
+    )
+
+    return HostActionResult(
+        ok=True, action="write_text_file",
+        execution_id=request.execution_id,
+        bytes_written=bytes_written,
+        write_mode=write_mode,
+    )
+
+
+def _handle_append_text_file(request: HostActionRequest) -> HostActionResult:
+    """
+    append_text_file: append content to an existing text file in the write sandbox.
+
+    Design decisions
+    ----------------
+    - File MUST already exist.  If it does not → FILE_NOT_FOUND.
+      Rationale: append-as-create blurs the distinction between "I know this
+      file" and "create a new file"; requiring pre-existence is safer.
+    - Same sandbox, extension, encoding, and size limits as write_text_file.
+    - Size limit applies to the appended content alone, not the total file size.
+      Rationale: we do not stat the file before appending; total-size limits
+      would require a read which is a separate operation.
+
+    Validation order
+    ----------------
+    1. validate_allowed_write_path     → FILE_NOT_ALLOWED
+    2. extension in ALLOWED_WRITE_EXTENSIONS → EXTENSION_NOT_ALLOWED
+    3. os.path.isfile                  → FILE_NOT_FOUND
+    4. content encodable as utf-8      → INVALID_ENCODING
+    5. encoded length ≤ MAX_WRITE_SIZE_BYTES → FILE_TOO_LARGE
+    6. emit_action_intent              → AUDIT_FAILURE aborts
+    7. open(path, "a", utf-8)          → WRITE_NOT_ALLOWED on OSError
+    8. emit_action_outcome
+    """
+    ok, reason = validate_allowed_write_path(request.path)
+    if not ok:
+        return HostActionResult(
+            ok=False, action="append_text_file",
+            execution_id=request.execution_id,
+            error=reason,
+            error_code=HostErrorCode.FILE_NOT_ALLOWED,
+        )
+
+    ext = os.path.splitext(request.path)[1].lower()
+    if ext not in ALLOWED_WRITE_EXTENSIONS:
+        return HostActionResult(
+            ok=False, action="append_text_file",
+            execution_id=request.execution_id,
+            error=f"extension {ext!r} is not in ALLOWED_WRITE_EXTENSIONS",
+            error_code=HostErrorCode.EXTENSION_NOT_ALLOWED,
+        )
+
+    norm_path = ntpath.normpath(request.path)
+
+    if not os.path.isfile(norm_path):
+        return HostActionResult(
+            ok=False, action="append_text_file",
+            execution_id=request.execution_id,
+            error=f"file {request.path!r} does not exist (append requires pre-existing file)",
+            error_code=HostErrorCode.FILE_NOT_FOUND,
+        )
+
+    try:
+        encoded = request.content.encode("utf-8", errors="strict")
+    except (UnicodeEncodeError, UnicodeDecodeError) as exc:
+        return HostActionResult(
+            ok=False, action="append_text_file",
+            execution_id=request.execution_id,
+            error=f"content is not encodable as utf-8: {exc}",
+            error_code=HostErrorCode.INVALID_ENCODING,
+        )
+
+    if len(encoded) > MAX_WRITE_SIZE_BYTES:
+        return HostActionResult(
+            ok=False, action="append_text_file",
+            execution_id=request.execution_id,
+            error=(
+                f"content size {len(encoded)} bytes exceeds MAX_WRITE_SIZE_BYTES "
+                f"({MAX_WRITE_SIZE_BYTES})"
+            ),
+            error_code=HostErrorCode.FILE_TOO_LARGE,
+        )
+
+    try:
+        emit_action_intent(
+            agent_id=HOST_AGENT_ID,
+            execution_id=request.execution_id,
+            action="append_text_file",
+            target=request.path,
+        )
+    except HostAuditError as exc:
+        return HostActionResult(
+            ok=False, action="append_text_file",
+            execution_id=request.execution_id,
+            error=f"intent audit failed — abort: {exc}",
+            error_code=HostErrorCode.AUDIT_FAILURE,
+        )
+
+    try:
+        with open(norm_path, "a", encoding="utf-8") as fh:
+            fh.write(request.content)
+    except OSError as exc:
+        emit_action_outcome(
+            agent_id=HOST_AGENT_ID,
+            execution_id=request.execution_id,
+            action="append_text_file",
+            target=request.path,
+            result="append_failed",
+            pid=None,
+        )
+        return HostActionResult(
+            ok=False, action="append_text_file",
+            execution_id=request.execution_id,
+            error=f"could not append to file: {exc}",
+            error_code=HostErrorCode.WRITE_NOT_ALLOWED,
+        )
+
+    bytes_written = len(encoded)
+
+    emit_action_outcome(
+        agent_id=HOST_AGENT_ID,
+        execution_id=request.execution_id,
+        action="append_text_file",
+        target=request.path,
+        result=f"appended:{bytes_written}b",
+        pid=None,
+    )
+
+    return HostActionResult(
+        ok=True, action="append_text_file",
+        execution_id=request.execution_id,
+        bytes_written=bytes_written,
+        write_mode="append",
+    )
+
+
+def _handle_create_directory(request: HostActionRequest) -> HostActionResult:
+    """
+    create_directory: create a single subdirectory inside the write sandbox.
+
+    Design decisions
+    ----------------
+    - Single-level os.mkdir only (NOT os.makedirs).
+      Rationale: recursive mkdir can silently create deeply nested structures.
+      Requiring the parent to exist forces callers to be explicit about intent.
+    - If the path already exists as a directory → DIRECTORY_ALREADY_EXISTS.
+    - If the path already exists as a file → PATH_CONFLICT.
+    - If the parent does not exist → os.mkdir raises FileNotFoundError, mapped
+      to WRITE_NOT_ALLOWED with a descriptive message.
+
+    Validation order
+    ----------------
+    1. validate_allowed_write_directory → DIRECTORY_NOT_ALLOWED
+    2. os.path.isfile(norm)             → PATH_CONFLICT
+    3. os.path.isdir(norm)              → DIRECTORY_ALREADY_EXISTS
+    4. emit_action_intent               → AUDIT_FAILURE aborts
+    5. os.mkdir(norm)                   → WRITE_NOT_ALLOWED on OSError
+    6. emit_action_outcome
+    """
+    ok, reason = validate_allowed_write_directory(request.path)
+    if not ok:
+        return HostActionResult(
+            ok=False, action="create_directory",
+            execution_id=request.execution_id,
+            error=reason,
+            error_code=HostErrorCode.DIRECTORY_NOT_ALLOWED,
+        )
+
+    norm_path = ntpath.normpath(request.path)
+
+    if os.path.isfile(norm_path):
+        return HostActionResult(
+            ok=False, action="create_directory",
+            execution_id=request.execution_id,
+            error=f"path {request.path!r} already exists as a file",
+            error_code=HostErrorCode.PATH_CONFLICT,
+        )
+
+    if os.path.isdir(norm_path):
+        return HostActionResult(
+            ok=False, action="create_directory",
+            execution_id=request.execution_id,
+            error=f"directory {request.path!r} already exists",
+            error_code=HostErrorCode.DIRECTORY_ALREADY_EXISTS,
+        )
+
+    try:
+        emit_action_intent(
+            agent_id=HOST_AGENT_ID,
+            execution_id=request.execution_id,
+            action="create_directory",
+            target=request.path,
+        )
+    except HostAuditError as exc:
+        return HostActionResult(
+            ok=False, action="create_directory",
+            execution_id=request.execution_id,
+            error=f"intent audit failed — abort: {exc}",
+            error_code=HostErrorCode.AUDIT_FAILURE,
+        )
+
+    try:
+        os.mkdir(norm_path)
+    except OSError as exc:
+        emit_action_outcome(
+            agent_id=HOST_AGENT_ID,
+            execution_id=request.execution_id,
+            action="create_directory",
+            target=request.path,
+            result="mkdir_failed",
+            pid=None,
+        )
+        return HostActionResult(
+            ok=False, action="create_directory",
+            execution_id=request.execution_id,
+            error=f"could not create directory: {exc}",
+            error_code=HostErrorCode.WRITE_NOT_ALLOWED,
+        )
+
+    emit_action_outcome(
+        agent_id=HOST_AGENT_ID,
+        execution_id=request.execution_id,
+        action="create_directory",
+        target=request.path,
+        result="created",
+        pid=None,
+    )
+
+    return HostActionResult(
+        ok=True, action="create_directory",
+        execution_id=request.execution_id,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public executor — dispatcher
 # ---------------------------------------------------------------------------
 
@@ -924,6 +1384,10 @@ _ACTION_HANDLERS = {
     "list_directory":  _handle_list_directory,
     "open_file":       _handle_open_file,
     "read_text_file":  _handle_read_text_file,
+    # Phase 5A — sandboxed write
+    "write_text_file":  _handle_write_text_file,
+    "append_text_file": _handle_append_text_file,
+    "create_directory": _handle_create_directory,
 }
 
 

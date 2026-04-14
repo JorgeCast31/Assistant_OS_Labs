@@ -82,6 +82,11 @@ class HostErrorCode(str, Enum):
     FILE_TOO_LARGE          = "file_too_large"
     INVALID_ENCODING        = "invalid_encoding"
 
+    # write_text_file / append_text_file / create_directory (Phase 5A)
+    WRITE_NOT_ALLOWED       = "write_not_allowed"
+    DIRECTORY_ALREADY_EXISTS = "directory_already_exists"
+    PATH_CONFLICT           = "path_conflict"
+
 
 # ---------------------------------------------------------------------------
 # Event type constants

@@ -29,6 +29,7 @@ U. close_pid with stale PID / reconcile (Phase 2.5)
 from __future__ import annotations
 
 import signal
+import unittest.mock
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -38,6 +39,9 @@ from assistant_os.agents.host_agent import (
     ALLOWED_DIRECTORIES,
     ALLOWED_URL_DOMAINS,
     ALLOWED_URL_SCHEMES,
+    WRITE_SANDBOX_DIRECTORIES,
+    ALLOWED_WRITE_EXTENSIONS,
+    MAX_WRITE_SIZE_BYTES,
     HOST_AGENT_ID,
     HostActionRequest,
     HostActionResult,
@@ -45,6 +49,8 @@ from assistant_os.agents.host_agent import (
     execute_host_action,
     validate_allowed_directory,
     validate_allowed_url,
+    validate_allowed_write_path,
+    validate_allowed_write_directory,
 )
 from assistant_os.agents.host_audit import (
     HOST_AUDIT_LOG,
@@ -1556,3 +1562,744 @@ class TestClosePidReconcile:
 
         assert result.ok is False
         assert 5555 not in sigterm_called  # never reached SIGTERM because reconcile cleaned it
+
+
+# ===========================================================================
+# V. validate_allowed_write_path / validate_allowed_write_directory (Phase 5A)
+# ===========================================================================
+
+_SANDBOX = WRITE_SANDBOX_DIRECTORIES[0]   # e.g. C:\Users\Jorge\Documents\assistant_sandbox
+_SANDBOX_FILE   = _SANDBOX + r"\notes.txt"
+_SANDBOX_SUBDIR = _SANDBOX + r"\subdir"
+_OUTSIDE_FILE   = r"C:\Users\Jorge\Documents\outside.txt"
+
+
+class TestValidateAllowedWritePath:
+    def test_file_inside_sandbox_returns_true(self):
+        ok, reason = validate_allowed_write_path(_SANDBOX_FILE)
+        assert ok is True
+        assert reason == ""
+
+    def test_sandbox_root_itself_is_rejected(self):
+        """The sandbox root is a directory; writing a file at that path is rejected."""
+        ok, reason = validate_allowed_write_path(_SANDBOX)
+        assert ok is False
+        assert "sandbox root" in reason.lower() or "not a file" in reason.lower()
+
+    def test_path_outside_sandbox_returns_false(self):
+        ok, reason = validate_allowed_write_path(_OUTSIDE_FILE)
+        assert ok is False
+        assert "WRITE_SANDBOX_DIRECTORIES" in reason or _OUTSIDE_FILE in reason
+
+    def test_traversal_to_outside_is_blocked(self):
+        traversal = _SANDBOX + r"\..\..\..\Windows\evil.txt"
+        ok, _ = validate_allowed_write_path(traversal)
+        assert ok is False
+
+    def test_traversal_staying_inside_sandbox_is_allowed(self):
+        # sandbox\sub\..\file.txt normalises to sandbox\file.txt → still inside
+        path = _SANDBOX + r"\sub\..\file.txt"
+        ok, _ = validate_allowed_write_path(path)
+        assert ok is True
+
+    def test_empty_path_returns_false(self):
+        ok, reason = validate_allowed_write_path("")
+        assert ok is False
+        assert "empty" in reason.lower()
+
+    def test_case_insensitive(self):
+        ok, _ = validate_allowed_write_path(_SANDBOX_FILE.lower())
+        assert ok is True
+
+    def test_adjacent_prefix_not_confused(self):
+        evil_path = _SANDBOX + "_evil\\file.txt"
+        ok, _ = validate_allowed_write_path(evil_path)
+        assert ok is False
+
+    def test_documents_root_is_not_write_sandbox(self):
+        ok, _ = validate_allowed_write_path(r"C:\Users\Jorge\Documents\file.txt")
+        assert ok is False
+
+
+class TestValidateAllowedWriteDirectory:
+    def test_sandbox_root_is_allowed(self):
+        ok, reason = validate_allowed_write_directory(_SANDBOX)
+        assert ok is True
+        assert reason == ""
+
+    def test_subdir_inside_sandbox_is_allowed(self):
+        ok, _ = validate_allowed_write_directory(_SANDBOX_SUBDIR)
+        assert ok is True
+
+    def test_path_outside_sandbox_returns_false(self):
+        ok, _ = validate_allowed_write_directory(r"C:\Users\Jorge\Documents")
+        assert ok is False
+
+    def test_traversal_to_outside_is_blocked(self):
+        traversal = _SANDBOX + r"\..\.."
+        ok, _ = validate_allowed_write_directory(traversal)
+        assert ok is False
+
+    def test_empty_path_returns_false(self):
+        ok, reason = validate_allowed_write_directory("")
+        assert ok is False
+        assert "empty" in reason.lower()
+
+    def test_case_insensitive(self):
+        ok, _ = validate_allowed_write_directory(_SANDBOX.lower())
+        assert ok is True
+
+
+# ===========================================================================
+# W. write_text_file (Phase 5A)
+# ===========================================================================
+
+
+def _write_req(
+    path: str = _SANDBOX_FILE,
+    content: str = "hello world",
+    execution_id: str = "exec-w-1",
+    confirmed: bool = True,
+) -> HostActionRequest:
+    activate_agent(HOST_AGENT_ID)
+    return HostActionRequest(
+        execution_id=execution_id,
+        action="write_text_file",
+        confirmed=confirmed,
+        path=path,
+        content=content,
+    )
+
+
+class TestWriteTextFile:
+    # --- Happy paths ---
+
+    def test_write_creates_file_in_sandbox(self):
+        req = _write_req()
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", unittest.mock.mock_open()) as mock_open,
+        ):
+            result = execute_host_action(req)
+        assert result.ok is True
+        assert result.action == "write_text_file"
+        assert result.write_mode == "create"
+        assert result.bytes_written == len("hello world".encode("utf-8"))
+
+    def test_write_overwrite_is_permitted(self):
+        req = _write_req(content="updated content")
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            result = execute_host_action(req)
+        assert result.ok is True
+        assert result.write_mode == "overwrite"
+
+    def test_bytes_written_reported_correctly(self):
+        content = "abc"
+        req = _write_req(content=content)
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            result = execute_host_action(req)
+        assert result.bytes_written == len(content.encode("utf-8"))
+
+    # --- Sandbox validation ---
+
+    def test_path_outside_sandbox_rejected(self):
+        req = _write_req(path=_OUTSIDE_FILE)
+        with patch("builtins.open") as mock_open:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.FILE_NOT_ALLOWED
+        mock_open.assert_not_called()
+
+    def test_traversal_path_rejected(self):
+        traversal = _SANDBOX + r"\..\..\..\Windows\evil.txt"
+        req = _write_req(path=traversal)
+        with patch("builtins.open") as mock_open:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.FILE_NOT_ALLOWED
+        mock_open.assert_not_called()
+
+    # --- Extension validation ---
+
+    def test_disallowed_extension_rejected(self):
+        req = _write_req(path=_SANDBOX + r"\run.bat")
+        with patch("builtins.open") as mock_open:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.EXTENSION_NOT_ALLOWED
+        mock_open.assert_not_called()
+
+    def test_exe_extension_rejected(self):
+        req = _write_req(path=_SANDBOX + r"\evil.exe")
+        with patch("builtins.open") as mock_open:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.EXTENSION_NOT_ALLOWED
+
+    def test_allowed_extensions_all_pass_validation(self):
+        for ext in (".txt", ".md", ".json"):
+            req = _write_req(path=_SANDBOX + rf"\file{ext}")
+            with (
+                patch("os.path.isfile", return_value=False),
+                patch("builtins.open", unittest.mock.mock_open()),
+            ):
+                result = execute_host_action(req)
+            assert result.ok is True, f"expected ok for extension {ext}"
+
+    # --- Size validation ---
+
+    def test_oversized_content_rejected(self):
+        big = "x" * (MAX_WRITE_SIZE_BYTES + 1)
+        req = _write_req(content=big)
+        with patch("builtins.open") as mock_open:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.FILE_TOO_LARGE
+        mock_open.assert_not_called()
+
+    def test_exactly_max_size_is_accepted(self):
+        content = "x" * MAX_WRITE_SIZE_BYTES  # ASCII: 1 byte per char
+        req = _write_req(content=content)
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            result = execute_host_action(req)
+        assert result.ok is True
+
+    # --- Audit ---
+
+    def test_intent_audit_emitted_before_open(self):
+        call_order = []
+
+        def record_intent(*a, **kw):
+            call_order.append("intent")
+
+        original_open = unittest.mock.mock_open()
+
+        class TrackingOpen:
+            def __call__(self, *a, **kw):
+                call_order.append("open")
+                return original_open(*a, **kw)
+
+        req = _write_req(execution_id="exec-w-audit-1")
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("assistant_os.agents.host_agent.emit_action_intent", side_effect=record_intent),
+            patch("builtins.open", TrackingOpen()),
+            patch("assistant_os.agents.host_agent.emit_action_outcome"),
+        ):
+            execute_host_action(req)
+
+        assert call_order.index("intent") < call_order.index("open")
+
+    def test_outcome_audit_emitted_after_open(self):
+        call_order = []
+        original_open = unittest.mock.mock_open()
+
+        class TrackingOpen:
+            def __call__(self, *a, **kw):
+                call_order.append("open")
+                return original_open(*a, **kw)
+
+        def record_outcome(*a, **kw):
+            call_order.append("outcome")
+
+        req = _write_req(execution_id="exec-w-audit-2")
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("assistant_os.agents.host_agent.emit_action_intent"),
+            patch("builtins.open", TrackingOpen()),
+            patch("assistant_os.agents.host_agent.emit_action_outcome", side_effect=record_outcome),
+        ):
+            execute_host_action(req)
+
+        assert call_order.index("open") < call_order.index("outcome")
+
+    def test_audit_outcome_result_contains_mode_and_bytes(self):
+        captured = []
+
+        def capture_outcome(*a, **kw):
+            captured.append(kw)
+
+        req = _write_req(content="hi", execution_id="exec-w-audit-3")
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", unittest.mock.mock_open()),
+            patch("assistant_os.agents.host_agent.emit_action_outcome", side_effect=capture_outcome),
+        ):
+            execute_host_action(req)
+
+        assert captured, "emit_action_outcome was not called"
+        result_str = captured[0]["result"]
+        assert "create" in result_str
+        assert "b" in result_str  # bytes suffix
+
+    def test_content_not_stored_in_audit_log(self):
+        """Full content must never appear in the audit log."""
+        sensitive = "my secret content 12345"
+        req = _write_req(content=sensitive, execution_id="exec-w-audit-secret")
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            execute_host_action(req)
+
+        # Serialise every audit event to dict and verify content not present
+        all_dicts = HOST_AUDIT_LOG.all_dicts()
+        for d in all_dicts:
+            assert sensitive not in str(d), f"sensitive content leaked into audit: {d}"
+
+    # --- Gate enforcement ---
+
+    def test_confirmed_false_rejects(self):
+        req = _write_req(confirmed=False)
+        with patch("builtins.open") as mock_open:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.CONFIRMED_REQUIRED
+        mock_open.assert_not_called()
+
+    def test_control_plane_blocked_rejects(self):
+        from assistant_os.core.control_plane import quarantine_agent
+        activate_agent(HOST_AGENT_ID)
+        quarantine_agent(HOST_AGENT_ID)
+        req = HostActionRequest(
+            execution_id="exec-w-cp", action="write_text_file",
+            confirmed=True, path=_SANDBOX_FILE, content="x",
+        )
+        with patch("builtins.open") as mock_open:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.CONTROL_PLANE_BLOCKED
+        mock_open.assert_not_called()
+
+    def test_audit_failure_aborts_write(self):
+        from assistant_os.agents.host_audit import HostAuditError
+        req = _write_req()
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("assistant_os.agents.host_agent.emit_action_intent",
+                  side_effect=HostAuditError("fail")),
+            patch("builtins.open") as mock_open,
+        ):
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.AUDIT_FAILURE
+        mock_open.assert_not_called()
+
+    def test_oserror_on_write_returns_write_not_allowed(self):
+        req = _write_req()
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", side_effect=OSError("permission denied")),
+        ):
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.WRITE_NOT_ALLOWED
+
+
+# ===========================================================================
+# X. append_text_file (Phase 5A)
+# ===========================================================================
+
+
+def _append_req(
+    path: str = _SANDBOX_FILE,
+    content: str = "\nappended line",
+    execution_id: str = "exec-a-1",
+    confirmed: bool = True,
+) -> HostActionRequest:
+    activate_agent(HOST_AGENT_ID)
+    return HostActionRequest(
+        execution_id=execution_id,
+        action="append_text_file",
+        confirmed=confirmed,
+        path=path,
+        content=content,
+    )
+
+
+class TestAppendTextFile:
+    def test_append_to_existing_file_succeeds(self):
+        req = _append_req()
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            result = execute_host_action(req)
+        assert result.ok is True
+        assert result.action == "append_text_file"
+        assert result.write_mode == "append"
+
+    def test_bytes_written_reported_for_append(self):
+        content = "extra"
+        req = _append_req(content=content)
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            result = execute_host_action(req)
+        assert result.bytes_written == len(content.encode("utf-8"))
+
+    def test_file_not_found_returns_file_not_found(self):
+        req = _append_req()
+        with patch("os.path.isfile", return_value=False):
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.FILE_NOT_FOUND
+
+    def test_path_outside_sandbox_rejected(self):
+        req = _append_req(path=_OUTSIDE_FILE)
+        with patch("builtins.open") as mock_open:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.FILE_NOT_ALLOWED
+        mock_open.assert_not_called()
+
+    def test_disallowed_extension_rejected(self):
+        req = _append_req(path=_SANDBOX + r"\script.ps1")
+        with patch("builtins.open") as mock_open:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.EXTENSION_NOT_ALLOWED
+        mock_open.assert_not_called()
+
+    def test_oversized_content_rejected(self):
+        big = "y" * (MAX_WRITE_SIZE_BYTES + 1)
+        req = _append_req(content=big)
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("builtins.open") as mock_open,
+        ):
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.FILE_TOO_LARGE
+        mock_open.assert_not_called()
+
+    def test_traversal_path_rejected(self):
+        traversal = _SANDBOX + r"\..\sensitive.txt"
+        req = _append_req(path=traversal)
+        with patch("builtins.open") as mock_open:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.FILE_NOT_ALLOWED
+        mock_open.assert_not_called()
+
+    def test_intent_audit_before_open(self):
+        call_order = []
+
+        def record_intent(*a, **kw):
+            call_order.append("intent")
+
+        original_open = unittest.mock.mock_open()
+
+        class TrackingOpen:
+            def __call__(self, *a, **kw):
+                call_order.append("open")
+                return original_open(*a, **kw)
+
+        req = _append_req(execution_id="exec-a-audit-1")
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("assistant_os.agents.host_agent.emit_action_intent", side_effect=record_intent),
+            patch("builtins.open", TrackingOpen()),
+            patch("assistant_os.agents.host_agent.emit_action_outcome"),
+        ):
+            execute_host_action(req)
+
+        assert call_order.index("intent") < call_order.index("open")
+
+    def test_outcome_audit_after_open(self):
+        call_order = []
+        original_open = unittest.mock.mock_open()
+
+        class TrackingOpen:
+            def __call__(self, *a, **kw):
+                call_order.append("open")
+                return original_open(*a, **kw)
+
+        def record_outcome(*a, **kw):
+            call_order.append("outcome")
+
+        req = _append_req(execution_id="exec-a-audit-2")
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("assistant_os.agents.host_agent.emit_action_intent"),
+            patch("builtins.open", TrackingOpen()),
+            patch("assistant_os.agents.host_agent.emit_action_outcome", side_effect=record_outcome),
+        ):
+            execute_host_action(req)
+
+        assert call_order.index("open") < call_order.index("outcome")
+
+    def test_confirmed_false_rejects(self):
+        req = _append_req(confirmed=False)
+        with patch("builtins.open") as mock_open:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.CONFIRMED_REQUIRED
+        mock_open.assert_not_called()
+
+    def test_audit_failure_aborts_append(self):
+        from assistant_os.agents.host_audit import HostAuditError
+        req = _append_req()
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("assistant_os.agents.host_agent.emit_action_intent",
+                  side_effect=HostAuditError("fail")),
+            patch("builtins.open") as mock_open,
+        ):
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.AUDIT_FAILURE
+        mock_open.assert_not_called()
+
+    def test_content_not_in_audit_log(self):
+        sensitive = "secret append data"
+        req = _append_req(content=sensitive, execution_id="exec-a-secret")
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            execute_host_action(req)
+
+        all_dicts = HOST_AUDIT_LOG.all_dicts()
+        for d in all_dicts:
+            assert sensitive not in str(d), f"sensitive content leaked: {d}"
+
+
+# ===========================================================================
+# Y. create_directory (Phase 5A)
+# ===========================================================================
+
+
+def _mkdir_req(
+    path: str = _SANDBOX_SUBDIR,
+    execution_id: str = "exec-mkdir-1",
+    confirmed: bool = True,
+) -> HostActionRequest:
+    activate_agent(HOST_AGENT_ID)
+    return HostActionRequest(
+        execution_id=execution_id,
+        action="create_directory",
+        confirmed=confirmed,
+        path=path,
+    )
+
+
+class TestCreateDirectory:
+    def test_new_dir_inside_sandbox_created(self):
+        req = _mkdir_req()
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("os.path.isdir", return_value=False),
+            patch("os.mkdir") as mock_mkdir,
+        ):
+            result = execute_host_action(req)
+        assert result.ok is True
+        assert result.action == "create_directory"
+        mock_mkdir.assert_called_once()
+
+    def test_directory_already_exists_returns_error(self):
+        req = _mkdir_req()
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("os.path.isdir", return_value=True),
+            patch("os.mkdir") as mock_mkdir,
+        ):
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.DIRECTORY_ALREADY_EXISTS
+        mock_mkdir.assert_not_called()
+
+    def test_path_conflict_with_existing_file(self):
+        req = _mkdir_req()
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("os.path.isdir", return_value=False),
+            patch("os.mkdir") as mock_mkdir,
+        ):
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.PATH_CONFLICT
+        mock_mkdir.assert_not_called()
+
+    def test_path_outside_sandbox_rejected(self):
+        req = _mkdir_req(path=r"C:\Users\Jorge\Documents\newdir")
+        with patch("os.mkdir") as mock_mkdir:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.DIRECTORY_NOT_ALLOWED
+        mock_mkdir.assert_not_called()
+
+    def test_traversal_to_outside_rejected(self):
+        traversal = _SANDBOX + r"\..\..\evil_dir"
+        req = _mkdir_req(path=traversal)
+        with patch("os.mkdir") as mock_mkdir:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.DIRECTORY_NOT_ALLOWED
+        mock_mkdir.assert_not_called()
+
+    def test_oserror_returns_write_not_allowed(self):
+        req = _mkdir_req()
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("os.path.isdir", return_value=False),
+            patch("os.mkdir", side_effect=OSError("no parent")),
+        ):
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.WRITE_NOT_ALLOWED
+
+    def test_intent_audit_before_mkdir(self):
+        call_order = []
+
+        def record_intent(*a, **kw):
+            call_order.append("intent")
+
+        def record_mkdir(path):
+            call_order.append("mkdir")
+
+        req = _mkdir_req(execution_id="exec-mkdir-audit")
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("os.path.isdir", return_value=False),
+            patch("assistant_os.agents.host_agent.emit_action_intent", side_effect=record_intent),
+            patch("os.mkdir", side_effect=record_mkdir),
+            patch("assistant_os.agents.host_agent.emit_action_outcome"),
+        ):
+            execute_host_action(req)
+
+        assert call_order.index("intent") < call_order.index("mkdir")
+
+    def test_outcome_audit_after_mkdir(self):
+        call_order = []
+
+        def record_mkdir(path):
+            call_order.append("mkdir")
+
+        def record_outcome(*a, **kw):
+            call_order.append("outcome")
+
+        req = _mkdir_req(execution_id="exec-mkdir-audit-2")
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("os.path.isdir", return_value=False),
+            patch("assistant_os.agents.host_agent.emit_action_intent"),
+            patch("os.mkdir", side_effect=record_mkdir),
+            patch("assistant_os.agents.host_agent.emit_action_outcome", side_effect=record_outcome),
+        ):
+            execute_host_action(req)
+
+        assert call_order.index("mkdir") < call_order.index("outcome")
+
+    def test_confirmed_false_rejects(self):
+        req = _mkdir_req(confirmed=False)
+        with patch("os.mkdir") as mock_mkdir:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.CONFIRMED_REQUIRED
+        mock_mkdir.assert_not_called()
+
+    def test_control_plane_blocked_rejects(self):
+        from assistant_os.core.control_plane import quarantine_agent
+        activate_agent(HOST_AGENT_ID)
+        quarantine_agent(HOST_AGENT_ID)
+        req = HostActionRequest(
+            execution_id="exec-mkdir-cp", action="create_directory",
+            confirmed=True, path=_SANDBOX_SUBDIR,
+        )
+        with patch("os.mkdir") as mock_mkdir:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.CONTROL_PLANE_BLOCKED
+        mock_mkdir.assert_not_called()
+
+    def test_audit_failure_aborts_mkdir(self):
+        from assistant_os.agents.host_audit import HostAuditError
+        req = _mkdir_req()
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("os.path.isdir", return_value=False),
+            patch("assistant_os.agents.host_agent.emit_action_intent",
+                  side_effect=HostAuditError("fail")),
+            patch("os.mkdir") as mock_mkdir,
+        ):
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.AUDIT_FAILURE
+        mock_mkdir.assert_not_called()
+
+    def test_single_level_only_no_makedirs(self):
+        """Verify os.mkdir is called, not os.makedirs — enforcing single-level creation."""
+        req = _mkdir_req()
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("os.path.isdir", return_value=False),
+            patch("os.mkdir") as mock_mkdir,
+            patch("os.makedirs") as mock_makedirs,
+        ):
+            execute_host_action(req)
+        mock_mkdir.assert_called_once()
+        mock_makedirs.assert_not_called()
+
+
+# ===========================================================================
+# Z. Phase 5A — general invariants
+# ===========================================================================
+
+
+class TestPhase5AGeneralInvariants:
+    def test_write_does_not_break_read_text_file(self):
+        """write_text_file must not affect read_text_file's validation."""
+        activate_agent(HOST_AGENT_ID)
+        req = HostActionRequest(
+            execution_id="exec-z-read", action="read_text_file",
+            confirmed=True, path=r"C:\Users\Jorge\Documents\file.txt",
+        )
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("os.path.getsize", return_value=10),
+            patch("builtins.open", unittest.mock.mock_open(read_data="data")),
+        ):
+            result = execute_host_action(req)
+        assert result.ok is True  # read_text_file uses ALLOWED_DIRECTORIES, still works
+
+    def test_write_outside_sandbox_but_inside_read_allowlist_is_rejected(self):
+        """ALLOWED_DIRECTORIES ≠ WRITE_SANDBOX_DIRECTORIES.  A file allowed for
+        reading must not be writable unless it is also in the write sandbox."""
+        req = _write_req(path=r"C:\Users\Jorge\Documents\notes.txt")
+        with patch("builtins.open") as mock_open:
+            result = execute_host_action(req)
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.FILE_NOT_ALLOWED
+        mock_open.assert_not_called()
+
+    def test_write_sandbox_is_distinct_from_read_allowlist(self):
+        """Confirm the constants are separate objects with different contents."""
+        assert WRITE_SANDBOX_DIRECTORIES is not ALLOWED_DIRECTORIES
+        sandbox_set = set(p.lower() for p in WRITE_SANDBOX_DIRECTORIES)
+        read_set = set(p.lower() for p in ALLOWED_DIRECTORIES)
+        # They may overlap but the sandbox should be a strict subset or differ
+        # The key invariant: sandbox ≠ full read allowlist (otherwise separation is meaningless)
+        assert sandbox_set != read_set
+
+    def test_allowed_write_extensions_are_subset_of_safe_formats(self):
+        """No executable or script extension must be in ALLOWED_WRITE_EXTENSIONS."""
+        dangerous = {".exe", ".bat", ".cmd", ".ps1", ".vbs", ".sh", ".py", ".js"}
+        for ext in dangerous:
+            assert ext not in ALLOWED_WRITE_EXTENSIONS, f"{ext} must not be writable"
+
+    def test_error_codes_exist_for_all_write_actions(self):
+        """Smoke-check that the Phase 5A error codes are defined."""
+        assert HostErrorCode.WRITE_NOT_ALLOWED.value == "write_not_allowed"
+        assert HostErrorCode.DIRECTORY_ALREADY_EXISTS.value == "directory_already_exists"
+        assert HostErrorCode.PATH_CONFLICT.value == "path_conflict"
