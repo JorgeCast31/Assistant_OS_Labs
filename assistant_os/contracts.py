@@ -296,6 +296,7 @@ ACTION_CODE_EXPLAIN = "CODE_EXPLAIN"      # Explain / describe code (read-only)
 ACTION_CODE_REVIEW  = "CODE_REVIEW"       # Review / audit code (read-only)
 ACTION_CODE_FIX     = "CODE_FIX"          # Fix a bug (mutating: preview → confirm → apply)
 ACTION_CODE_CREATE  = "CODE_CREATE"       # Create a new file / class / function (mutating)
+ACTION_BASIC_COGNITIVE_EXECUTION = "BASIC_COGNITIVE_EXECUTION"  # Bounded cognitive worker dispatch
 ACTION_COMMAND = "COMMAND"                # Generic prefixed command (CODE/DOC/JOBS/BIZ)
 ACTION_CLASSIFY = "CLASSIFY"              # Classification only (no execution)
 ACTION_UNKNOWN = "UNKNOWN"                # Unknown action
@@ -484,6 +485,7 @@ _AUTO_EXECUTE_WHITELIST: frozenset[tuple[str, str]] = frozenset({
     (ACTION_FIN_COMMIT,    RISK_MEDIUM),  # Post-confirmation: user already approved
     (ACTION_FIN_CONFIRM,   RISK_MEDIUM),  # Post-confirmation: user already approved
     (ACTION_FIN_BATCH,     RISK_MEDIUM),  # Post-confirmation batch store
+<<<<<<< HEAD
     (ACTION_CODE_EXPLAIN,        RISK_LOW),    # Read-only: no side effects
     (ACTION_CODE_REVIEW,         RISK_LOW),    # Read-only: no side effects
     # HOST domain — read-only actions (no process launch, no side effects)
@@ -493,6 +495,11 @@ _AUTO_EXECUTE_WHITELIST: frozenset[tuple[str, str]] = frozenset({
     # ACTION_HOST_OPEN_APP, ACTION_HOST_OPEN_DIRECTORY, ACTION_HOST_OPEN_URL,
     # ACTION_HOST_OPEN_FILE → RISK_MEDIUM, confirm required (not whitelisted)
     # ACTION_HOST_CLOSE_PID → RISK_MEDIUM, confirm required (not whitelisted)
+=======
+    (ACTION_CODE_EXPLAIN,  RISK_LOW),     # Read-only: no side effects
+    (ACTION_CODE_REVIEW,   RISK_LOW),     # Read-only: no side effects
+    (ACTION_BASIC_COGNITIVE_EXECUTION, RISK_LOW),  # Bounded cognitive execution, no persistent mutation
+>>>>>>> f541173 (feat(mso): complete sovereign orchestration, cognitive worker, secure execution and operator control plane (Sprint 6–13))
 })
 
 
@@ -555,6 +562,7 @@ UI_INTENT_MAP: dict[str, str] = {
     ACTION_FIN_COMMIT:       "commit",
     ACTION_FIN_CONFIRM:      "confirm",
     ACTION_FIN_CHAPERON:     "chaperon",
+<<<<<<< HEAD
     ACTION_CODE_EXPLAIN:         "explain",
     ACTION_CODE_REVIEW:          "review",
     ACTION_CODE_FIX:             "fix",
@@ -570,6 +578,16 @@ UI_INTENT_MAP: dict[str, str] = {
     ACTION_HOST_LIST_DIRECTORY:  "list_directory",
     ACTION_HOST_OPEN_FILE:       "open_file",
     ACTION_HOST_READ_TEXT_FILE:  "read_text_file",
+=======
+    ACTION_CODE_EXPLAIN:     "explain",
+    ACTION_CODE_REVIEW:      "review",
+    ACTION_CODE_FIX:         "fix",
+    ACTION_CODE_CREATE:      "create",
+    ACTION_BASIC_COGNITIVE_EXECUTION: "delegate",
+    ACTION_COMMAND:          "command",
+    ACTION_CLASSIFY:         "classify",
+    ACTION_UNKNOWN:          "unknown",
+>>>>>>> f541173 (feat(mso): complete sovereign orchestration, cognitive worker, secure execution and operator control plane (Sprint 6–13))
 }
 
 
@@ -688,8 +706,12 @@ RESULT_TYPE_CODE_EXPLAIN = "code_explain"  # Read-only: code explanation
 RESULT_TYPE_CODE_REVIEW  = "code_review"   # Read-only: code review / audit
 RESULT_TYPE_CODE_PREVIEW = "code_preview"  # Mutating: change proposal preview (pre-confirm)
 RESULT_TYPE_CODE_APPLY   = "code_apply"    # Mutating: change applied (post-confirm)
+<<<<<<< HEAD
 # HOST domain result types (OpenClaw)
 RESULT_TYPE_HOST_ACTION  = "host_action"   # All HOST domain actions (action in data["action"])
+=======
+RESULT_TYPE_COGNITIVE_EXECUTION = "cognitive_execution"  # Bounded cognitive worker result
+>>>>>>> f541173 (feat(mso): complete sovereign orchestration, cognitive worker, secure execution and operator control plane (Sprint 6–13))
 
 
 

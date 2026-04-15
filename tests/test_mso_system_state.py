@@ -4,9 +4,13 @@ from unittest.mock import patch
 
 class TestTaskRegistryLifecycle(unittest.TestCase):
     def setUp(self):
+        from assistant_os.mso.capability_registry import reset_dynamic_capabilities
+        from assistant_os.mso.system_state import clear_operational_mode_override
         from assistant_os.mso.task_registry import reset_task_registry
         from assistant_os.mso.trace_aggregator import reset_trace_aggregator
 
+        reset_dynamic_capabilities()
+        clear_operational_mode_override()
         reset_task_registry()
         reset_trace_aggregator()
 
@@ -40,8 +44,12 @@ class TestTaskRegistryLifecycle(unittest.TestCase):
 
 class TestTraceAggregator(unittest.TestCase):
     def setUp(self):
+        from assistant_os.mso.capability_registry import reset_dynamic_capabilities
+        from assistant_os.mso.system_state import clear_operational_mode_override
         from assistant_os.mso.trace_aggregator import reset_trace_aggregator
 
+        reset_dynamic_capabilities()
+        clear_operational_mode_override()
         reset_trace_aggregator()
 
     def test_trace_chain_reconstructs_request_decision_and_result(self):
@@ -92,9 +100,13 @@ class TestTraceAggregator(unittest.TestCase):
 
 class TestSystemStateSnapshot(unittest.TestCase):
     def setUp(self):
+        from assistant_os.mso.capability_registry import reset_dynamic_capabilities
+        from assistant_os.mso.system_state import clear_operational_mode_override
         from assistant_os.mso.task_registry import reset_task_registry
         from assistant_os.mso.trace_aggregator import reset_trace_aggregator
 
+        reset_dynamic_capabilities()
+        clear_operational_mode_override()
         reset_task_registry()
         reset_trace_aggregator()
 
@@ -118,12 +130,87 @@ class TestSystemStateSnapshot(unittest.TestCase):
         self.assertEqual(domains["WORK"].active, 1)
         self.assertEqual(domains["CODE"].pending, 1)
 
+    def test_snapshot_exposes_operational_mode_revocations_and_anomalies(self):
+        from assistant_os.contracts import now_iso
+        from assistant_os.mso.capability_registry import revoke_capability
+        from assistant_os.mso.contracts import (
+            DeterministicDecisionTrace,
+            GovernanceConstraint,
+            GovernanceDecision,
+            GovernanceIntervention,
+            GovernanceReason,
+            TaskRecord,
+        )
+        from assistant_os.mso.system_state import build_system_state_snapshot, set_operational_mode
+        from assistant_os.mso.task_registry import register_task
+        from assistant_os.mso.trace_aggregator import begin_trace_chain
+
+        ts = now_iso()
+        set_operational_mode("RESTRICTED", reason="manual incident response")
+        revoke_capability(action="WORK_QUERY", domain="WORK", reason="manual revoke")
+        register_task(TaskRecord("failed-1", "ctx-f1", "tr-f1", "pl-f1", "WORK", "failed", ts, ts, "WORK_UPDATE"))
+        register_task(TaskRecord("failed-2", "ctx-f2", "tr-f2", "pl-f2", "WORK", "failed", ts, ts, "WORK_UPDATE"))
+
+        decision = GovernanceDecision(
+            governance_ref="governance:test",
+            action="BLOCK",
+            target_domain="WORK",
+            target_action="WORK_QUERY",
+            effective_execution_mode="blocked",
+            risk_level="medium",
+            justification="blocked",
+            reasons=[GovernanceReason(code="capability_revoked", detail="manual revoke")],
+            constraints=[GovernanceConstraint(kind="degrade", value="restricted")],
+            interventions=[GovernanceIntervention(kind="revoke_capability", value="WORK_QUERY", reason="manual revoke")],
+            capability_mode="deny",
+            base_execution_mode="auto",
+            operational_mode="RESTRICTED",
+            created_at=ts,
+        )
+        begin_trace_chain(
+            task_id="task-state",
+            context_id="ctx-state",
+            trace_id="trace-state",
+            plan_id="plan-state",
+            request_text="dame mis tareas",
+            operation="WORK_QUERY",
+            domain="WORK",
+            action="WORK_QUERY",
+            execution_mode="auto",
+            created_at=ts,
+            advisory_trace=None,
+            decision_trace=DeterministicDecisionTrace(
+                decision_ref="decision:plan-state",
+                context_id="ctx-state",
+                trace_id="trace-state",
+                plan_id="plan-state",
+                domain="WORK",
+                action="WORK_QUERY",
+                execution_mode="auto",
+                operation="WORK_QUERY",
+                preview="Consultar tareas",
+                created_at=ts,
+            ),
+            governance_trace=None,
+            governance_decision=decision,
+        )
+
+        snapshot = build_system_state_snapshot()
+
+        self.assertEqual(snapshot.operational_mode, "RESTRICTED")
+        self.assertEqual(len(snapshot.active_capability_revocations), 1)
+        self.assertGreaterEqual(len(snapshot.recent_anomaly_signals), 1)
+
 
 class TestOrchestratorStatePublication(unittest.TestCase):
     def setUp(self):
+        from assistant_os.mso.capability_registry import reset_dynamic_capabilities
+        from assistant_os.mso.system_state import clear_operational_mode_override
         from assistant_os.mso.task_registry import reset_task_registry
         from assistant_os.mso.trace_aggregator import reset_trace_aggregator
 
+        reset_dynamic_capabilities()
+        clear_operational_mode_override()
         reset_task_registry()
         reset_trace_aggregator()
 

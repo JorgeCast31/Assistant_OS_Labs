@@ -62,8 +62,13 @@ def action_domain(action: str) -> str:
         return "FIN"
     if action.startswith("CODE_"):
         return "CODE"
+<<<<<<< HEAD
     if action.startswith("HOST_"):
         return "HOST"
+=======
+    if action == "BASIC_COGNITIVE_EXECUTION":
+        return "COGNITIVE"
+>>>>>>> f541173 (feat(mso): complete sovereign orchestration, cognitive worker, secure execution and operator control plane (Sprint 6–13))
     return "UNKNOWN"
 
 

@@ -128,6 +128,23 @@ from .parsers.work_update_parser import (
     UpdateParseResult,
     ProposedChange,
 )
+from dataclasses import asdict
+from .mso.operator_actions import (
+    acknowledge_restriction,
+    clear_restriction,
+    extend_restriction,
+    get_recent_operator_actions as get_mso_operator_actions,
+    override_restriction,
+)
+from .mso.operator_auth import OperatorAuthorizationError, authorize_operator_read
+from .mso.restrictions import (
+    get_active_restrictions,
+    get_recent_expired_restrictions,
+    get_restriction,
+    get_restriction_history,
+    get_restrictions_by_source_event,
+    get_restrictions_by_type,
+)
 
 # Module-level variables for patching in tests
 NOTION_WORK_TRASH_DB_ID: str | None = None  # Set via environment or config later
@@ -1088,7 +1105,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if origin:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Assistant-Token")
+            self.send_header(
+                "Access-Control-Allow-Headers",
+                "Content-Type, X-Assistant-Token, X-Assistant-Admin-Token, X-Assistant-Operator-Id",
+            )
             self.send_header("Access-Control-Max-Age", "86400")
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -1138,6 +1158,19 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if not token:
             return _make_json_error(401, "Missing authentication header", "Unauthorized")
         return _make_json_error(401, "Invalid token", "Unauthorized")
+
+    def _check_admin_auth(self) -> AuthErrorResponse:
+        """Require the dedicated localhost-only admin token."""
+
+        admin_token = self.headers.get("X-Assistant-Admin-Token", "")
+        if not admin_token:
+            return _make_json_error(401, "Missing admin authentication header", "Unauthorized")
+        client_ip = self.client_address[0]
+        if client_ip not in ("127.0.0.1", "::1", "localhost"):
+            return _make_json_error(403, "Admin token only allowed from localhost", "Forbidden")
+        if not ASSISTANT_API_TOKEN or admin_token != ASSISTANT_API_TOKEN:
+            return _make_json_error(401, "Invalid admin token", "Unauthorized")
+        return None
     
     def _read_body(self, max_bytes: int = WEBHOOK_MAX_BYTES) -> ReadBodyResult:
         """Read request body. Returns (body, None) or (b'', error_response)."""
@@ -1165,6 +1198,23 @@ class WebhookHandler(BaseHTTPRequestHandler):
     def _get_path_without_query(self) -> str:
         """Get path without query parameters."""
         return self.path.split("?", 1)[0]
+
+    def _admin_operator_id(self, data: Optional[dict[str, Any]] = None) -> str:
+        """Extract the operator identity from header, body, or query params."""
+
+        header_id = self.headers.get("X-Assistant-Operator-Id", "").strip()
+        if header_id:
+            return header_id
+        if data and isinstance(data.get("operator_id"), str):
+            return data["operator_id"].strip()
+        params = self._parse_query_params()
+        return str(params.get("operator_id", "")).strip()
+
+    def _authorize_admin_read(self, operator_id: str):
+        try:
+            return authorize_operator_read(operator_id)
+        except OperatorAuthorizationError as exc:
+            raise PermissionError(str(exc)) from exc
     
     def do_POST(self) -> None:
         """Handle POST requests."""
@@ -1189,6 +1239,17 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # Route: /chat/process (Backend is King - unified chat processing)
         if path == "/chat/process":
             self._handle_chat_process(remote)
+            return
+
+        _admin_restriction_post = re.match(
+            r"^/admin/restrictions/([^/]+)/(acknowledge|clear|extend|override)$",
+            path,
+        )
+        if _admin_restriction_post:
+            self._handle_admin_restriction_action(
+                _admin_restriction_post.group(1),
+                _admin_restriction_post.group(2),
+            )
             return
 
         # M17: POST /chat/sessions  — create a new session
@@ -1336,6 +1397,24 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 })
             return
 
+        if path == "/admin/restrictions":
+            self._handle_admin_get_restrictions()
+            return
+
+        _admin_restriction_history = re.match(r"^/admin/restrictions/([^/]+)/history$", path)
+        if _admin_restriction_history:
+            self._handle_admin_get_restriction_history(_admin_restriction_history.group(1))
+            return
+
+        _admin_restriction = re.match(r"^/admin/restrictions/([^/]+)$", path)
+        if _admin_restriction:
+            self._handle_admin_get_restriction(_admin_restriction.group(1))
+            return
+
+        if path == "/admin/operator-actions":
+            self._handle_admin_get_operator_actions()
+            return
+
         # The legacy HTML UI (/ and /chat) was retired when the Next.js UI
         # in ui/ became the primary interface.  Return 410 Gone so callers
         # get a clear signal instead of a silent 404.
@@ -1380,6 +1459,204 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # 405 for everything else
         status, error = _make_json_error(405, "Method not allowed. Use POST.", "MethodNotAllowed")
         self._send_json_response(status, error)
+
+    def _handle_admin_get_restrictions(self) -> None:
+        auth_error = self._check_admin_auth()
+        if auth_error:
+            self._send_json_response(*auth_error)
+            return
+        operator_id = self._admin_operator_id()
+        if not operator_id:
+            self._send_json_response(*_make_json_error(400, "operator_id is required", "BadRequest"))
+            return
+        try:
+            operator = self._authorize_admin_read(operator_id)
+        except PermissionError as exc:
+            self._send_json_response(*_make_json_error(403, str(exc), "Forbidden"))
+            return
+
+        params = self._parse_query_params()
+        restriction_type = params.get("type", "").strip()
+        source_event_id = params.get("source_event_id", "").strip()
+        review_state = params.get("review_state", "").strip()
+        status_filter = params.get("status", "active").strip().lower()
+
+        if source_event_id:
+            restrictions = get_restrictions_by_source_event(source_event_id)
+        elif restriction_type:
+            restrictions = get_restrictions_by_type(restriction_type)
+        elif status_filter == "expired":
+            restrictions = get_recent_expired_restrictions(limit=50)
+        else:
+            restrictions = get_active_restrictions()
+
+        if review_state:
+            restrictions = [item for item in restrictions if item.review_state == review_state]
+
+        self._send_json_response(
+            200,
+            {
+                "ok": True,
+                "operator": asdict(operator),
+                "restrictions": [asdict(item) for item in restrictions],
+                "count": len(restrictions),
+            },
+        )
+
+    def _handle_admin_get_restriction(self, restriction_id: str) -> None:
+        auth_error = self._check_admin_auth()
+        if auth_error:
+            self._send_json_response(*auth_error)
+            return
+        operator_id = self._admin_operator_id()
+        if not operator_id:
+            self._send_json_response(*_make_json_error(400, "operator_id is required", "BadRequest"))
+            return
+        try:
+            operator = self._authorize_admin_read(operator_id)
+        except PermissionError as exc:
+            self._send_json_response(*_make_json_error(403, str(exc), "Forbidden"))
+            return
+
+        restriction = get_restriction(restriction_id)
+        if restriction is None:
+            self._send_json_response(*_make_json_error(404, f"Restriction {restriction_id!r} not found", "NotFound"))
+            return
+        self._send_json_response(200, {"ok": True, "operator": asdict(operator), "restriction": asdict(restriction)})
+
+    def _handle_admin_get_restriction_history(self, restriction_id: str) -> None:
+        auth_error = self._check_admin_auth()
+        if auth_error:
+            self._send_json_response(*auth_error)
+            return
+        operator_id = self._admin_operator_id()
+        if not operator_id:
+            self._send_json_response(*_make_json_error(400, "operator_id is required", "BadRequest"))
+            return
+        try:
+            operator = self._authorize_admin_read(operator_id)
+        except PermissionError as exc:
+            self._send_json_response(*_make_json_error(403, str(exc), "Forbidden"))
+            return
+
+        history = get_restriction_history(restriction_id)
+        if history.get("restriction") is None:
+            self._send_json_response(*_make_json_error(404, f"Restriction {restriction_id!r} not found", "NotFound"))
+            return
+        self._send_json_response(200, {"ok": True, "operator": asdict(operator), "history": history})
+
+    def _handle_admin_get_operator_actions(self) -> None:
+        auth_error = self._check_admin_auth()
+        if auth_error:
+            self._send_json_response(*auth_error)
+            return
+        operator_id = self._admin_operator_id()
+        if not operator_id:
+            self._send_json_response(*_make_json_error(400, "operator_id is required", "BadRequest"))
+            return
+        try:
+            operator = self._authorize_admin_read(operator_id)
+        except PermissionError as exc:
+            self._send_json_response(*_make_json_error(403, str(exc), "Forbidden"))
+            return
+
+        params = self._parse_query_params()
+        actions = get_mso_operator_actions(
+            limit=50,
+            operator_id=params.get("filter_operator_id", "").strip(),
+            restriction_id=params.get("restriction_id", "").strip(),
+            action_type=params.get("action_type", "").strip(),
+        )
+        self._send_json_response(
+            200,
+            {
+                "ok": True,
+                "operator": asdict(operator),
+                "operator_actions": [item.get("payload", item) for item in actions],
+                "count": len(actions),
+            },
+        )
+
+    def _handle_admin_restriction_action(self, restriction_id: str, action_name: str) -> None:
+        auth_error = self._check_admin_auth()
+        if auth_error:
+            self._send_json_response(*auth_error)
+            return
+
+        result = self._read_body()
+        if result[1] is not None:
+            self._send_json_response(*result[1])
+            return
+
+        data: dict[str, Any] = {}
+        if result[0]:
+            parsed, json_err = _safe_parse_json(result[0])
+            if json_err is not None:
+                self._send_json_response(*json_err)
+                return
+            if isinstance(parsed, dict):
+                data = parsed
+
+        operator_id = self._admin_operator_id(data)
+        if not operator_id:
+            self._send_json_response(*_make_json_error(400, "operator_id is required", "BadRequest"))
+            return
+        reason = str(data.get("reason", "")).strip()
+        if not reason:
+            self._send_json_response(*_make_json_error(400, "reason is required", "BadRequest"))
+            return
+
+        try:
+            if action_name == "acknowledge":
+                action = acknowledge_restriction(
+                    operator_id=operator_id,
+                    restriction_id=restriction_id,
+                    reason=reason,
+                    trace_id=str(data.get("trace_id", "")).strip(),
+                )
+            elif action_name == "clear":
+                action = clear_restriction(
+                    operator_id=operator_id,
+                    restriction_id=restriction_id,
+                    reason=reason,
+                    trace_id=str(data.get("trace_id", "")).strip(),
+                )
+            elif action_name == "extend":
+                action = extend_restriction(
+                    operator_id=operator_id,
+                    restriction_id=restriction_id,
+                    reason=reason,
+                    expires_at=str(data.get("expires_at", "")).strip(),
+                    trace_id=str(data.get("trace_id", "")).strip(),
+                )
+            elif action_name == "override":
+                action = override_restriction(
+                    operator_id=operator_id,
+                    restriction_id=restriction_id,
+                    reason=reason,
+                    override_mode=str(data.get("override_mode", "allow")).strip() or "allow",
+                    expires_at=str(data.get("expires_at", "")).strip(),
+                    trace_id=str(data.get("trace_id", "")).strip(),
+                )
+            else:
+                self._send_json_response(*_make_json_error(404, f"Unsupported admin action: {action_name}", "NotFound"))
+                return
+        except OperatorAuthorizationError as exc:
+            self._send_json_response(*_make_json_error(403, str(exc), "Forbidden"))
+            return
+        except ValueError as exc:
+            self._send_json_response(*_make_json_error(400, str(exc), "BadRequest"))
+            return
+
+        restriction = get_restriction(restriction_id)
+        self._send_json_response(
+            200,
+            {
+                "ok": True,
+                "action": asdict(action),
+                "restriction": asdict(restriction) if restriction else None,
+            },
+        )
     
     # ── M21: Message search ───────────────────────────────────────────────────
 

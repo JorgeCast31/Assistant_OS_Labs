@@ -35,18 +35,25 @@ from dataclasses import asdict
 import logging
 
 from ..contracts import (
+    ACTION_BASIC_COGNITIVE_EXECUTION,
     CanonicalRequest,
     DomainResult,
-    now_iso,
-    make_domain_result,
     ACTION_UNKNOWN,
+<<<<<<< HEAD
     RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED,
     RESULT_TYPE_PLAN_GENERATED,
     RESULT_TYPE_CONFIRM_ERROR,
+=======
+>>>>>>> f541173 (feat(mso): complete sovereign orchestration, cognitive worker, secure execution and operator control plane (Sprint 6–13))
     EXECUTION_MODE_AUTO,
+    RESULT_TYPE_PLAN_GENERATED,
+    RESULT_TYPE_COGNITIVE_EXECUTION,
+    RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED,
     EXECUTION_MODE_BLOCKED,
-    EXECUTION_MODE_CONFIRM,
     EXECUTION_MODE_CLARIFY,
+    EXECUTION_MODE_CONFIRM,
+    make_domain_result,
+    now_iso,
 )
 
 _log = logging.getLogger(__name__)
@@ -128,13 +135,16 @@ def _evaluate_mso_governance(
 ) -> object:
     from ..mso.governance_engine import evaluate_governance
     from ..mso.risk_engine import evaluate_risk
+    from ..mso.system_state import build_system_state_snapshot
 
+    system_state = build_system_state_snapshot()
     risk = evaluate_risk(
         domain=plan.get("domain", "UNKNOWN"),
         action=plan.get("action", ""),
         risk_level=plan.get("risk_level", "medium"),
         execution_mode=execution_mode,
         advisory_trace=advisory_trace,
+        system_state=system_state,
     )
     return evaluate_governance(
         action=plan.get("action", ""),
@@ -142,6 +152,7 @@ def _evaluate_mso_governance(
         base_execution_mode=execution_mode,
         risk=risk,
         created_at=now_iso(),
+        system_state=system_state,
     )
 
 
@@ -149,11 +160,15 @@ def _log_governance_trace(governance_trace: dict | None) -> None:
     if not governance_trace:
         return
     _log.info(
-        "mso governance action=%s base_mode=%s effective_mode=%s risk=%s",
+        "mso governance action=%s target=%s/%s base_mode=%s effective_mode=%s risk=%s op_mode=%s factors=%s",
         governance_trace.get("action", ""),
+        governance_trace.get("target_domain", ""),
+        governance_trace.get("target_action", ""),
         governance_trace.get("base_execution_mode", ""),
         governance_trace.get("effective_execution_mode", ""),
         governance_trace.get("risk_level", ""),
+        governance_trace.get("operational_mode", ""),
+        ",".join(governance_trace.get("dynamic_factors") or []),
     )
 
 
@@ -173,6 +188,62 @@ def _attach_governance_result_metadata(result: DomainResult, governance_trace: d
     return result
 
 
+def _is_cognitive_execution(plan: dict) -> bool:
+    return plan.get("action") == ACTION_BASIC_COGNITIVE_EXECUTION
+
+
+def _dispatch_cognitive_execution(plan: dict, context_id: str) -> DomainResult:
+    """Dispatch a bounded BASIC_COGNITIVE_EXECUTION task through the local worker."""
+    from ..executors.cognitive_worker_runner import run_task_in_subprocess
+    from ..mso.delegation import coerce_delegation_task, coerce_sovereign_intent, issue_execution_capability
+
+    payload = plan.get("domain_payload") or {}
+    try:
+        sovereign_intent = coerce_sovereign_intent(payload.get("sovereign_intent") or {})
+        delegation_task = coerce_delegation_task(payload.get("delegation_task") or {})
+        capability = issue_execution_capability(delegation_task)
+    except Exception as exc:
+        return make_domain_result(
+            ok=False,
+            result_type=RESULT_TYPE_COGNITIVE_EXECUTION,
+            domain="COGNITIVE",
+            message="Delegacion cognitiva invalida.",
+            data={"plan": dict(plan)},
+            error={"type": "ExecutionPlanViolation", "message": str(exc)},
+            trace_id=plan.get("trace_id"),
+            plan_id=plan.get("plan_id"),
+        )
+
+    report, escalation, security_events = run_task_in_subprocess(delegation_task, capability)
+    return make_domain_result(
+        ok=report.status == "completed" and not report.requires_escalation,
+        result_type=RESULT_TYPE_COGNITIVE_EXECUTION,
+        domain="COGNITIVE",
+        message=report.findings_summary,
+        data={
+            "type": RESULT_TYPE_COGNITIVE_EXECUTION,
+            "sovereign_intent": asdict(sovereign_intent),
+            "delegation_task": asdict(delegation_task),
+            "execution_capability": asdict(capability),
+            "execution_report": asdict(report),
+            "escalation_request": asdict(escalation) if escalation else None,
+            "worker_security_events": [asdict(event) for event in security_events],
+            "worker_id": report.worker_id,
+            "context_id": context_id,
+        },
+        error=(
+            {
+                "type": "EscalationRequired",
+                "message": escalation.reason if escalation else "Cognitive execution did not complete cleanly.",
+            }
+            if report.requires_escalation
+            else None
+        ),
+        trace_id=plan.get("trace_id"),
+        plan_id=plan.get("plan_id"),
+    )
+
+
 def _publish_mso_observation(
     *,
     req: CanonicalRequest,
@@ -189,7 +260,7 @@ def _publish_mso_observation(
     try:
         from ..mso.contracts import DeterministicDecisionTrace, GovernanceDecision, TaskRecord
         from ..mso.task_registry import register_task, transition_task
-        from ..mso.trace_aggregator import begin_trace_chain, finalize_trace_chain
+        from ..mso.trace_aggregator import attach_cognitive_execution, attach_worker_security_events, begin_trace_chain, finalize_trace_chain
 
         timestamp = now_iso()
         plan_id = plan.get("plan_id", "")
@@ -264,6 +335,23 @@ def _publish_mso_observation(
             result=result,
             execution_id=result.get("plan_id", "") or plan_id,
         )
+        result_data = result.get("data") or {}
+        if result_data.get("execution_report") and result_data.get("delegation_task"):
+            from ..mso.contracts import DelegationTask, EscalationRequest, ExecutionCapability, ExecutionReport, SovereignIntent, WorkerSecurityEvent
+
+            attach_cognitive_execution(
+                plan_id,
+                sovereign_intent=(SovereignIntent(**result_data["sovereign_intent"]) if result_data.get("sovereign_intent") else None),
+                delegation_task=DelegationTask(**result_data["delegation_task"]),
+                execution_capability=ExecutionCapability(**result_data["execution_capability"]),
+                execution_report=ExecutionReport(**result_data["execution_report"]),
+                escalation_request=(EscalationRequest(**result_data["escalation_request"]) if result_data.get("escalation_request") else None),
+            )
+            if result_data.get("worker_security_events"):
+                attach_worker_security_events(
+                    plan_id,
+                    [WorkerSecurityEvent(**item) for item in result_data.get("worker_security_events") or []],
+                )
 
         if executed:
             terminal_status = "completed" if result.get("ok") else "failed"
@@ -358,7 +446,11 @@ def handle_request(
             requires_confirmation=meta.get("requires_confirmation", False),
         )
         if meta.get("domain_payload"):
+<<<<<<< HEAD
             structured_plan["domain_payload"] = meta["domain_payload"]
+=======
+            structured_plan["domain_payload"] = dict(meta.get("domain_payload") or {})
+>>>>>>> f541173 (feat(mso): complete sovereign orchestration, cognitive worker, secure execution and operator control plane (Sprint 6–13))
         structured_intent = {
             "operation": structured_action,
             "domain": meta.get("domain", derived_domain),
@@ -389,6 +481,19 @@ def handle_request(
         plan_for_exec["raw_text"] = text
 
         if execution_mode == EXECUTION_MODE_AUTO:
+            if _is_cognitive_execution(structured_plan):
+                result = _dispatch_cognitive_execution(plan_for_exec, context_id)
+                return _publish_mso_observation(
+                    req=req,
+                    intent=structured_intent,
+                    plan=structured_plan,
+                    execution_mode=governance.base_execution_mode,
+                    final_execution_mode=execution_mode,
+                    advisory_trace=advisory_trace,
+                    governance_trace=governance_trace,
+                    result=result,
+                    executed=True,
+                )
             pipeline = get_pipeline(derived_domain)
             if pipeline:
                 result = pipeline(plan_for_exec, context_id)
@@ -514,6 +619,19 @@ def handle_request(
     # execution_mode == "auto": policy determined this action is safe to execute
     # immediately. Only actions in _AUTO_EXECUTE_WHITELIST reach this path.
     if execution_mode == EXECUTION_MODE_AUTO:
+        if _is_cognitive_execution(plan):
+            result = _dispatch_cognitive_execution(plan_for_exec, context_id)
+            return _publish_mso_observation(
+                req=req,
+                intent=intent,
+                plan=plan,
+                execution_mode=governance.base_execution_mode,
+                final_execution_mode=execution_mode,
+                advisory_trace=advisory_trace,
+                governance_trace=governance_trace,
+                result=result,
+                executed=True,
+            )
         pipeline = get_pipeline(action_domain(action))
         if pipeline:
             result = pipeline(plan_for_exec, context_id)

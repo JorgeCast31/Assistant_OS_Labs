@@ -48,11 +48,17 @@ def _req(text: str) -> dict:
 
 class TestOrchestratorAutoExecute(unittest.TestCase):
     def setUp(self):
+        from assistant_os.mso.capability_registry import reset_dynamic_capabilities
+        from assistant_os.mso.system_state import clear_operational_mode_override
         from assistant_os.mso.task_registry import reset_task_registry
         from assistant_os.mso.trace_aggregator import reset_trace_aggregator
+        from assistant_os.storage.mso_store import clear_mso_store
 
+        reset_dynamic_capabilities()
+        clear_operational_mode_override()
         reset_task_registry()
         reset_trace_aggregator()
+        clear_mso_store()
 
     @patch("assistant_os.integrations.work_gateway.check_notion_available", return_value=True)
     @patch("assistant_os.integrations.work_gateway.query_work_db",
@@ -92,11 +98,17 @@ class TestOrchestratorAutoExecute(unittest.TestCase):
 
 class TestOrchestratorConfirmRequired(unittest.TestCase):
     def setUp(self):
+        from assistant_os.mso.capability_registry import reset_dynamic_capabilities
+        from assistant_os.mso.system_state import clear_operational_mode_override
         from assistant_os.mso.task_registry import reset_task_registry
         from assistant_os.mso.trace_aggregator import reset_trace_aggregator
+        from assistant_os.storage.mso_store import clear_mso_store
 
+        reset_dynamic_capabilities()
+        clear_operational_mode_override()
         reset_task_registry()
         reset_trace_aggregator()
+        clear_mso_store()
 
     @patch("assistant_os.classifier.classify_text",
            return_value={
@@ -148,11 +160,17 @@ class TestOrchestratorPolicyIsAuthoritative(unittest.TestCase):
     confirming that the orchestrator respects it, not plan.requires_confirmation.
     """
     def setUp(self):
+        from assistant_os.mso.capability_registry import reset_dynamic_capabilities
+        from assistant_os.mso.system_state import clear_operational_mode_override
         from assistant_os.mso.task_registry import reset_task_registry
         from assistant_os.mso.trace_aggregator import reset_trace_aggregator
+        from assistant_os.storage.mso_store import clear_mso_store
 
+        reset_dynamic_capabilities()
+        clear_operational_mode_override()
         reset_task_registry()
         reset_trace_aggregator()
+        clear_mso_store()
 
     @patch("assistant_os.core.policy.build_policy")
     @patch("assistant_os.integrations.work_gateway.check_notion_available", return_value=True)
