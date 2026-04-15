@@ -1,6 +1,7 @@
 """
 host_agent.py — HOST domain executor for Phase 1 + Phase 2 + Phase 2.5 hardening
-              + Phase 3A read-only filesystem + Phase 5A sandboxed write.
+              + Phase 3A read-only filesystem + Phase 5A sandboxed write
+              + Phase 5C sandbox hardening + atomic writes + lifecycle enrichment.
 
 Canonical identity
 ------------------
@@ -47,6 +48,19 @@ Phase 5A additions
 - _handle_write_text_file   — create/overwrite with overwrite explicitly allowed
 - _handle_append_text_file  — append-only, file must pre-exist
 - _handle_create_directory  — single-level mkdir, no recursion
+
+Phase 5C hardening
+------------------
+- _WINDOWS_RESERVED_STEMS / _reject_unsafe_path_components() — rejects trailing
+  dots, trailing spaces, and reserved Windows device names (NUL, CON, COM*, LPT*)
+  from write-path components before sandbox containment is checked.
+- write_text_file atomic overwrite — NamedTemporaryFile + os.replace() so an
+  interrupted overwrite never leaves a partially-written destination.  Create uses
+  open("x") (exclusive) for a fail-safe race condition.
+- HostActionResult.atomic_replace_used — observable in response + audit result string.
+- _IN_FLIGHT enriched — action + started_at stored at registration for observability.
+- Stale-PID audit — close_pid emits "stale_cleaned" outcome for each PID reconcile
+  removes before the ownership check.
 """
 
 from __future__ import annotations
@@ -55,6 +69,7 @@ import ntpath
 import os
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -173,6 +188,66 @@ ALLOWED_WRITE_EXTENSIONS: frozenset[str] = frozenset({
 # and small JSON blobs; small enough to prevent accidental disk exhaustion
 # and to keep audit metadata (content length) meaningful.
 MAX_WRITE_SIZE_BYTES: int = 65_536
+
+# ---------------------------------------------------------------------------
+# Windows-unsafe path component detection  (Phase 5C)
+# ---------------------------------------------------------------------------
+#
+# Windows silently strips trailing dots and trailing spaces from file/dir names,
+# creating a mismatch between the path the caller intended and the path actually
+# written.  Additionally, certain device names bypass the filesystem entirely.
+#
+# We reject these in validate_allowed_write_path / validate_allowed_write_directory
+# BEFORE the sandbox containment check, so the caller gets a clear error.
+#
+# Reserved device stems (case-insensitive): CON, PRN, AUX, NUL, COM1-COM9, LPT1-LPT9.
+# Reference: https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file
+_WINDOWS_RESERVED_STEMS: frozenset[str] = frozenset({
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+})
+
+
+def _reject_unsafe_path_components(norm_path: str) -> tuple[bool, str]:
+    """
+    Reject path components that are unsafe on Windows.
+
+    MUST be called on an ntpath.normpath()-normalised path.
+
+    Checks applied to every non-drive component:
+    1. Trailing dot:   "file.txt."  → Windows strips it → "file.txt"
+                       Audit mismatch; sandbox bypass risk on case-insensitive FS.
+    2. Trailing space: "file .txt"  → Windows strips trailing spaces from stem.
+                       Same mismatch risk.
+    3. Reserved names: NUL, CON, PRN, AUX, COM1-COM9, LPT1-LPT9.
+                       These map to Windows device objects, not the filesystem.
+                       Opening "NUL.txt" writes to the NUL device, not a file.
+
+    The check on the stem (part before first ".") covers both bare names
+    (NUL) and name-with-extension (NUL.txt, COM1.json).
+
+    Returns (True, "") if safe, (False, reason) if rejected.
+    """
+    pure = PureWindowsPath(norm_path)
+    for part in pure.parts:
+        # Skip the drive root component (e.g. "C:\\")
+        if part.upper().endswith(":\\") or part == "\\":
+            continue
+        # Trailing dot or trailing space
+        if part.endswith(".") or part.endswith(" "):
+            return False, (
+                f"path component {part!r} has a trailing dot or space "
+                f"(Windows silently strips these, creating an audit mismatch)"
+            )
+        # Reserved device name: compare stem (before first dot) case-insensitively
+        stem = part.split(".")[0].upper()
+        if stem in _WINDOWS_RESERVED_STEMS:
+            return False, (
+                f"path component {part!r} uses a reserved Windows device name "
+                f"({stem!r}); this maps to a device, not a filesystem file"
+            )
+    return True, ""
 
 
 # ---------------------------------------------------------------------------
@@ -294,8 +369,9 @@ class HostActionResult:
     error_code:    Optional[HostErrorCode] = None
     entries:       Optional[list] = None
     content:       Optional[str] = None
-    bytes_written: Optional[int] = None   # Phase 5A: bytes written (write/append ops)
-    write_mode:    Optional[str] = None   # Phase 5A: "create" | "overwrite" | "append"
+    bytes_written:       Optional[int]  = None   # Phase 5A: bytes written (write/append ops)
+    write_mode:          Optional[str]  = None   # Phase 5A: "create" | "overwrite" | "append"
+    atomic_replace_used: Optional[bool] = None   # Phase 5C: True if overwrite used temp+replace
 
 
 # ---------------------------------------------------------------------------
@@ -447,23 +523,33 @@ def validate_allowed_write_path(path: str) -> tuple[bool, str]:
     """
     Validate that path is a file location strictly inside WRITE_SANDBOX_DIRECTORIES.
 
-    Semantics are identical to validate_allowed_file_path but use a different
-    allowlist (WRITE_SANDBOX_DIRECTORIES instead of ALLOWED_DIRECTORIES).
+    Phase 5C hardening additions (checked before sandbox containment):
+    - _reject_unsafe_path_components: trailing dots, trailing spaces,
+      reserved Windows device names (NUL, CON, COM*, LPT*).
 
     Algorithm
     ---------
-    Same ntpath + PureWindowsPath normalisation as the read helpers:
-    - ntpath.normpath resolves ".." with Windows rules on all platforms.
-    - PureWindowsPath.is_relative_to() is case-insensitive and component-based.
-    - Equality (path == sandbox root) is explicitly rejected: a file must live
-      *inside* the sandbox, not at its root.
+    1. Reject empty path.
+    2. ntpath.normpath: resolve ".." / "." with Windows rules on all platforms.
+    3. _reject_unsafe_path_components: catch Windows-unsafe components.
+    4. PureWindowsPath.is_relative_to(): case-insensitive, component-based
+       containment check against each WRITE_SANDBOX_DIRECTORIES entry.
+    5. Equality to sandbox root is explicitly rejected: a file must live
+       *inside* the sandbox, not at its root.
 
     Returns (True, "") on success, (False, reason) on failure.
     """
     if not path:
         return False, "path is empty"
 
-    norm = PureWindowsPath(ntpath.normpath(path))
+    norm_str = ntpath.normpath(path)
+
+    # Phase 5C: reject unsafe Windows path components before containment check
+    ok, reason = _reject_unsafe_path_components(norm_str)
+    if not ok:
+        return False, reason
+
+    norm = PureWindowsPath(norm_str)
 
     for sandbox in WRITE_SANDBOX_DIRECTORIES:
         sandbox_norm = PureWindowsPath(ntpath.normpath(sandbox))
@@ -485,12 +571,22 @@ def validate_allowed_write_directory(path: str) -> tuple[bool, str]:
     Used by create_directory: the target directory may be the sandbox root
     itself (already exists case, caught later) or a subdirectory within it.
 
+    Phase 5C hardening: same _reject_unsafe_path_components check as
+    validate_allowed_write_path — applies to directory names too.
+
     Returns (True, "") on success, (False, reason) on failure.
     """
     if not path:
         return False, "path is empty"
 
-    norm = PureWindowsPath(ntpath.normpath(path))
+    norm_str = ntpath.normpath(path)
+
+    # Phase 5C: reject unsafe Windows path components before containment check
+    ok, reason = _reject_unsafe_path_components(norm_str)
+    if not ok:
+        return False, reason
+
+    norm = PureWindowsPath(norm_str)
 
     for sandbox in WRITE_SANDBOX_DIRECTORIES:
         sandbox_norm = PureWindowsPath(ntpath.normpath(sandbox))
@@ -537,7 +633,7 @@ def _handle_open_app(request: HostActionRequest) -> HostActionResult:
     proc = subprocess.Popen([executable])
     pid = proc.pid
 
-    register_in_flight(HOST_AGENT_ID, pid, request.execution_id)
+    register_in_flight(HOST_AGENT_ID, pid, request.execution_id, action="open_app")
 
     emit_host_outcome(
         agent_id=HOST_AGENT_ID,
@@ -573,8 +669,18 @@ def _handle_close_pid(request: HostActionRequest) -> HostActionResult:
             error_code=HostErrorCode.INVALID_PID,
         )
 
-    # Reconcile first — remove dead PIDs so ownership check reflects reality
-    reconcile_in_flight(HOST_AGENT_ID)
+    # Reconcile first — remove dead PIDs so ownership check reflects reality.
+    # Phase 5C: audit any stale PIDs that were cleaned up as a side effect.
+    reconcile_result = reconcile_in_flight(HOST_AGENT_ID)
+    for stale in reconcile_result.cleaned:
+        emit_action_outcome(
+            agent_id=HOST_AGENT_ID,
+            execution_id=stale.get("execution_id", request.execution_id),
+            action="close_pid",
+            target=str(stale["pid"]),
+            result="stale_cleaned",
+            pid=stale["pid"],
+        )
 
     # Ownership check — only pids registered under HOST_AGENT_ID are allowed
     records = get_in_flight(HOST_AGENT_ID)
@@ -669,7 +775,7 @@ def _handle_open_directory(request: HostActionRequest) -> HostActionResult:
     proc = subprocess.Popen([APP_REGISTRY["explorer"], request.path])
     pid = proc.pid
 
-    register_in_flight(HOST_AGENT_ID, pid, request.execution_id)
+    register_in_flight(HOST_AGENT_ID, pid, request.execution_id, action="open_directory")
 
     emit_action_outcome(
         agent_id=HOST_AGENT_ID,
@@ -1033,13 +1139,28 @@ def _handle_write_text_file(request: HostActionRequest) -> HostActionResult:
     """
     write_text_file: create or overwrite a text file inside the write sandbox.
 
-    Design decisions
-    ----------------
-    - Overwrite IS permitted when the existing file is inside the sandbox and
-      the extension is allowed.  The write_mode field distinguishes "create"
-      from "overwrite" in the audit trail.
+    Phase 5C — Atomic write strategy
+    ----------------------------------
+    create (file does not yet exist):
+        open(path, "x", utf-8) — exclusive create.  Fails cleanly with
+        WRITE_NOT_ALLOWED if a race produces the file between isfile() and
+        open(); does not corrupt any existing file.
+
+    overwrite (file already exists):
+        1. Write content to a NamedTemporaryFile in the same directory.
+        2. os.replace(tmp, dest) — atomic on the same filesystem on both
+           POSIX (rename(2)) and Windows (ReplaceFile / MoveFileEx).
+        3. If replace fails, the temp file is unlinked and an
+           "atomic_replace_failed" outcome is audited.
+        Rationale: direct open("w") truncates the destination immediately,
+        leaving a zero-byte file if the write is interrupted.
+
+    Design decisions (unchanged from Phase 5A)
+    -------------------------------------------
+    - write_mode distinguishes "create" / "overwrite" in audit and response.
     - Content is validated for utf-8 encodability (surrogates rejected).
-    - Audit records path + content length in bytes; full content is NEVER logged.
+    - Audit records path + byte count; full content is NEVER logged.
+    - atomic_replace_used=True is set for overwrite; False for create.
 
     Validation order
     ----------------
@@ -1048,7 +1169,8 @@ def _handle_write_text_file(request: HostActionRequest) -> HostActionResult:
     3. content encodable as utf-8      → INVALID_ENCODING
     4. encoded length ≤ MAX_WRITE_SIZE_BYTES → FILE_TOO_LARGE
     5. emit_action_intent              → AUDIT_FAILURE aborts
-    6. open(path, "w", utf-8)          → WRITE_NOT_ALLOWED on OSError
+    6a. create: open(path, "x", utf-8)
+    6b. overwrite: NamedTemporaryFile → os.replace()
     7. emit_action_outcome
     """
     ok, reason = validate_allowed_write_path(request.path)
@@ -1092,6 +1214,7 @@ def _handle_write_text_file(request: HostActionRequest) -> HostActionResult:
 
     norm_path = ntpath.normpath(request.path)
     write_mode = "overwrite" if os.path.isfile(norm_path) else "create"
+    atomic_replace_used = (write_mode == "overwrite")
 
     try:
         emit_action_intent(
@@ -1108,33 +1231,92 @@ def _handle_write_text_file(request: HostActionRequest) -> HostActionResult:
             error_code=HostErrorCode.AUDIT_FAILURE,
         )
 
-    try:
-        with open(norm_path, "w", encoding="utf-8") as fh:
-            fh.write(request.content)
-    except OSError as exc:
-        emit_action_outcome(
-            agent_id=HOST_AGENT_ID,
-            execution_id=request.execution_id,
-            action="write_text_file",
-            target=request.path,
-            result="write_failed",
-            pid=None,
-        )
-        return HostActionResult(
-            ok=False, action="write_text_file",
-            execution_id=request.execution_id,
-            error=f"could not write file: {exc}",
-            error_code=HostErrorCode.WRITE_NOT_ALLOWED,
-        )
+    if write_mode == "overwrite":
+        # Atomic overwrite: write to temp in the same directory, then rename.
+        # Same filesystem guaranteed → os.replace is atomic (POSIX rename(2);
+        # Windows ReplaceFile / MoveFileEx with same-volume guarantee).
+        dir_path = os.path.dirname(norm_path) or "."
+        tmp_path: Optional[str] = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8",
+                dir=dir_path, suffix=".tmp", delete=False,
+            ) as tf:
+                tf.write(request.content)
+                tmp_path = tf.name
+        except OSError as exc:
+            emit_action_outcome(
+                agent_id=HOST_AGENT_ID,
+                execution_id=request.execution_id,
+                action="write_text_file",
+                target=request.path,
+                result="write_failed",
+                pid=None,
+            )
+            return HostActionResult(
+                ok=False, action="write_text_file",
+                execution_id=request.execution_id,
+                error=f"could not write temp file for atomic overwrite: {exc}",
+                error_code=HostErrorCode.WRITE_NOT_ALLOWED,
+            )
+        try:
+            os.replace(tmp_path, norm_path)
+        except OSError as exc:
+            # Cleanup: remove the orphaned temp file; do not leave state ambiguous.
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            emit_action_outcome(
+                agent_id=HOST_AGENT_ID,
+                execution_id=request.execution_id,
+                action="write_text_file",
+                target=request.path,
+                result="atomic_replace_failed",
+                pid=None,
+            )
+            return HostActionResult(
+                ok=False, action="write_text_file",
+                execution_id=request.execution_id,
+                error=f"atomic replace failed — destination unchanged: {exc}",
+                error_code=HostErrorCode.WRITE_NOT_ALLOWED,
+                atomic_replace_used=True,
+            )
+    else:
+        # create: exclusive open — fails cleanly if file was created in a race
+        try:
+            with open(norm_path, "x", encoding="utf-8") as fh:
+                fh.write(request.content)
+        except OSError as exc:
+            emit_action_outcome(
+                agent_id=HOST_AGENT_ID,
+                execution_id=request.execution_id,
+                action="write_text_file",
+                target=request.path,
+                result="write_failed",
+                pid=None,
+            )
+            return HostActionResult(
+                ok=False, action="write_text_file",
+                execution_id=request.execution_id,
+                error=f"could not create file: {exc}",
+                error_code=HostErrorCode.WRITE_NOT_ALLOWED,
+            )
 
     bytes_written = len(encoded)
+    # Audit result distinguishes atomic overwrite from direct create.
+    audit_result = (
+        f"overwrite:atomic:{bytes_written}b"
+        if atomic_replace_used
+        else f"create:{bytes_written}b"
+    )
 
     emit_action_outcome(
         agent_id=HOST_AGENT_ID,
         execution_id=request.execution_id,
         action="write_text_file",
         target=request.path,
-        result=f"{write_mode}:{bytes_written}b",
+        result=audit_result,
         pid=None,
     )
 
@@ -1143,6 +1325,7 @@ def _handle_write_text_file(request: HostActionRequest) -> HostActionResult:
         execution_id=request.execution_id,
         bytes_written=bytes_written,
         write_mode=write_mode,
+        atomic_replace_used=atomic_replace_used,
     )
 
 

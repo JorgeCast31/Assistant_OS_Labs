@@ -227,6 +227,9 @@ def _wrap_agent_result(agent_result, plan: dict, agent_action: str) -> DomainRes
         data["bytes_written"] = agent_result.bytes_written
     if agent_result.write_mode is not None:
         data["write_mode"] = agent_result.write_mode
+    # Phase 5C — atomic write observability
+    if agent_result.atomic_replace_used is not None:
+        data["atomic_replace_used"] = agent_result.atomic_replace_used
     # Include path for write actions so the caller knows what was written.
     # Never include the content itself — only metadata.
     _domain_payload = plan.get("domain_payload") or {}

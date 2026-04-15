@@ -46,6 +46,8 @@ from assistant_os.agents.host_agent import (
     HostActionRequest,
     HostActionResult,
     _reset_host_agent_state_for_tests,
+    _WINDOWS_RESERVED_STEMS,
+    _reject_unsafe_path_components,
     execute_host_action,
     validate_allowed_directory,
     validate_allowed_url,
@@ -65,6 +67,7 @@ from assistant_os.core.control_plane import (
     get_in_flight,
     kill_switch,
     quarantine_agent,
+    reconcile_in_flight,
     register_in_flight,
 )
 
@@ -474,7 +477,7 @@ class TestInFlightRegistration:
         ):
             execute_host_action(req)
 
-        mock_rif.assert_called_once_with(HOST_AGENT_ID, 8888, "exec-rif-1")
+        mock_rif.assert_called_once_with(HOST_AGENT_ID, 8888, "exec-rif-1", action="open_app")
 
 
 # ===========================================================================
@@ -1688,13 +1691,18 @@ class TestWriteTextFile:
 
     def test_write_overwrite_is_permitted(self):
         req = _write_req(content="updated content")
+        mock_ntf_ctx = MagicMock()
+        mock_ntf_ctx.__enter__.return_value.name = "/tmp/test.tmp"
+        mock_ntf_ctx.__exit__ = MagicMock(return_value=False)
         with (
             patch("os.path.isfile", return_value=True),
-            patch("builtins.open", unittest.mock.mock_open()),
+            patch("tempfile.NamedTemporaryFile", return_value=mock_ntf_ctx),
+            patch("os.replace"),
         ):
             result = execute_host_action(req)
         assert result.ok is True
         assert result.write_mode == "overwrite"
+        assert result.atomic_replace_used is True
 
     def test_bytes_written_reported_correctly(self):
         content = "abc"
@@ -2303,3 +2311,618 @@ class TestPhase5AGeneralInvariants:
         assert HostErrorCode.WRITE_NOT_ALLOWED.value == "write_not_allowed"
         assert HostErrorCode.DIRECTORY_ALREADY_EXISTS.value == "directory_already_exists"
         assert HostErrorCode.PATH_CONFLICT.value == "path_conflict"
+
+# ===========================================================================
+# Phase 5C — Sandbox hardening, atomic writes, lifecycle enrichment
+# ===========================================================================
+
+_SANDBOX5C = WRITE_SANDBOX_DIRECTORIES[0]          # e.g. C:\...\assistant_sandbox
+_SANDBOX5C_FILE = _SANDBOX5C + r"\notes.txt"
+_SANDBOX5C_FILE_MD = _SANDBOX5C + r"\notes.md"
+_SANDBOX5C_SUBDIR = _SANDBOX5C + r"\subdir"
+
+
+# ---------------------------------------------------------------------------
+# TestRejectUnsafePathComponents
+# ---------------------------------------------------------------------------
+
+class TestRejectUnsafePathComponents:
+    """Unit tests for _reject_unsafe_path_components (Phase 5C helper)."""
+
+    def test_clean_path_passes(self):
+        ok, _ = _reject_unsafe_path_components(r"C:\Users\Jorge\Documents\assistant_sandbox\notes.txt")
+        assert ok is True
+
+    def test_trailing_dot_on_filename_rejected(self):
+        ok, reason = _reject_unsafe_path_components(r"C:\sandbox\file.txt.")
+        assert ok is False
+        assert "trailing dot or space" in reason
+
+    def test_trailing_space_on_filename_rejected(self):
+        # Space must be TRAILING on the whole component.
+        # "file.txt " (space after extension) → Windows strips it → audit mismatch.
+        # "file .txt" (space before dot) is a valid name and is NOT rejected.
+        ok, reason = _reject_unsafe_path_components("C:\\sandbox\\file.txt ")
+        assert ok is False
+        assert "trailing dot or space" in reason
+
+    def test_trailing_dot_on_directory_component_rejected(self):
+        ok, reason = _reject_unsafe_path_components(r"C:\sandbox\subdir.\file.txt")
+        assert ok is False
+        assert "trailing dot or space" in reason
+
+    def test_reserved_nul_rejected(self):
+        ok, reason = _reject_unsafe_path_components(r"C:\sandbox\NUL.txt")
+        assert ok is False
+        assert "reserved Windows device name" in reason
+
+    def test_reserved_nul_lowercase_rejected(self):
+        ok, reason = _reject_unsafe_path_components(r"C:\sandbox\nul.txt")
+        assert ok is False
+        assert "reserved Windows device name" in reason
+
+    def test_reserved_con_rejected(self):
+        ok, reason = _reject_unsafe_path_components(r"C:\sandbox\CON.json")
+        assert ok is False
+
+    def test_reserved_com1_rejected(self):
+        ok, reason = _reject_unsafe_path_components(r"C:\sandbox\COM1.txt")
+        assert ok is False
+        assert "reserved Windows device name" in reason
+
+    def test_reserved_lpt1_rejected(self):
+        ok, reason = _reject_unsafe_path_components(r"C:\sandbox\LPT1.md")
+        assert ok is False
+
+    def test_reserved_prn_rejected(self):
+        ok, reason = _reject_unsafe_path_components(r"C:\sandbox\PRN")
+        assert ok is False
+
+    def test_reserved_stem_case_insensitive(self):
+        """com9 (lowercase) must be caught."""
+        ok, reason = _reject_unsafe_path_components(r"C:\sandbox\com9.txt")
+        assert ok is False
+
+    def test_non_reserved_name_passes(self):
+        ok, _ = _reject_unsafe_path_components(r"C:\sandbox\report.json")
+        assert ok is True
+
+    def test_all_reserved_stems_covered(self):
+        """Smoke: every name in the constant is actually checked."""
+        for stem in _WINDOWS_RESERVED_STEMS:
+            path = rf"C:\sandbox\{stem}.txt"
+            ok, _ = _reject_unsafe_path_components(path)
+            assert ok is False, f"{stem!r} should be rejected"
+
+    def test_drive_root_component_not_flagged(self):
+        """C:\\ itself must not be treated as a reserved name."""
+        ok, _ = _reject_unsafe_path_components(r"C:\sandbox\notes.txt")
+        assert ok is True
+
+
+# ---------------------------------------------------------------------------
+# TestSandboxHardeningPhase5C
+# ---------------------------------------------------------------------------
+
+class TestSandboxHardeningPhase5C:
+    """Integration: unsafe path components rejected via validate_allowed_write_path."""
+
+    def test_trailing_dot_rejected_by_write_path_validator(self):
+        path = _SANDBOX5C + r"\file.txt."
+        ok, reason = validate_allowed_write_path(path)
+        assert ok is False
+        assert "trailing dot or space" in reason
+
+    def test_trailing_space_rejected_by_write_path_validator(self):
+        # Trailing space on the whole component (after extension) is dangerous.
+        path = _SANDBOX5C + "\\file.txt "
+        ok, reason = validate_allowed_write_path(path)
+        assert ok is False
+        assert "trailing dot or space" in reason
+
+    def test_reserved_nul_rejected_by_write_path_validator(self):
+        path = _SANDBOX5C + r"\NUL.txt"
+        ok, reason = validate_allowed_write_path(path)
+        assert ok is False
+        assert "reserved Windows device name" in reason
+
+    def test_reserved_com1_rejected_by_write_path_validator(self):
+        path = _SANDBOX5C + r"\COM1.json"
+        ok, reason = validate_allowed_write_path(path)
+        assert ok is False
+
+    def test_trailing_dot_rejected_by_write_directory_validator(self):
+        path = _SANDBOX5C + r"\subdir."
+        ok, reason = validate_allowed_write_directory(path)
+        assert ok is False
+        assert "trailing dot or space" in reason
+
+    def test_reserved_nul_rejected_by_write_directory_validator(self):
+        path = _SANDBOX5C + r"\NUL"
+        ok, reason = validate_allowed_write_directory(path)
+        assert ok is False
+
+    def test_mixed_separators_valid_path_passes(self):
+        """Forward slashes in an otherwise valid sandbox path still pass."""
+        path = _SANDBOX5C.replace("\\", "/") + "/notes.txt"
+        ok, _ = validate_allowed_write_path(path)
+        assert ok is True
+
+    def test_adjacent_prefix_still_rejected(self):
+        """A path whose string-prefix matches but is not a subdirectory is rejected."""
+        evil = _SANDBOX5C + "_evil\\notes.txt"
+        ok, _ = validate_allowed_write_path(evil)
+        assert ok is False
+
+    def test_traversal_still_rejected(self):
+        """Path traversal via .. is still blocked even with the new helper."""
+        traversal = _SANDBOX5C + r"\..\evil.txt"
+        ok, _ = validate_allowed_write_path(traversal)
+        assert ok is False
+
+    def test_sandbox_root_as_file_target_rejected(self):
+        """Sandbox root itself is not a valid file target."""
+        ok, reason = validate_allowed_write_path(_SANDBOX5C)
+        assert ok is False
+        assert "sandbox root" in reason
+
+
+# ---------------------------------------------------------------------------
+# TestAtomicWrites
+# ---------------------------------------------------------------------------
+
+class TestAtomicWrites:
+    """Atomic write behavior for _handle_write_text_file (Phase 5C)."""
+
+    # --- overwrite path ---
+
+    def test_overwrite_uses_named_temp_file(self):
+        """overwrite mode calls NamedTemporaryFile then os.replace."""
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("tempfile.NamedTemporaryFile") as mock_ntf,
+            patch("os.replace") as mock_replace,
+        ):
+            mock_ctx = MagicMock()
+            mock_ctx.__enter__.return_value.name = "/tmp/abc.tmp"
+            mock_ctx.__exit__ = MagicMock(return_value=False)
+            mock_ntf.return_value = mock_ctx
+            execute_host_action(HostActionRequest(
+                execution_id="exec-atom-ow",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5C_FILE,
+                content="hello",
+            ))
+        assert mock_ntf.called
+        assert mock_replace.called
+
+    def test_overwrite_atomic_replace_used_true(self):
+        """atomic_replace_used=True for overwrite mode."""
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("tempfile.NamedTemporaryFile") as mock_ntf,
+            patch("os.replace"),
+        ):
+            mock_ctx = MagicMock()
+            mock_ctx.__enter__.return_value.name = "/tmp/abc.tmp"
+            mock_ctx.__exit__ = MagicMock(return_value=False)
+            mock_ntf.return_value = mock_ctx
+            result = execute_host_action(HostActionRequest(
+                execution_id="exec-atom-flag",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5C_FILE,
+                content="hello",
+            ))
+        assert result.ok is True
+        assert result.atomic_replace_used is True
+        assert result.write_mode == "overwrite"
+
+    def test_overwrite_audit_result_contains_atomic(self):
+        """Outcome audit for overwrite must contain 'atomic' in result string."""
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("tempfile.NamedTemporaryFile") as mock_ntf,
+            patch("os.replace"),
+        ):
+            mock_ctx = MagicMock()
+            mock_ctx.__enter__.return_value.name = "/tmp/abc.tmp"
+            mock_ctx.__exit__ = MagicMock(return_value=False)
+            mock_ntf.return_value = mock_ctx
+            execute_host_action(HostActionRequest(
+                execution_id="exec-atom-audit",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5C_FILE,
+                content="hello",
+            ))
+        events = HOST_AUDIT_LOG.all_dicts()
+        outcome = next(
+            (e for e in events if e.get("event_type") == "host_action_outcome"),
+            None,
+        )
+        assert outcome is not None
+        assert "atomic" in outcome.get("result", "")
+
+    def test_atomic_replace_failure_returns_error(self):
+        """os.replace failure -> ok=False, WRITE_NOT_ALLOWED, temp cleaned up."""
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("tempfile.NamedTemporaryFile") as mock_ntf,
+            patch("os.replace", side_effect=OSError("disk full")),
+            patch("os.unlink") as mock_unlink,
+        ):
+            mock_ctx = MagicMock()
+            mock_ctx.__enter__.return_value.name = "/tmp/abc.tmp"
+            mock_ctx.__exit__ = MagicMock(return_value=False)
+            mock_ntf.return_value = mock_ctx
+            result = execute_host_action(HostActionRequest(
+                execution_id="exec-atom-fail",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5C_FILE,
+                content="hello",
+            ))
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.WRITE_NOT_ALLOWED
+        assert "atomic replace failed" in result.error
+        mock_unlink.assert_called()
+
+    def test_atomic_replace_failure_audits_outcome(self):
+        """os.replace failure must emit 'atomic_replace_failed' outcome."""
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("tempfile.NamedTemporaryFile") as mock_ntf,
+            patch("os.replace", side_effect=OSError("disk full")),
+            patch("os.unlink"),
+        ):
+            mock_ctx = MagicMock()
+            mock_ctx.__enter__.return_value.name = "/tmp/abc.tmp"
+            mock_ctx.__exit__ = MagicMock(return_value=False)
+            mock_ntf.return_value = mock_ctx
+            execute_host_action(HostActionRequest(
+                execution_id="exec-atom-fail-audit",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5C_FILE,
+                content="hello",
+            ))
+        events = HOST_AUDIT_LOG.all_dicts()
+        outcome = next(
+            (e for e in events if e.get("event_type") == "host_action_outcome"),
+            None,
+        )
+        assert outcome is not None
+        assert outcome.get("result") == "atomic_replace_failed"
+
+    def test_atomic_replace_failure_cleans_temp_even_if_unlink_raises(self):
+        """If os.unlink also fails, the error is swallowed (best-effort cleanup)."""
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("tempfile.NamedTemporaryFile") as mock_ntf,
+            patch("os.replace", side_effect=OSError("disk full")),
+            patch("os.unlink", side_effect=OSError("gone")),
+        ):
+            mock_ctx = MagicMock()
+            mock_ctx.__enter__.return_value.name = "/tmp/abc.tmp"
+            mock_ctx.__exit__ = MagicMock(return_value=False)
+            mock_ntf.return_value = mock_ctx
+            result = execute_host_action(HostActionRequest(
+                execution_id="exec-atom-unlink-fail",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5C_FILE,
+                content="hello",
+            ))
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.WRITE_NOT_ALLOWED
+
+    def test_atomic_replace_used_true_propagated_in_failure_result(self):
+        """atomic_replace_used=True even when replace fails."""
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("tempfile.NamedTemporaryFile") as mock_ntf,
+            patch("os.replace", side_effect=OSError("disk full")),
+            patch("os.unlink"),
+        ):
+            mock_ctx = MagicMock()
+            mock_ctx.__enter__.return_value.name = "/tmp/abc.tmp"
+            mock_ctx.__exit__ = MagicMock(return_value=False)
+            mock_ntf.return_value = mock_ctx
+            result = execute_host_action(HostActionRequest(
+                execution_id="exec-atom-flag-fail",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5C_FILE,
+                content="hello",
+            ))
+        assert result.atomic_replace_used is True
+
+    # --- create path ---
+
+    def test_create_does_not_use_named_temp_file(self):
+        """create mode uses open('x'), not NamedTemporaryFile."""
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("tempfile.NamedTemporaryFile") as mock_ntf,
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            execute_host_action(HostActionRequest(
+                execution_id="exec-atom-create",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5C_FILE,
+                content="hello",
+            ))
+        mock_ntf.assert_not_called()
+
+    def test_create_atomic_replace_used_false(self):
+        """atomic_replace_used=False for create mode."""
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            result = execute_host_action(HostActionRequest(
+                execution_id="exec-atom-create-flag",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5C_FILE,
+                content="hello",
+            ))
+        assert result.ok is True
+        assert result.atomic_replace_used is False
+        assert result.write_mode == "create"
+
+    def test_create_audit_result_starts_with_create(self):
+        """Outcome audit for create must start with 'create:'."""
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            execute_host_action(HostActionRequest(
+                execution_id="exec-atom-create-audit",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5C_FILE,
+                content="hi",
+            ))
+        events = HOST_AUDIT_LOG.all_dicts()
+        outcome = next(
+            (e for e in events if e.get("event_type") == "host_action_outcome"),
+            None,
+        )
+        assert outcome is not None
+        assert outcome.get("result", "").startswith("create:")
+
+    def test_bytes_written_correct_for_unicode_content(self):
+        """bytes_written reflects UTF-8 encoded byte count, not char count."""
+        activate_agent(HOST_AGENT_ID)
+        content = "h\u00e9llo"  # 'e with acute' is 2 bytes in UTF-8 -> 6 total
+        expected_bytes = len(content.encode("utf-8"))
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            result = execute_host_action(HostActionRequest(
+                execution_id="exec-bytes",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5C_FILE,
+                content=content,
+            ))
+        assert result.ok is True
+        assert result.bytes_written == expected_bytes
+
+    def test_audit_does_not_contain_content(self):
+        """Content must NEVER appear in any audit event."""
+        activate_agent(HOST_AGENT_ID)
+        secret = "sensitive-data-must-not-appear-in-audit"
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            execute_host_action(HostActionRequest(
+                execution_id="exec-audit-secret",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5C_FILE,
+                content=secret,
+            ))
+        import json as _json
+        for event in HOST_AUDIT_LOG.all_dicts():
+            serialized = _json.dumps(event)
+            assert secret not in serialized, f"Secret found in audit event: {event}"
+
+
+# ---------------------------------------------------------------------------
+# TestLifecyclePhase5C
+# ---------------------------------------------------------------------------
+
+class TestLifecyclePhase5C:
+    """Lifecycle enrichment: _IN_FLIGHT shape + stale-PID audit (Phase 5C)."""
+
+    def test_in_flight_record_has_action_field(self):
+        """register_in_flight with action= stores it in the record."""
+        register_in_flight(HOST_AGENT_ID, 1234, "exec-lc-1", action="open_app")
+        records = get_in_flight(HOST_AGENT_ID)
+        assert len(records) == 1
+        assert records[0]["action"] == "open_app"
+
+    def test_in_flight_record_has_started_at(self):
+        """register_in_flight stores a started_at float."""
+        import time as _time
+        before = _time.time()
+        register_in_flight(HOST_AGENT_ID, 5678, "exec-lc-2", action="open_directory")
+        after = _time.time()
+        records = get_in_flight(HOST_AGENT_ID)
+        assert len(records) == 1
+        started = records[0]["started_at"]
+        assert isinstance(started, float)
+        assert before <= started <= after
+
+    def test_in_flight_action_defaults_to_empty_string(self):
+        """Backward compat: omitting action= still works."""
+        register_in_flight(HOST_AGENT_ID, 9999, "exec-lc-compat")
+        records = get_in_flight(HOST_AGENT_ID)
+        assert records[0]["action"] == ""
+
+    def test_stale_pid_cleanup_emits_audit_outcome(self):
+        """close_pid emits stale_cleaned outcome for each PID reconcile removes."""
+        activate_agent(HOST_AGENT_ID)
+        # 7777 is dead; 8888 is the target we will close
+        register_in_flight(HOST_AGENT_ID, 7777, "exec-stale", action="open_app")
+        register_in_flight(HOST_AGENT_ID, 8888, "exec-target", action="open_app")
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                if pid == 7777:
+                    raise OSError("no such process")
+                return   # 8888 is alive
+            return       # SIGTERM for the actual close
+
+        with patch("os.kill", side_effect=fake_kill):
+            result = execute_host_action(HostActionRequest(
+                execution_id="exec-closepid",
+                action="close_pid",
+                confirmed=True,
+                pid=8888,
+            ))
+
+        assert result.ok is True
+        events = HOST_AUDIT_LOG.all_dicts()
+        stale_events = [
+            e for e in events
+            if e.get("event_type") == "host_action_outcome"
+            and e.get("result") == "stale_cleaned"
+        ]
+        assert len(stale_events) == 1
+        assert stale_events[0]["target"] == "7777"
+
+    def test_close_pid_no_stale_events_when_nothing_to_clean(self):
+        """close_pid emits zero stale_cleaned events when all PIDs are alive."""
+        activate_agent(HOST_AGENT_ID)
+        register_in_flight(HOST_AGENT_ID, 1111, "exec-alive", action="open_app")
+
+        with patch("os.kill"):
+            execute_host_action(HostActionRequest(
+                execution_id="exec-closepid-clean",
+                action="close_pid",
+                confirmed=True,
+                pid=1111,
+            ))
+
+        events = HOST_AUDIT_LOG.all_dicts()
+        stale_events = [e for e in events if e.get("result") == "stale_cleaned"]
+        assert len(stale_events) == 0
+
+    def test_close_pid_deregisters_from_in_flight(self):
+        """After a successful close_pid, the PID is no longer in _IN_FLIGHT."""
+        activate_agent(HOST_AGENT_ID)
+        register_in_flight(HOST_AGENT_ID, 2222, "exec-dereg", action="open_app")
+
+        with patch("os.kill"):
+            execute_host_action(HostActionRequest(
+                execution_id="exec-dereg-close",
+                action="close_pid",
+                confirmed=True,
+                pid=2222,
+            ))
+
+        records = get_in_flight(HOST_AGENT_ID)
+        assert not any(r["pid"] == 2222 for r in records)
+
+
+# ---------------------------------------------------------------------------
+# TestPhase5CContracts
+# ---------------------------------------------------------------------------
+
+class TestPhase5CContracts:
+    """Contract shape for Phase 5C additions."""
+
+    def test_host_action_result_has_atomic_replace_used_field(self):
+        """HostActionResult has atomic_replace_used defaulting to None."""
+        r = HostActionResult(ok=True)
+        assert hasattr(r, "atomic_replace_used")
+        assert r.atomic_replace_used is None
+
+    def test_write_create_success_shape(self):
+        """Successful create: ok, write_mode='create', atomic_replace_used=False, bytes_written>=0."""
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            result = execute_host_action(HostActionRequest(
+                execution_id="exec-shape-create",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5C_FILE,
+                content="test",
+            ))
+        assert result.ok is True
+        assert result.write_mode == "create"
+        assert result.atomic_replace_used is False
+        assert isinstance(result.bytes_written, int)
+        assert result.bytes_written >= 0
+
+    def test_write_overwrite_success_shape(self):
+        """Successful overwrite: ok, write_mode='overwrite', atomic_replace_used=True."""
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.isfile", return_value=True),
+            patch("tempfile.NamedTemporaryFile") as mock_ntf,
+            patch("os.replace"),
+        ):
+            mock_ctx = MagicMock()
+            mock_ctx.__enter__.return_value.name = "/tmp/x.tmp"
+            mock_ctx.__exit__ = MagicMock(return_value=False)
+            mock_ntf.return_value = mock_ctx
+            result = execute_host_action(HostActionRequest(
+                execution_id="exec-shape-overwrite",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5C_FILE,
+                content="updated",
+            ))
+        assert result.ok is True
+        assert result.write_mode == "overwrite"
+        assert result.atomic_replace_used is True
+        assert result.bytes_written == len("updated".encode("utf-8"))
+
+    def test_windows_reserved_stems_contains_nul(self):
+        """Sanity: NUL is in the reserved set."""
+        assert "NUL" in _WINDOWS_RESERVED_STEMS
+
+    def test_windows_reserved_stems_contains_com9(self):
+        assert "COM9" in _WINDOWS_RESERVED_STEMS
+
+    def test_windows_reserved_stems_does_not_contain_common_names(self):
+        """Common names must not be blocked."""
+        for name in ("README", "notes", "data", "output", "report"):
+            assert name.upper() not in _WINDOWS_RESERVED_STEMS
+
+    def test_in_flight_record_shape(self):
+        """In-flight records have all four Phase 5C fields."""
+        register_in_flight(HOST_AGENT_ID, 3333, "exec-shape", action="open_app")
+        records = get_in_flight(HOST_AGENT_ID)
+        assert len(records) == 1
+        r = records[0]
+        assert "pid" in r
+        assert "execution_id" in r
+        assert "action" in r
+        assert "started_at" in r
+        assert r["pid"] == 3333
+        assert r["execution_id"] == "exec-shape"
+        assert r["action"] == "open_app"
+        assert isinstance(r["started_at"], float)

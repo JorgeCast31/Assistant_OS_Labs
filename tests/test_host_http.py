@@ -1012,7 +1012,7 @@ class TestHostHTTPPhase5B(unittest.TestCase):
         self.assertIsInstance(action_data["bytes_written"], int)
 
     def test_write_text_file_pass2_overwrite_mode(self):
-        """When file already exists, write_mode is 'overwrite'."""
+        """When file already exists, write_mode is 'overwrite' (atomic path)."""
         activate_agent(HOST_AGENT_ID)
         with _governance_allow():
             _, data1 = self._post_action({
@@ -1021,11 +1021,16 @@ class TestHostHTTPPhase5B(unittest.TestCase):
             })
         plan_id = data1["data"]["plan_id"]
 
+        mock_ntf_ctx = unittest.mock.MagicMock()
+        mock_ntf_ctx.__enter__.return_value.name = "/tmp/test.tmp"
+        mock_ntf_ctx.__exit__ = unittest.mock.MagicMock(return_value=False)
         with (
             patch("os.path.isfile", return_value=True),   # file exists → overwrite
-            patch("builtins.open", unittest.mock.mock_open()),
+            patch("tempfile.NamedTemporaryFile", return_value=mock_ntf_ctx),
+            patch("os.replace"),
         ):
-            _, data2 = self._post_confirm({"plan_id": plan_id})
+            with _governance_allow():
+                _, data2 = self._post_confirm({"plan_id": plan_id})
 
         self.assertEqual(data2.get("data", {}).get("write_mode"), "overwrite")
 

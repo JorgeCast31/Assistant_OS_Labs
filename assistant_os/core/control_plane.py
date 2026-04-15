@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 import signal
 import threading
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -90,7 +91,12 @@ _lock = threading.Lock()
 # Agents not yet explicitly activated default to PAUSED.
 _AGENT_STATUS: dict[str, AgentStatus] = {}
 
-# agent_id → list of {"pid": int, "execution_id": str}
+# agent_id → list of {
+#   "pid":          int   — process ID
+#   "execution_id": str   — correlates with audit events
+#   "action":       str   — action that launched the process (Phase 5C)
+#   "started_at":   float — epoch seconds at registration (Phase 5C)
+# }
 _IN_FLIGHT: dict[str, list[dict]] = {}
 
 
@@ -128,17 +134,30 @@ def get_agent_status(agent_id: str) -> AgentStatus:
 # ---------------------------------------------------------------------------
 
 
-def register_in_flight(agent_id: str, pid: int, execution_id: str) -> None:
+def register_in_flight(
+    agent_id: str,
+    pid: int,
+    execution_id: str,
+    action: str = "",
+) -> None:
     """
     Record a live PID under agent_id.
 
     Called by host_agent immediately after subprocess.Popen succeeds.
     kill_switch() reads this table to know which PIDs to terminate.
+
+    Phase 5C: action and started_at are stored for observability and
+    stale-PID diagnosis; both default safely for backward compat.
     """
     with _lock:
         if agent_id not in _IN_FLIGHT:
             _IN_FLIGHT[agent_id] = []
-        _IN_FLIGHT[agent_id].append({"pid": pid, "execution_id": execution_id})
+        _IN_FLIGHT[agent_id].append({
+            "pid":          pid,
+            "execution_id": execution_id,
+            "action":       action,
+            "started_at":   time.time(),
+        })
 
 
 def get_in_flight(agent_id: str) -> list[dict]:
