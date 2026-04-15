@@ -9,7 +9,7 @@ SINGLE SOURCE OF TRUTH for:
 Rules
 -----
 - Only ACTIVE agents may launch host processes.
-- kill_switch() quarantines the agent, then calls abort_in_flight().
+- kill_switch() quarantines the agent, reconciles stale PIDs, then calls abort_in_flight().
 - register_in_flight() is called by host_agent AFTER a successful Popen.
 - abort_in_flight() iterates all known PIDs and sends SIGTERM.
 - An agent not explicitly activated defaults to PAUSED.
@@ -269,14 +269,20 @@ def kill_switch(agent_id: str) -> KillSwitchResult:
     Authoritative kill for an agent.
 
     Steps (in order):
-    1. quarantine_agent(agent_id)  — immediately blocks new launches
-    2. abort_in_flight(agent_id)   — SIGTERM all recorded PIDs
-    3. Return KillSwitchResult     — includes per-PID outcomes
+    1. quarantine_agent(agent_id)    — immediately blocks new launches
+    2. reconcile_in_flight(agent_id) — prune dead PIDs before sending SIGTERM
+    3. abort_in_flight(agent_id)     — SIGTERM all live recorded PIDs
+    4. Return KillSwitchResult       — includes per-PID outcomes
+
+    Phase 5D: reconcile_in_flight is called before abort_in_flight so that
+    stale (already-dead) PIDs do not generate spurious OSError abort failures.
+    abort_in_flight clears _IN_FLIGHT when done.
 
     Callers must NOT assume all PIDs were successfully terminated;
     inspect KillSwitchResult.abort_results for per-PID outcomes.
     """
     quarantine_agent(agent_id)
+    reconcile_in_flight(agent_id)
     abort_results = abort_in_flight(agent_id)
     return KillSwitchResult(agent_id=agent_id, abort_results=abort_results)
 

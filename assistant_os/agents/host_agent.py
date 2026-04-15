@@ -1,7 +1,8 @@
 """
 host_agent.py — HOST domain executor for Phase 1 + Phase 2 + Phase 2.5 hardening
               + Phase 3A read-only filesystem + Phase 5A sandboxed write
-              + Phase 5C sandbox hardening + atomic writes + lifecycle enrichment.
+              + Phase 5C sandbox hardening + atomic writes + lifecycle enrichment
+              + Phase 5D symlink/junction hardening.
 
 Canonical identity
 ------------------
@@ -61,6 +62,15 @@ Phase 5C hardening
 - _IN_FLIGHT enriched — action + started_at stored at registration for observability.
 - Stale-PID audit — close_pid emits "stale_cleaned" outcome for each PID reconcile
   removes before the ownership check.
+
+Phase 5D hardening
+------------------
+- _check_no_symlink_in_path() — called by all three write handlers (write_text_file,
+  append_text_file, create_directory) after sandbox containment is confirmed.
+  Rejects unconditionally if any existing component of the write path is a symlink
+  or NTFS junction.  Rationale: symlinks can redirect writes outside the sandbox
+  boundary; resolving and re-validating the target is vulnerable to TOCTOU races.
+  Returns SYMLINK_NOT_ALLOWED error code (HostErrorCode).
 """
 
 from __future__ import annotations
@@ -594,6 +604,51 @@ def validate_allowed_write_directory(path: str) -> tuple[bool, str]:
             return True, ""
 
     return False, f"path {path!r} is not within WRITE_SANDBOX_DIRECTORIES"
+
+
+def _check_no_symlink_in_path(norm_path: str) -> tuple[bool, str]:
+    """
+    Reject if any EXISTING component of norm_path is a symlink or junction.
+
+    Called by all three write handlers (write_text_file, append_text_file,
+    create_directory) AFTER sandbox containment is confirmed, BEFORE the
+    filesystem write/mkdir.
+
+    Algorithm
+    ---------
+    1. Parse norm_path into components via PureWindowsPath.parts.
+    2. Accumulate a concrete filesystem path component-by-component.
+    3. For each accumulated segment that lexists, call os.path.islink().
+       - os.path.islink() returns True for both NTFS symlinks AND directory
+         junctions on Python ≥ 3.8 (our minimum target is 3.11).
+       - lexists (not exists) is used so dangling symlinks are still caught.
+
+    Why unconditional rejection
+    ---------------------------
+    A symlink inside the sandbox can point anywhere — including outside it.
+    Resolving the target and re-validating is insufficient because the target
+    can change between validation and the actual write (TOCTOU).  The safest
+    policy is: NO symlinks anywhere in the write path.
+
+    Cross-platform note
+    -------------------
+    On Linux CI, sandbox paths (Windows absolute paths like "C:\\...") do not
+    exist on disk, so lexists() returns False for all segments and the check
+    is vacuously True.  Symlink mocking in tests uses patch("os.path.lexists")
+    and patch("os.path.islink") to exercise the rejection logic on all platforms.
+
+    Returns (True, "") if safe, (False, reason) if a symlink/junction is found.
+    """
+    pure = PureWindowsPath(norm_path)
+    cumulative = ""
+    for part in pure.parts:
+        cumulative = part if not cumulative else ntpath.join(cumulative, part)
+        if os.path.lexists(cumulative) and os.path.islink(cumulative):
+            return False, (
+                f"path contains a symlink or junction at {cumulative!r}; "
+                f"symlinks and junctions are not permitted in write sandbox paths"
+            )
+    return True, ""
 
 
 # ---------------------------------------------------------------------------
@@ -1168,10 +1223,11 @@ def _handle_write_text_file(request: HostActionRequest) -> HostActionResult:
     2. extension in ALLOWED_WRITE_EXTENSIONS → EXTENSION_NOT_ALLOWED
     3. content encodable as utf-8      → INVALID_ENCODING
     4. encoded length ≤ MAX_WRITE_SIZE_BYTES → FILE_TOO_LARGE
-    5. emit_action_intent              → AUDIT_FAILURE aborts
-    6a. create: open(path, "x", utf-8)
-    6b. overwrite: NamedTemporaryFile → os.replace()
-    7. emit_action_outcome
+    5. _check_no_symlink_in_path       → SYMLINK_NOT_ALLOWED  (Phase 5D)
+    6. emit_action_intent              → AUDIT_FAILURE aborts
+    7a. create: open(path, "x", utf-8)
+    7b. overwrite: NamedTemporaryFile → os.replace()
+    8. emit_action_outcome
     """
     ok, reason = validate_allowed_write_path(request.path)
     if not ok:
@@ -1213,6 +1269,17 @@ def _handle_write_text_file(request: HostActionRequest) -> HostActionResult:
         )
 
     norm_path = ntpath.normpath(request.path)
+
+    # Phase 5D: reject symlinks / junctions anywhere in the write path
+    sym_ok, sym_reason = _check_no_symlink_in_path(norm_path)
+    if not sym_ok:
+        return HostActionResult(
+            ok=False, action="write_text_file",
+            execution_id=request.execution_id,
+            error=sym_reason,
+            error_code=HostErrorCode.SYMLINK_NOT_ALLOWED,
+        )
+
     write_mode = "overwrite" if os.path.isfile(norm_path) else "create"
     atomic_replace_used = (write_mode == "overwrite")
 
@@ -1347,12 +1414,13 @@ def _handle_append_text_file(request: HostActionRequest) -> HostActionResult:
     ----------------
     1. validate_allowed_write_path     → FILE_NOT_ALLOWED
     2. extension in ALLOWED_WRITE_EXTENSIONS → EXTENSION_NOT_ALLOWED
-    3. os.path.isfile                  → FILE_NOT_FOUND
-    4. content encodable as utf-8      → INVALID_ENCODING
-    5. encoded length ≤ MAX_WRITE_SIZE_BYTES → FILE_TOO_LARGE
-    6. emit_action_intent              → AUDIT_FAILURE aborts
-    7. open(path, "a", utf-8)          → WRITE_NOT_ALLOWED on OSError
-    8. emit_action_outcome
+    3. _check_no_symlink_in_path       → SYMLINK_NOT_ALLOWED  (Phase 5D)
+    4. os.path.isfile                  → FILE_NOT_FOUND
+    5. content encodable as utf-8      → INVALID_ENCODING
+    6. encoded length ≤ MAX_WRITE_SIZE_BYTES → FILE_TOO_LARGE
+    7. emit_action_intent              → AUDIT_FAILURE aborts
+    8. open(path, "a", utf-8)          → WRITE_NOT_ALLOWED on OSError
+    9. emit_action_outcome
     """
     ok, reason = validate_allowed_write_path(request.path)
     if not ok:
@@ -1373,6 +1441,16 @@ def _handle_append_text_file(request: HostActionRequest) -> HostActionResult:
         )
 
     norm_path = ntpath.normpath(request.path)
+
+    # Phase 5D: reject symlinks / junctions anywhere in the write path
+    sym_ok, sym_reason = _check_no_symlink_in_path(norm_path)
+    if not sym_ok:
+        return HostActionResult(
+            ok=False, action="append_text_file",
+            execution_id=request.execution_id,
+            error=sym_reason,
+            error_code=HostErrorCode.SYMLINK_NOT_ALLOWED,
+        )
 
     if not os.path.isfile(norm_path):
         return HostActionResult(
@@ -1473,11 +1551,12 @@ def _handle_create_directory(request: HostActionRequest) -> HostActionResult:
     Validation order
     ----------------
     1. validate_allowed_write_directory → DIRECTORY_NOT_ALLOWED
-    2. os.path.isfile(norm)             → PATH_CONFLICT
-    3. os.path.isdir(norm)              → DIRECTORY_ALREADY_EXISTS
-    4. emit_action_intent               → AUDIT_FAILURE aborts
-    5. os.mkdir(norm)                   → WRITE_NOT_ALLOWED on OSError
-    6. emit_action_outcome
+    2. _check_no_symlink_in_path        → SYMLINK_NOT_ALLOWED  (Phase 5D)
+    3. os.path.isfile(norm)             → PATH_CONFLICT
+    4. os.path.isdir(norm)              → DIRECTORY_ALREADY_EXISTS
+    5. emit_action_intent               → AUDIT_FAILURE aborts
+    6. os.mkdir(norm)                   → WRITE_NOT_ALLOWED on OSError
+    7. emit_action_outcome
     """
     ok, reason = validate_allowed_write_directory(request.path)
     if not ok:
@@ -1489,6 +1568,16 @@ def _handle_create_directory(request: HostActionRequest) -> HostActionResult:
         )
 
     norm_path = ntpath.normpath(request.path)
+
+    # Phase 5D: reject symlinks / junctions anywhere in the write path
+    sym_ok, sym_reason = _check_no_symlink_in_path(norm_path)
+    if not sym_ok:
+        return HostActionResult(
+            ok=False, action="create_directory",
+            execution_id=request.execution_id,
+            error=sym_reason,
+            error_code=HostErrorCode.SYMLINK_NOT_ALLOWED,
+        )
 
     if os.path.isfile(norm_path):
         return HostActionResult(

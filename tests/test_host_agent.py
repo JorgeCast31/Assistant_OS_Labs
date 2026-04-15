@@ -47,6 +47,7 @@ from assistant_os.agents.host_agent import (
     HostActionResult,
     _reset_host_agent_state_for_tests,
     _WINDOWS_RESERVED_STEMS,
+    _check_no_symlink_in_path,
     _reject_unsafe_path_components,
     execute_host_action,
     validate_allowed_directory,
@@ -643,7 +644,9 @@ class TestCanonicalIdentity:
         with patch("os.kill") as mock_kill:
             result = kill_switch(HOST_AGENT_ID)
 
-        mock_kill.assert_called_once_with(9001, signal.SIGTERM)
+        # Phase 5D: reconcile_in_flight calls os.kill(pid, 0) to check liveness,
+        # then abort_in_flight calls os.kill(pid, SIGTERM).  Use assert_any_call.
+        mock_kill.assert_any_call(9001, signal.SIGTERM)
         assert len(result.abort_results) == 1
         assert result.abort_results[0].pid == 9001
         assert result.abort_results[0].execution_id == "exec-kill-1"
@@ -705,7 +708,10 @@ class TestCanonicalIdentity:
         with patch("os.kill") as mock_kill:
             result = kill_switch(HOST_AGENT_ID)
 
-        assert mock_kill.call_count == 2
+        # Phase 5D: reconcile_in_flight calls os.kill(pid, 0) for each PID,
+        # then abort_in_flight calls os.kill(pid, SIGTERM). Count only SIGTERM calls.
+        sigterm_calls = [c for c in mock_kill.call_args_list if c.args[1] == signal.SIGTERM]
+        assert len(sigterm_calls) == 2
         pids = {r.pid for r in result.abort_results}
         assert pids == {1001, 1002}
 
@@ -2926,3 +2932,518 @@ class TestPhase5CContracts:
         assert r["execution_id"] == "exec-shape"
         assert r["action"] == "open_app"
         assert isinstance(r["started_at"], float)
+
+
+# ===========================================================================
+# Phase 5D — Symlink / junction hardening
+# ===========================================================================
+
+_SANDBOX5D_FILE  = _SANDBOX5C_FILE
+_SANDBOX5D_DIR   = _SANDBOX5C_SUBDIR
+
+
+class TestCheckNoSymlinkInPath:
+    """Unit tests for _check_no_symlink_in_path helper."""
+
+    def test_returns_true_when_no_components_exist(self):
+        """Non-existent path → vacuously safe (lexists=False on all parts)."""
+        with patch("os.path.lexists", return_value=False):
+            ok, reason = _check_no_symlink_in_path(r"C:\sandbox\notes.txt")
+        assert ok is True
+        assert reason == ""
+
+    def test_returns_false_when_leaf_is_symlink(self):
+        """Leaf component that lexists and islink → rejected."""
+        def _lexists(p):
+            return True
+        def _islink(p):
+            # Only the leaf triggers islink=True
+            return p.endswith("notes.txt")
+        with (
+            patch("os.path.lexists", side_effect=_lexists),
+            patch("os.path.islink", side_effect=_islink),
+        ):
+            ok, reason = _check_no_symlink_in_path(r"C:\sandbox\notes.txt")
+        assert ok is False
+        assert "symlink or junction" in reason
+
+    def test_returns_false_when_intermediate_directory_is_junction(self):
+        """Junction in an intermediate component → rejected."""
+        def _lexists(p):
+            return True
+        def _islink(p):
+            # Only the intermediate dir triggers islink=True
+            return "sandbox" in p and not p.endswith("notes.txt")
+        with (
+            patch("os.path.lexists", side_effect=_lexists),
+            patch("os.path.islink", side_effect=_islink),
+        ):
+            ok, reason = _check_no_symlink_in_path(r"C:\sandbox\notes.txt")
+        assert ok is False
+        assert "symlink or junction" in reason
+        assert "sandbox" in reason
+
+    def test_returns_true_when_components_exist_but_are_not_symlinks(self):
+        """Real directory + real file (no symlink) → safe."""
+        with (
+            patch("os.path.lexists", return_value=True),
+            patch("os.path.islink", return_value=False),
+        ):
+            ok, reason = _check_no_symlink_in_path(r"C:\sandbox\notes.txt")
+        assert ok is True
+        assert reason == ""
+
+    def test_dangling_symlink_caught_via_lexists(self):
+        """
+        Dangling symlink: lexists=True (lexists follows no links), islink=True.
+        Must be caught even though exists() would return False.
+        """
+        with (
+            patch("os.path.lexists", return_value=True),
+            patch("os.path.islink", return_value=True),
+        ):
+            ok, reason = _check_no_symlink_in_path(r"C:\sandbox\dangling")
+        assert ok is False
+        assert "symlink or junction" in reason
+
+
+class TestSymlinkHardening:
+    """
+    Integration tests: all three write handlers reject paths containing
+    a symlink or junction via SYMLINK_NOT_ALLOWED error code.
+    """
+
+    def _symlink_patches(self):
+        """Context managers: all existing path components are symlinks."""
+        return (
+            patch("os.path.lexists", return_value=True),
+            patch("os.path.islink", return_value=True),
+        )
+
+    # --- write_text_file ---
+
+    def test_write_text_file_rejects_symlink_in_path(self):
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.lexists", return_value=True),
+            patch("os.path.islink", return_value=True),
+        ):
+            result = execute_host_action(HostActionRequest(
+                execution_id="exec-sym-write",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5D_FILE,
+                content="hello",
+            ))
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.SYMLINK_NOT_ALLOWED
+        assert "symlink" in (result.error or "").lower()
+
+    def test_write_text_file_symlink_rejection_does_not_write(self):
+        """No filesystem write occurs when symlink is detected."""
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.lexists", return_value=True),
+            patch("os.path.islink", return_value=True),
+            patch("builtins.open") as mock_open,
+            patch("tempfile.NamedTemporaryFile") as mock_ntf,
+        ):
+            execute_host_action(HostActionRequest(
+                execution_id="exec-sym-write-nowrite",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5D_FILE,
+                content="hello",
+            ))
+        mock_open.assert_not_called()
+        mock_ntf.assert_not_called()
+
+    def test_write_text_file_no_symlink_proceeds(self):
+        """Without symlink, write proceeds normally (create path)."""
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.lexists", return_value=False),
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            result = execute_host_action(HostActionRequest(
+                execution_id="exec-sym-write-ok",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5D_FILE,
+                content="hello",
+            ))
+        assert result.ok is True
+
+    # --- append_text_file ---
+
+    def test_append_text_file_rejects_symlink_in_path(self):
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.lexists", return_value=True),
+            patch("os.path.islink", return_value=True),
+        ):
+            result = execute_host_action(HostActionRequest(
+                execution_id="exec-sym-append",
+                action="append_text_file",
+                confirmed=True,
+                path=_SANDBOX5D_FILE,
+                content="more",
+            ))
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.SYMLINK_NOT_ALLOWED
+        assert result.action == "append_text_file"
+
+    def test_append_text_file_symlink_rejection_before_isfile_check(self):
+        """
+        Symlink check fires before the FILE_NOT_FOUND isfile() check.
+        The error code must be SYMLINK_NOT_ALLOWED, not FILE_NOT_FOUND.
+        """
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.lexists", return_value=True),
+            patch("os.path.islink", return_value=True),
+            # isfile returns False — would cause FILE_NOT_FOUND if reached
+            patch("os.path.isfile", return_value=False),
+        ):
+            result = execute_host_action(HostActionRequest(
+                execution_id="exec-sym-append-order",
+                action="append_text_file",
+                confirmed=True,
+                path=_SANDBOX5D_FILE,
+                content="x",
+            ))
+        assert result.error_code == HostErrorCode.SYMLINK_NOT_ALLOWED
+
+    # --- create_directory ---
+
+    def test_create_directory_rejects_symlink_in_path(self):
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.lexists", return_value=True),
+            patch("os.path.islink", return_value=True),
+        ):
+            result = execute_host_action(HostActionRequest(
+                execution_id="exec-sym-mkdir",
+                action="create_directory",
+                confirmed=True,
+                path=_SANDBOX5D_DIR,
+            ))
+        assert result.ok is False
+        assert result.error_code == HostErrorCode.SYMLINK_NOT_ALLOWED
+        assert result.action == "create_directory"
+
+    def test_create_directory_symlink_rejection_before_isfile_check(self):
+        """Symlink check fires before PATH_CONFLICT (isfile) check."""
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.lexists", return_value=True),
+            patch("os.path.islink", return_value=True),
+            # isfile=True would give PATH_CONFLICT if reached
+            patch("os.path.isfile", return_value=True),
+        ):
+            result = execute_host_action(HostActionRequest(
+                execution_id="exec-sym-mkdir-order",
+                action="create_directory",
+                confirmed=True,
+                path=_SANDBOX5D_DIR,
+            ))
+        assert result.error_code == HostErrorCode.SYMLINK_NOT_ALLOWED
+
+    def test_create_directory_no_symlink_proceeds(self):
+        """Without symlink, mkdir proceeds normally."""
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.lexists", return_value=False),
+            patch("os.path.isfile", return_value=False),
+            patch("os.path.isdir", return_value=False),
+            patch("os.mkdir"),
+        ):
+            result = execute_host_action(HostActionRequest(
+                execution_id="exec-sym-mkdir-ok",
+                action="create_directory",
+                confirmed=True,
+                path=_SANDBOX5D_DIR,
+            ))
+        assert result.ok is True
+
+    def test_symlink_not_allowed_error_code_in_audit(self):
+        """
+        Symlink rejection for write_text_file does NOT emit an intent event —
+        it is rejected before the intent audit.  No intent event in the log.
+        """
+        activate_agent(HOST_AGENT_ID)
+        with (
+            patch("os.path.lexists", return_value=True),
+            patch("os.path.islink", return_value=True),
+        ):
+            execute_host_action(HostActionRequest(
+                execution_id="exec-sym-audit",
+                action="write_text_file",
+                confirmed=True,
+                path=_SANDBOX5D_FILE,
+                content="hi",
+            ))
+        # No intent event should have been emitted (rejection before audit gate)
+        events = HOST_AUDIT_LOG.all_dicts()
+        intent_events = [
+            e for e in events
+            if e.get("event_type") == "host_action_intent"
+            and e.get("action") == "write_text_file"
+        ]
+        assert len(intent_events) == 0
+
+
+# ===========================================================================
+# Phase 5D — Kill-switch lifecycle: reconcile before abort
+# ===========================================================================
+
+
+class TestKillSwitchLifecycle5D:
+    """kill_switch() must call reconcile_in_flight before abort_in_flight."""
+
+    def test_kill_switch_with_only_dead_pid_produces_no_abort_attempts(self):
+        """
+        A PID that is already dead is pruned by reconcile_in_flight so
+        abort_in_flight never tries to SIGTERM it — no AbortResult generated.
+        """
+        activate_agent(HOST_AGENT_ID)
+        register_in_flight(HOST_AGENT_ID, 99999, "exec-ks-dead")
+        # Simulate dead process: _is_pid_alive → False
+        with patch("assistant_os.core.control_plane._is_pid_alive", return_value=False):
+            result = kill_switch(HOST_AGENT_ID)
+        # Agent is quarantined
+        assert get_agent_status(HOST_AGENT_ID) == AgentStatus.QUARANTINE
+        # Dead PID was pruned by reconcile; abort_in_flight had nothing to do
+        assert result.abort_results == []
+
+    def test_kill_switch_with_live_pid_aborts_it(self):
+        """Live PID survives reconcile and is terminated by abort_in_flight."""
+        activate_agent(HOST_AGENT_ID)
+        register_in_flight(HOST_AGENT_ID, 77777, "exec-ks-live")
+        with (
+            patch("assistant_os.core.control_plane._is_pid_alive", return_value=True),
+            patch("os.kill") as mock_kill,
+        ):
+            result = kill_switch(HOST_AGENT_ID)
+        assert get_agent_status(HOST_AGENT_ID) == AgentStatus.QUARANTINE
+        assert len(result.abort_results) == 1
+        assert result.abort_results[0].pid == 77777
+        assert result.abort_results[0].success is True
+        mock_kill.assert_called_once_with(77777, signal.SIGTERM)
+
+    def test_kill_switch_mixed_dead_and_live(self):
+        """Dead PIDs pruned; live PIDs aborted; no error from dead PIDs."""
+        activate_agent(HOST_AGENT_ID)
+        register_in_flight(HOST_AGENT_ID, 11111, "exec-dead")
+        register_in_flight(HOST_AGENT_ID, 22222, "exec-live")
+        dead_pid = 11111
+        live_pid = 22222
+
+        def _is_alive(pid):
+            return pid != dead_pid
+
+        with (
+            patch("assistant_os.core.control_plane._is_pid_alive", side_effect=_is_alive),
+            patch("os.kill"),
+        ):
+            result = kill_switch(HOST_AGENT_ID)
+
+        # Only live PID appears in abort_results
+        aborted_pids = [r.pid for r in result.abort_results]
+        assert live_pid in aborted_pids
+        assert dead_pid not in aborted_pids
+
+    def test_kill_switch_empty_registry_is_clean(self):
+        """kill_switch with no in-flight PIDs returns empty results cleanly."""
+        activate_agent(HOST_AGENT_ID)
+        result = kill_switch(HOST_AGENT_ID)
+        assert result.agent_id == HOST_AGENT_ID
+        assert result.abort_results == []
+        assert get_agent_status(HOST_AGENT_ID) == AgentStatus.QUARANTINE
+
+    def test_kill_switch_quarantines_before_abort(self):
+        """
+        Quarantine is set before any kill attempt, so new launches are blocked
+        even if abort takes time.
+        """
+        activate_agent(HOST_AGENT_ID)
+        quarantine_seen_during_kill = []
+
+        def _mock_kill(pid, sig):
+            quarantine_seen_during_kill.append(
+                get_agent_status(HOST_AGENT_ID) == AgentStatus.QUARANTINE
+            )
+
+        register_in_flight(HOST_AGENT_ID, 55555, "exec-order")
+        with (
+            patch("assistant_os.core.control_plane._is_pid_alive", return_value=True),
+            patch("os.kill", side_effect=_mock_kill),
+        ):
+            kill_switch(HOST_AGENT_ID)
+        # All kill calls saw QUARANTINE status
+        assert quarantine_seen_during_kill
+        assert all(quarantine_seen_during_kill)
+
+
+# ===========================================================================
+# Phase 5D — Contract consistency: all HOST actions
+# ===========================================================================
+
+
+class TestContractConsistency5D:
+    """
+    All HOST action results must have consistent shapes regardless of outcome.
+
+    Invariants verified:
+    - ok is always a bool
+    - action is always a non-empty str matching the request
+    - execution_id always echoes the request
+    - On failure: error is a non-empty str; error_code is a HostErrorCode instance
+    - On success: error is None; error_code is None
+    """
+
+    def _req(self, action: str, **kwargs) -> HostActionRequest:
+        activate_agent(HOST_AGENT_ID)
+        return HostActionRequest(
+            execution_id="exec-contract",
+            action=action,
+            confirmed=True,
+            **kwargs,
+        )
+
+    def _assert_base_contract(self, result: HostActionResult, action: str) -> None:
+        assert isinstance(result.ok, bool)
+        assert result.action == action
+        assert result.execution_id == "exec-contract"
+
+    def _assert_failure_contract(self, result: HostActionResult, action: str) -> None:
+        self._assert_base_contract(result, action)
+        assert result.ok is False
+        assert result.error is not None and result.error != ""
+        assert isinstance(result.error_code, HostErrorCode)
+
+    def _assert_success_contract(self, result: HostActionResult, action: str) -> None:
+        self._assert_base_contract(result, action)
+        assert result.ok is True
+        assert result.error is None
+        assert result.error_code is None
+
+    # Gate-level failure shape (applies to all actions)
+    def test_confirmed_false_has_consistent_shape(self):
+        activate_agent(HOST_AGENT_ID)
+        result = execute_host_action(HostActionRequest(
+            execution_id="exec-contract",
+            action="open_app",
+            confirmed=False,
+            app_name="notepad",
+        ))
+        self._assert_failure_contract(result, "open_app")
+
+    def test_unknown_action_has_consistent_shape(self):
+        activate_agent(HOST_AGENT_ID)
+        result = execute_host_action(HostActionRequest(
+            execution_id="exec-contract",
+            action="nonexistent_action",
+            confirmed=True,
+        ))
+        self._assert_failure_contract(result, "nonexistent_action")
+
+    # write_text_file success shape
+    def test_write_text_file_success_shape(self):
+        with (
+            patch("os.path.lexists", return_value=False),
+            patch("os.path.isfile", return_value=False),
+            patch("builtins.open", unittest.mock.mock_open()),
+        ):
+            result = execute_host_action(self._req(
+                "write_text_file", path=_SANDBOX5D_FILE, content="x"
+            ))
+        self._assert_success_contract(result, "write_text_file")
+        assert result.bytes_written is not None
+        assert result.write_mode in ("create", "overwrite")
+        assert isinstance(result.atomic_replace_used, bool)
+
+    # write_text_file failure shape (invalid path)
+    def test_write_text_file_failure_shape_bad_path(self):
+        result = execute_host_action(self._req(
+            "write_text_file",
+            path=r"C:\Windows\evil.txt",
+            content="x",
+        ))
+        self._assert_failure_contract(result, "write_text_file")
+
+    # append_text_file failure shape (file not found)
+    def test_append_text_file_failure_shape_not_found(self):
+        with (
+            patch("os.path.lexists", return_value=False),
+            patch("os.path.isfile", return_value=False),
+        ):
+            result = execute_host_action(self._req(
+                "append_text_file", path=_SANDBOX5D_FILE, content="x"
+            ))
+        self._assert_failure_contract(result, "append_text_file")
+        assert result.error_code == HostErrorCode.FILE_NOT_FOUND
+
+    # create_directory success shape
+    def test_create_directory_success_shape(self):
+        with (
+            patch("os.path.lexists", return_value=False),
+            patch("os.path.isfile", return_value=False),
+            patch("os.path.isdir", return_value=False),
+            patch("os.mkdir"),
+        ):
+            result = execute_host_action(self._req(
+                "create_directory", path=_SANDBOX5D_DIR
+            ))
+        self._assert_success_contract(result, "create_directory")
+        # Write-specific fields not set for create_directory
+        assert result.bytes_written is None
+        assert result.write_mode is None
+
+    # create_directory failure shape (already exists)
+    def test_create_directory_failure_already_exists_shape(self):
+        with (
+            patch("os.path.lexists", return_value=False),
+            patch("os.path.isfile", return_value=False),
+            patch("os.path.isdir", return_value=True),
+        ):
+            result = execute_host_action(self._req(
+                "create_directory", path=_SANDBOX5D_DIR
+            ))
+        self._assert_failure_contract(result, "create_directory")
+        assert result.error_code == HostErrorCode.DIRECTORY_ALREADY_EXISTS
+
+    # Symlink rejection shape (all three write actions)
+    def test_write_text_file_symlink_rejection_shape(self):
+        with (
+            patch("os.path.lexists", return_value=True),
+            patch("os.path.islink", return_value=True),
+        ):
+            result = execute_host_action(self._req(
+                "write_text_file", path=_SANDBOX5D_FILE, content="x"
+            ))
+        self._assert_failure_contract(result, "write_text_file")
+        assert result.error_code == HostErrorCode.SYMLINK_NOT_ALLOWED
+
+    def test_append_text_file_symlink_rejection_shape(self):
+        with (
+            patch("os.path.lexists", return_value=True),
+            patch("os.path.islink", return_value=True),
+        ):
+            result = execute_host_action(self._req(
+                "append_text_file", path=_SANDBOX5D_FILE, content="x"
+            ))
+        self._assert_failure_contract(result, "append_text_file")
+        assert result.error_code == HostErrorCode.SYMLINK_NOT_ALLOWED
+
+    def test_create_directory_symlink_rejection_shape(self):
+        with (
+            patch("os.path.lexists", return_value=True),
+            patch("os.path.islink", return_value=True),
+        ):
+            result = execute_host_action(self._req(
+                "create_directory", path=_SANDBOX5D_DIR
+            ))
+        self._assert_failure_contract(result, "create_directory")
+        assert result.error_code == HostErrorCode.SYMLINK_NOT_ALLOWED

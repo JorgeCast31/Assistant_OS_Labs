@@ -87,6 +87,12 @@ class HostErrorCode(str, Enum):
     DIRECTORY_ALREADY_EXISTS = "directory_already_exists"
     PATH_CONFLICT           = "path_conflict"
 
+    # symlink / junction rejection (Phase 5D)
+    # Emitted when the target path or any parent component is a symlink or
+    # NTFS junction.  Symlinks are unconditionally blocked in write sandbox
+    # paths because they can redirect writes outside the sandbox boundary.
+    SYMLINK_NOT_ALLOWED     = "symlink_not_allowed"
+
 
 # ---------------------------------------------------------------------------
 # Event type constants
