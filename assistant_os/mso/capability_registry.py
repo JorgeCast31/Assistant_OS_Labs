@@ -38,6 +38,14 @@ from ..contracts import (
     ACTION_WORK_TEST_RESET,
     ACTION_WORK_UPDATE,
     ACTION_WORK_UPDATE_BULK,
+    # HOST domain
+    ACTION_HOST_OPEN_APP,
+    ACTION_HOST_CLOSE_PID,
+    ACTION_HOST_OPEN_DIRECTORY,
+    ACTION_HOST_OPEN_URL,
+    ACTION_HOST_LIST_DIRECTORY,
+    ACTION_HOST_OPEN_FILE,
+    ACTION_HOST_READ_TEXT_FILE,
 )
 
 _CAPABILITIES: dict[str, CapabilityRecord] = {
@@ -63,6 +71,15 @@ _CAPABILITIES: dict[str, CapabilityRecord] = {
     ACTION_COMMAND: CapabilityRecord(ACTION_COMMAND, "UNKNOWN", "deny", allowed=False, notes="Generic command execution is not governed for autonomous execution."),
     ACTION_CLASSIFY: CapabilityRecord(ACTION_CLASSIFY, "UNKNOWN", "deny", allowed=False, notes="Classification-only actions are not executable capabilities."),
     ACTION_UNKNOWN: CapabilityRecord(ACTION_UNKNOWN, "UNKNOWN", "deny", allowed=False, notes="Unknown actions are denied by capability policy."),
+    # HOST domain — read-only actions (auto-execute, no confirmation required)
+    ACTION_HOST_LIST_DIRECTORY: CapabilityRecord(ACTION_HOST_LIST_DIRECTORY, "HOST", "allow"),
+    ACTION_HOST_READ_TEXT_FILE: CapabilityRecord(ACTION_HOST_READ_TEXT_FILE, "HOST", "allow"),
+    # HOST domain — externally effectful / launch actions (confirmation required)
+    ACTION_HOST_OPEN_APP:       CapabilityRecord(ACTION_HOST_OPEN_APP,       "HOST", "confirm_only"),
+    ACTION_HOST_OPEN_URL:       CapabilityRecord(ACTION_HOST_OPEN_URL,       "HOST", "confirm_only"),
+    ACTION_HOST_OPEN_DIRECTORY: CapabilityRecord(ACTION_HOST_OPEN_DIRECTORY, "HOST", "confirm_only"),
+    ACTION_HOST_OPEN_FILE:      CapabilityRecord(ACTION_HOST_OPEN_FILE,      "HOST", "confirm_only"),
+    ACTION_HOST_CLOSE_PID:      CapabilityRecord(ACTION_HOST_CLOSE_PID,      "HOST", "confirm_only"),
 }
 
 _lock = RLock()

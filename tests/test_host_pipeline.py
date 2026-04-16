@@ -519,12 +519,15 @@ class TestEndToEnd:
         mock_entry.name = "file.txt"
         mock_entry.is_dir.return_value = False
         mock_entry.stat.return_value = MagicMock(st_size=50)
-        cm = MagicMock()
-        cm.__enter__ = MagicMock(return_value=iter([mock_entry]))
-        cm.__exit__ = MagicMock(return_value=False)
+
+        def _fresh_scandir_cm(*_args, **_kwargs):
+            cm = MagicMock()
+            cm.__enter__ = MagicMock(return_value=iter([mock_entry]))
+            cm.__exit__ = MagicMock(return_value=False)
+            return cm
 
         with patch("os.path.isdir", return_value=True), \
-             patch("os.scandir", return_value=cm):
+             patch("os.scandir", side_effect=_fresh_scandir_cm):
             result = handle_request(req)
 
         assert result["ok"] is True

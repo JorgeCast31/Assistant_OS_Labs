@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..contracts import EXECUTION_MODE_BLOCKED, EXECUTION_MODE_CONFIRM
+from ..contracts import EXECUTION_MODE_BLOCKED, EXECUTION_MODE_CONFIRM, should_auto_execute
 from .capability_registry import check_capability
 from .contracts import (
     AnomalySignal,
@@ -125,7 +125,13 @@ def evaluate_governance(
             dynamic_factors=dynamic_factors,
         )
 
-    if risk.level == "high":
+    is_post_confirmation_auto = base_execution_mode == "auto" and should_auto_execute({
+        "action": action,
+        "risk_level": risk.level,
+        "requires_confirmation": False,
+    })
+
+    if risk.level == "high" and not is_post_confirmation_auto:
         reasons.append(GovernanceReason(code="high_risk", detail="High risk requests are blocked by governance."))
         interventions.append(GovernanceIntervention(kind="block_high_risk", value=action, reason="High risk"))
         return GovernanceDecision(
@@ -136,6 +142,31 @@ def evaluate_governance(
             effective_execution_mode=EXECUTION_MODE_BLOCKED,
             risk_level=risk.level,
             justification="High risk blocked by MSO governance.",
+            reasons=reasons,
+            constraints=constraints,
+            interventions=interventions,
+            capability_mode=capability.mode,
+            base_execution_mode=base_execution_mode,
+            operational_mode=operational_mode,
+            created_at=created_at,
+            capability_source=capability.source,
+            anomaly_signals=anomaly_signals,
+            dynamic_factors=dynamic_factors,
+        )
+
+    # Explicit allow capabilities are execution-authoritative for auto mode.
+    # They must not be silently re-routed to confirmation due to transient
+    # operational/anomaly pressure; this keeps allow vs confirm_only semantics
+    # stable and avoids confirm-loop regressions.
+    if capability.mode == "allow" and base_execution_mode == "auto":
+        return GovernanceDecision(
+            governance_ref=f"governance:{created_at}:{action}",
+            action="ALLOW",
+            target_domain=domain,
+            target_action=action,
+            effective_execution_mode=base_execution_mode,
+            risk_level=risk.level,
+            justification="Explicit allow capability preserves automatic execution.",
             reasons=reasons,
             constraints=constraints,
             interventions=interventions,
@@ -245,6 +276,30 @@ def evaluate_governance(
         )
 
     if capability.requires_confirmation and base_execution_mode == "auto":
+        # Post-confirmation canonical actions (e.g. WORK_CREATE/WORK_DELETE,
+        # FIN_COMMIT/FIN_BATCH) intentionally re-enter as auto after prior
+        # user approval. Preserve execution for those explicit whitelist cases.
+        if is_post_confirmation_auto:
+            return GovernanceDecision(
+                governance_ref=f"governance:{created_at}:{action}",
+                action="ALLOW",
+                target_domain=domain,
+                target_action=action,
+                effective_execution_mode=base_execution_mode,
+                risk_level=risk.level,
+                justification="Post-confirmation whitelist preserves automatic execution.",
+                reasons=reasons,
+                constraints=constraints,
+                interventions=interventions,
+                capability_mode=capability.mode,
+                base_execution_mode=base_execution_mode,
+                operational_mode=operational_mode,
+                created_at=created_at,
+                capability_source=capability.source,
+                anomaly_signals=anomaly_signals,
+                dynamic_factors=dynamic_factors,
+            )
+
         reasons.append(GovernanceReason(code="capability_confirm_only", detail="Capability policy requires user confirmation."))
         interventions.append(GovernanceIntervention(kind="confirmation_escalation", value=action, reason="confirm_only capability"))
         return GovernanceDecision(
