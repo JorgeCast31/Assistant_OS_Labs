@@ -4,11 +4,17 @@ from unittest.mock import patch
 
 class TestOrchestratorLocalLlmFallback(unittest.TestCase):
     def setUp(self):
+        from assistant_os.mso.capability_registry import reset_dynamic_capabilities
+        from assistant_os.mso.system_state import clear_operational_mode_override
         from assistant_os.mso.task_registry import reset_task_registry
         from assistant_os.mso.trace_aggregator import reset_trace_aggregator
+        from assistant_os.storage.mso_store import clear_mso_store
 
+        reset_dynamic_capabilities()
+        clear_operational_mode_override()
         reset_task_registry()
         reset_trace_aggregator()
+        clear_mso_store()
 
     def _request(self, text: str) -> dict:
         from assistant_os.contracts import CanonicalRequest
@@ -29,11 +35,17 @@ class TestOrchestratorLocalLlmFallback(unittest.TestCase):
 
 class TestOrchestratorLocalLlmPassThrough(unittest.TestCase):
     def setUp(self):
+        from assistant_os.mso.capability_registry import reset_dynamic_capabilities
+        from assistant_os.mso.system_state import clear_operational_mode_override
         from assistant_os.mso.task_registry import reset_task_registry
         from assistant_os.mso.trace_aggregator import reset_trace_aggregator
+        from assistant_os.storage.mso_store import clear_mso_store
 
+        reset_dynamic_capabilities()
+        clear_operational_mode_override()
         reset_task_registry()
         reset_trace_aggregator()
+        clear_mso_store()
 
     def _request(self, text: str) -> dict:
         from assistant_os.contracts import CanonicalRequest

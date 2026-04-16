@@ -296,6 +296,7 @@ ACTION_CODE_EXPLAIN = "CODE_EXPLAIN"      # Explain / describe code (read-only)
 ACTION_CODE_REVIEW  = "CODE_REVIEW"       # Review / audit code (read-only)
 ACTION_CODE_FIX     = "CODE_FIX"          # Fix a bug (mutating: preview → confirm → apply)
 ACTION_CODE_CREATE  = "CODE_CREATE"       # Create a new file / class / function (mutating)
+ACTION_BASIC_COGNITIVE_EXECUTION = "BASIC_COGNITIVE_EXECUTION"  # Bounded cognitive worker dispatch
 ACTION_COMMAND = "COMMAND"                # Generic prefixed command (CODE/DOC/JOBS/BIZ)
 ACTION_CLASSIFY = "CLASSIFY"              # Classification only (no execution)
 ACTION_UNKNOWN = "UNKNOWN"                # Unknown action
@@ -493,6 +494,7 @@ _AUTO_EXECUTE_WHITELIST: frozenset[tuple[str, str]] = frozenset({
     # ACTION_HOST_OPEN_APP, ACTION_HOST_OPEN_DIRECTORY, ACTION_HOST_OPEN_URL,
     # ACTION_HOST_OPEN_FILE → RISK_MEDIUM, confirm required (not whitelisted)
     # ACTION_HOST_CLOSE_PID → RISK_MEDIUM, confirm required (not whitelisted)
+    (ACTION_BASIC_COGNITIVE_EXECUTION, RISK_LOW),  # Bounded cognitive execution, no persistent mutation
 })
 
 
@@ -570,6 +572,7 @@ UI_INTENT_MAP: dict[str, str] = {
     ACTION_HOST_LIST_DIRECTORY:  "list_directory",
     ACTION_HOST_OPEN_FILE:       "open_file",
     ACTION_HOST_READ_TEXT_FILE:  "read_text_file",
+    ACTION_BASIC_COGNITIVE_EXECUTION: "delegate",
 }
 
 
@@ -690,6 +693,7 @@ RESULT_TYPE_CODE_PREVIEW = "code_preview"  # Mutating: change proposal preview (
 RESULT_TYPE_CODE_APPLY   = "code_apply"    # Mutating: change applied (post-confirm)
 # HOST domain result types (OpenClaw)
 RESULT_TYPE_HOST_ACTION  = "host_action"   # All HOST domain actions (action in data["action"])
+RESULT_TYPE_COGNITIVE_EXECUTION = "cognitive_execution"  # Bounded cognitive worker result
 
 
 

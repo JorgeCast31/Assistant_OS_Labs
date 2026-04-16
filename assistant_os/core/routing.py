@@ -64,6 +64,8 @@ def action_domain(action: str) -> str:
         return "CODE"
     if action.startswith("HOST_"):
         return "HOST"
+    if action == "BASIC_COGNITIVE_EXECUTION":
+        return "COGNITIVE"
     return "UNKNOWN"
 
 

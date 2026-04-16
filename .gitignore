@@ -2,6 +2,10 @@
 # Assistant OS - .gitignore
 # =============================================================================
 
+#MSO related
+assistant_os/memory/mso_store/
+
+
 # ----- Frontend build/cache -----
 ui/out/
 ui/.turbo/
@@ -114,3 +118,4 @@ webhook_server.py
 *.trace
 *.debug
 *.dump
+assistant_os/memory/mso_store/

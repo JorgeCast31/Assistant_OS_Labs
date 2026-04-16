@@ -20,7 +20,6 @@ from .config import (
     WEBHOOK_MAX_BYTES,
     WEBHOOK_MAX_BYTES_RECEIPT,
     WEBHOOK_INCLUDE_RAW_DEFAULT,
-    ASSISTANT_API_TOKEN,
     LOG_FILE,
     MEMORY_DIR,
     SHEETS_TAB_NAME,
@@ -1088,7 +1087,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if origin:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Assistant-Token")
+            self.send_header(
+                "Access-Control-Allow-Headers",
+                "Content-Type, X-Assistant-Token",
+            )
             self.send_header("Access-Control-Max-Age", "86400")
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -1112,29 +1114,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
     def _check_auth(self) -> AuthErrorResponse:
         """Check authentication headers. Returns error response if invalid.
         
-        Accepts either:
+        Accepts:
         - X-Assistant-Token: standard UI token (WEBHOOK_TOKEN)
-        - X-Assistant-Admin-Token: admin API token (ASSISTANT_API_TOKEN, localhost only)
         """
-        # Check standard UI token first
         token = self.headers.get("X-Assistant-Token", "")
-        if token and token == WEBHOOK_TOKEN:
+        if token == WEBHOOK_TOKEN:
             return None
-        
-        # Check admin API token (localhost only)
-        admin_token = self.headers.get("X-Assistant-Admin-Token", "")
-        if admin_token:
-            # Only allow admin token from localhost
-            client_ip = self.client_address[0]
-            if client_ip in ("127.0.0.1", "::1", "localhost"):
-                if admin_token == ASSISTANT_API_TOKEN:
-                    return None
-                else:
-                    return _make_json_error(401, "Invalid admin token", "Unauthorized")
-            else:
-                return _make_json_error(403, "Admin token only allowed from localhost", "Forbidden")
-        
-        # No valid token provided
         if not token:
             return _make_json_error(401, "Missing authentication header", "Unauthorized")
         return _make_json_error(401, "Invalid token", "Unauthorized")
@@ -1165,6 +1150,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
     def _get_path_without_query(self) -> str:
         """Get path without query parameters."""
         return self.path.split("?", 1)[0]
+
     
     def do_POST(self) -> None:
         """Handle POST requests."""
@@ -1380,7 +1366,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # 405 for everything else
         status, error = _make_json_error(405, "Method not allowed. Use POST.", "MethodNotAllowed")
         self._send_json_response(status, error)
-    
+
     # ── M21: Message search ───────────────────────────────────────────────────
 
     def _handle_chat_search(self) -> None:

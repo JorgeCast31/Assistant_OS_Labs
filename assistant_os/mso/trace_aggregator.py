@@ -6,7 +6,18 @@ from collections import deque
 from dataclasses import asdict
 from threading import RLock
 
-from .contracts import DeterministicDecisionTrace, GovernanceDecision, TraceChain
+from .contracts import (
+    DelegationTask,
+    DeterministicDecisionTrace,
+    EscalationRequest,
+    ExecutionCapability,
+    ExecutionReport,
+    GovernanceDecision,
+    SovereignCycleRecord,
+    SovereignIntent,
+    TraceChain,
+    WorkerSecurityEvent,
+)
 
 _lock = RLock()
 _chains: dict[str, TraceChain] = {}
@@ -57,6 +68,71 @@ def begin_trace_chain(
         if governance_decision is not None:
             _recent_governance.append(governance_decision)
     return chain
+
+
+def attach_cognitive_execution(
+    plan_id: str,
+    *,
+    sovereign_intent: SovereignIntent | None = None,
+    delegation_task: DelegationTask | None = None,
+    execution_capability: ExecutionCapability | None = None,
+    execution_report: ExecutionReport | None = None,
+    escalation_request: EscalationRequest | None = None,
+) -> TraceChain | None:
+    """Attach sovereign/worker contracts to an existing unified chain."""
+    with _lock:
+        chain = _chains.get(plan_id)
+        if chain is None:
+            return None
+        if sovereign_intent is not None:
+            chain.sovereign_intent = asdict(sovereign_intent)
+            chain.sovereign_intent_ref = f"intent:{sovereign_intent.intent_id}"
+        if delegation_task is not None:
+            chain.delegation_task = asdict(delegation_task)
+            chain.delegation_task_ref = f"delegation:{delegation_task.task_id}"
+        if execution_capability is not None:
+            chain.execution_capability = asdict(execution_capability)
+            chain.execution_capability_ref = f"capability:{execution_capability.capability_id}"
+        if execution_report is not None:
+            chain.execution_report = asdict(execution_report)
+            chain.execution_report_ref = f"report:{execution_report.report_id}"
+        if escalation_request is not None:
+            chain.escalation_request = asdict(escalation_request)
+            chain.escalation_request_ref = f"escalation:{escalation_request.escalation_id}"
+        return chain
+
+
+def attach_sovereign_cycle(plan_id: str, cycle: SovereignCycleRecord) -> TraceChain | None:
+    """Attach runtime cycle bookkeeping to an existing chain."""
+    with _lock:
+        chain = _chains.get(plan_id)
+        if chain is None:
+            return None
+        chain.sovereign_cycle = asdict(cycle)
+        chain.sovereign_cycle_ref = f"cycle:{cycle.cycle_id}"
+        return chain
+
+
+def attach_worker_security_events(plan_id: str, events: list[WorkerSecurityEvent]) -> TraceChain | None:
+    """Attach worker security events to an existing chain."""
+    with _lock:
+        chain = _chains.get(plan_id)
+        if chain is None:
+            return None
+        for event in events:
+            chain.worker_security_events.append(asdict(event))
+            chain.worker_security_event_refs.append(f"worker_event:{event.event_id}")
+        return chain
+
+
+def attach_persistence_refs(plan_id: str, refs: dict[str, str]) -> TraceChain | None:
+    """Attach persistence references to an existing chain."""
+    with _lock:
+        chain = _chains.get(plan_id)
+        if chain is None:
+            return None
+        chain.persistence_refs.update({k: v for k, v in refs.items() if v})
+        return chain
 
 
 def finalize_trace_chain(

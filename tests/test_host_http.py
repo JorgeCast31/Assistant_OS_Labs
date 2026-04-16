@@ -65,6 +65,11 @@ from assistant_os.core.control_plane import (
     activate_agent,
     quarantine_agent,
 )
+from assistant_os.mso.capability_registry import reset_dynamic_capabilities
+from assistant_os.mso.system_state import clear_operational_mode_override
+from assistant_os.mso.task_registry import reset_task_registry
+from assistant_os.mso.trace_aggregator import reset_trace_aggregator
+from assistant_os.storage.mso_store import clear_mso_store
 
 
 _ALLOWED_DIR = ALLOWED_DIRECTORIES[0]
@@ -97,12 +102,22 @@ class TestHostHTTP(unittest.TestCase):
         cls.server.server_close()
 
     def setUp(self) -> None:
+        reset_task_registry()
+        reset_trace_aggregator()
+        clear_operational_mode_override()
+        reset_dynamic_capabilities()
+        clear_mso_store()
         _reset_state_for_tests()
         _reset_host_agent_state_for_tests()
         HOST_AUDIT_LOG.clear()
         clear_store()
 
     def tearDown(self) -> None:
+        reset_task_registry()
+        reset_trace_aggregator()
+        clear_operational_mode_override()
+        reset_dynamic_capabilities()
+        clear_mso_store()
         _reset_state_for_tests()
         _reset_host_agent_state_for_tests()
         HOST_AUDIT_LOG.clear()

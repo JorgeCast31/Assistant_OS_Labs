@@ -50,6 +50,11 @@ from assistant_os.core.control_plane import (
     activate_agent,
 )
 from assistant_os.core.routing import action_domain, get_pipeline
+from assistant_os.mso.capability_registry import reset_dynamic_capabilities
+from assistant_os.mso.system_state import clear_operational_mode_override
+from assistant_os.mso.task_registry import reset_task_registry
+from assistant_os.mso.trace_aggregator import reset_trace_aggregator
+from assistant_os.storage.mso_store import clear_mso_store
 
 
 # ---------------------------------------------------------------------------
@@ -59,10 +64,20 @@ from assistant_os.core.routing import action_domain, get_pipeline
 
 @pytest.fixture(autouse=True)
 def reset():
+    reset_task_registry()
+    reset_trace_aggregator()
+    clear_operational_mode_override()
+    reset_dynamic_capabilities()
+    clear_mso_store()
     _reset_state_for_tests()
     _reset_host_agent_state_for_tests()
     HOST_AUDIT_LOG.clear()
     yield
+    reset_task_registry()
+    reset_trace_aggregator()
+    clear_operational_mode_override()
+    reset_dynamic_capabilities()
+    clear_mso_store()
     _reset_state_for_tests()
     _reset_host_agent_state_for_tests()
     HOST_AUDIT_LOG.clear()
@@ -519,12 +534,15 @@ class TestEndToEnd:
         mock_entry.name = "file.txt"
         mock_entry.is_dir.return_value = False
         mock_entry.stat.return_value = MagicMock(st_size=50)
-        cm = MagicMock()
-        cm.__enter__ = MagicMock(return_value=iter([mock_entry]))
-        cm.__exit__ = MagicMock(return_value=False)
+
+        def _fresh_scandir_cm(*_args, **_kwargs):
+            cm = MagicMock()
+            cm.__enter__ = MagicMock(return_value=iter([mock_entry]))
+            cm.__exit__ = MagicMock(return_value=False)
+            return cm
 
         with patch("os.path.isdir", return_value=True), \
-             patch("os.scandir", return_value=cm):
+             patch("os.scandir", side_effect=_fresh_scandir_cm):
             result = handle_request(req)
 
         assert result["ok"] is True
