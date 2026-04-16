@@ -6,6 +6,7 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
+import re
 from threading import RLock
 from typing import Any
 
@@ -26,6 +27,10 @@ _ENTITY_DIRS = {
     "security_responses": MSO_STORE_ROOT / "security_responses",
     "restrictions": MSO_STORE_ROOT / "restrictions",
     "operator_actions": MSO_STORE_ROOT / "operator_actions",
+    "operator_tokens": MSO_STORE_ROOT / "operator_tokens",
+    "control_plane_bootstrap": MSO_STORE_ROOT / "control_plane_bootstrap",
+    "control_plane_maintenance": MSO_STORE_ROOT / "control_plane_maintenance",
+    "control_plane_signals": MSO_STORE_ROOT / "control_plane_signals",
 }
 _RETENTION_DAYS = {
     "cycles": 30,
@@ -39,6 +44,10 @@ _RETENTION_DAYS = {
     "security_responses": 30,
     "restrictions": 45,
     "operator_actions": 45,
+    "operator_tokens": 30,
+    "control_plane_bootstrap": 90,
+    "control_plane_maintenance": 45,
+    "control_plane_signals": 45,
 }
 _last_cleanup_at = ""
 
@@ -82,6 +91,10 @@ def _extract_record_id(kind: str, data: dict[str, Any]) -> str:
         "security_responses": "response_id",
         "restrictions": "restriction_id",
         "operator_actions": "action_id",
+        "operator_tokens": "token_id",
+        "control_plane_bootstrap": "bootstrap_id",
+        "control_plane_maintenance": "action_id",
+        "control_plane_signals": "signal_id",
     }
     return str(data.get(keys[kind], ""))
 
@@ -105,6 +118,10 @@ def _extract_source_timestamp(kind: str, data: dict[str, Any]) -> str:
         "security_responses": "created_at",
         "restrictions": "created_at",
         "operator_actions": "timestamp",
+        "operator_tokens": "issued_at",
+        "control_plane_bootstrap": "created_at",
+        "control_plane_maintenance": "created_at",
+        "control_plane_signals": "created_at",
     }
     return str(data.get(keys[kind], "")) or now_iso()
 
@@ -138,7 +155,8 @@ def _record_envelope(kind: str, data: dict[str, Any]) -> dict[str, Any]:
 
 def _write_record(kind: str, record_id: str, obj: Any) -> str:
     _ensure_dirs()
-    path = _ENTITY_DIRS[kind] / f"{record_id}.json"
+    safe_record_id = re.sub(r'[^A-Za-z0-9._-]+', "_", record_id).strip("._") or "record"
+    path = _ENTITY_DIRS[kind] / f"{safe_record_id}.json"
     envelope = _record_envelope(kind, _payload(obj))
     with _lock:
         path.write_text(json.dumps(envelope, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -230,6 +248,22 @@ def persist_operator_action(action) -> str:
     return _write_record("operator_actions", _payload(action)["action_id"], action)
 
 
+def persist_operator_token(token) -> str:
+    return _write_record("operator_tokens", _payload(token)["token_id"], token)
+
+
+def persist_control_plane_bootstrap(record) -> str:
+    return _write_record("control_plane_bootstrap", _payload(record)["bootstrap_id"], record)
+
+
+def persist_control_plane_maintenance(record) -> str:
+    return _write_record("control_plane_maintenance", _payload(record)["action_id"], record)
+
+
+def persist_control_plane_signal(signal) -> str:
+    return _write_record("control_plane_signals", _payload(signal)["signal_id"], signal)
+
+
 def list_recent_cycles(limit: int = 10) -> list[dict[str, Any]]:
     return _read_recent("cycles", limit)
 
@@ -281,6 +315,27 @@ def list_recent_operator_actions(
     if action_type:
         items = [item for item in items if item.get("payload", {}).get("action_type") == action_type]
     return items[:limit]
+
+
+def list_operator_tokens(limit: int = 50, *, operator_id: str = "", is_active: bool | None = None) -> list[dict[str, Any]]:
+    items = _sorted_records("operator_tokens")
+    if operator_id:
+        items = [item for item in items if item.get("payload", {}).get("operator_id") == operator_id]
+    if is_active is not None:
+        items = [item for item in items if bool(item.get("payload", {}).get("is_active")) is is_active]
+    return items[:limit]
+
+
+def list_control_plane_bootstrap_records(limit: int = 20) -> list[dict[str, Any]]:
+    return _read_recent("control_plane_bootstrap", limit)
+
+
+def list_recent_control_plane_maintenance(limit: int = 20) -> list[dict[str, Any]]:
+    return _read_recent("control_plane_maintenance", limit)
+
+
+def list_recent_control_plane_signals(limit: int = 20) -> list[dict[str, Any]]:
+    return _read_recent("control_plane_signals", limit)
 
 
 def cleanup_expired_records(*, now_ts: str = "") -> dict[str, int]:
@@ -348,7 +403,7 @@ def clear_mso_store() -> None:
         for root in _ENTITY_DIRS.values():
             if not root.exists():
                 continue
-            for path in root.glob("*.json"):
+            for path in root.glob("*"):
                 try:
                     path.unlink()
                 except OSError:

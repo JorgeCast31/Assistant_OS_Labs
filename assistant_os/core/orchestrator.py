@@ -39,13 +39,8 @@ from ..contracts import (
     CanonicalRequest,
     DomainResult,
     ACTION_UNKNOWN,
-<<<<<<< HEAD
-    RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED,
-    RESULT_TYPE_PLAN_GENERATED,
-    RESULT_TYPE_CONFIRM_ERROR,
-=======
->>>>>>> f541173 (feat(mso): complete sovereign orchestration, cognitive worker, secure execution and operator control plane (Sprint 6–13))
     EXECUTION_MODE_AUTO,
+    RESULT_TYPE_CONFIRM_ERROR,
     RESULT_TYPE_PLAN_GENERATED,
     RESULT_TYPE_COGNITIVE_EXECUTION,
     RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED,
@@ -446,11 +441,7 @@ def handle_request(
             requires_confirmation=meta.get("requires_confirmation", False),
         )
         if meta.get("domain_payload"):
-<<<<<<< HEAD
-            structured_plan["domain_payload"] = meta["domain_payload"]
-=======
             structured_plan["domain_payload"] = dict(meta.get("domain_payload") or {})
->>>>>>> f541173 (feat(mso): complete sovereign orchestration, cognitive worker, secure execution and operator control plane (Sprint 6–13))
         structured_intent = {
             "operation": structured_action,
             "domain": meta.get("domain", derived_domain),

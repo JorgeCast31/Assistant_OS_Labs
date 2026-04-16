@@ -132,6 +132,7 @@ RestrictionType = Literal["REQUIRE_CONFIRMATION", "REVOKE_CAPABILITY"]
 OperatorActionType = Literal["acknowledge_restriction", "clear_restriction", "extend_restriction", "override_restriction"]
 OperatorRole = Literal["viewer", "reviewer", "admin"]
 RestrictionReviewState = Literal["unreviewed", "acknowledged", "actioned"]
+OperationalSignalSeverity = Literal["info", "warning", "critical"]
 WorkerSecurityEventType = Literal[
     "os_hardening_applied",
     "worker_started",
@@ -330,6 +331,91 @@ class OperatorIdentity:
 
 
 @dataclass(slots=True)
+class OperatorAuthToken:
+    """Opaque operator auth token metadata persisted by the control plane."""
+
+    token_id: str
+    operator_id: str
+    issued_at: str
+    expires_at: str
+    is_active: bool
+    token_hash: str = ""
+    last_used_at: str = ""
+    revoked_at: str = ""
+    revoked_by: str = ""
+    rotated_from: str = ""
+    rotation_reason: str = ""
+    issued_reason: str = ""
+
+
+@dataclass(slots=True)
+class OperatorContext:
+    """Per-request authenticated operator context for admin operations."""
+
+    operator_id: str
+    role: OperatorRole
+    token_id: str
+    request_id: str
+    authenticated_at: str
+
+
+@dataclass(slots=True)
+class ControlPlaneRequest:
+    """Structured request handed from the control plane to governed admin services."""
+
+    request_id: str
+    operator_context: OperatorContext
+    action: str
+    payload: dict[str, Any]
+    created_at: str
+
+
+@dataclass(slots=True)
+class ControlPlaneBootstrapRecord:
+    """Traceable bootstrap record for initial operator/control-plane setup."""
+
+    bootstrap_id: str
+    operator_id: str
+    role: OperatorRole
+    token_id: str
+    created_at: str
+    expires_at: str
+    reason: str
+    request_id: str
+
+
+@dataclass(slots=True)
+class MaintenanceActionRecord:
+    """Traceable control-plane maintenance action or run."""
+
+    action_id: str
+    action_type: str
+    trigger: str
+    created_at: str
+    status: str
+    trace_id: str = ""
+    operator_id: str = ""
+    request_id: str = ""
+    detail: str = ""
+    result: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class OperationalSignal:
+    """Structured operational signal for control-plane maintenance issues."""
+
+    signal_id: str
+    source: str
+    severity: OperationalSignalSeverity
+    code: str
+    detail: str
+    created_at: str
+    related_action_id: str = ""
+    trace_id: str = ""
+    status: str = "OPEN"
+
+
+@dataclass(slots=True)
 class OperatorActionRecord:
     """Traceable operator action over a restriction lifecycle."""
 
@@ -341,6 +427,8 @@ class OperatorActionRecord:
     reason: str
     timestamp: str
     trace_id: str
+    token_id: str = ""
+    request_id: str = ""
     result_status: str = ""
     notes: str = ""
 

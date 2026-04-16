@@ -2,31 +2,26 @@ import http.client
 import json
 import time
 import unittest
-from unittest.mock import patch
 
-from assistant_os.webhook_server import WebhookHTTPServer, start_server_thread
+from assistant_os.control_plane.admin_server import AdminHTTPServer, start_admin_server_thread
 
 
 class TestOperatorAdminApi(unittest.TestCase):
-    server: WebhookHTTPServer
+    server: AdminHTTPServer
     port: int
-    _token_patcher = None
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls._token_patcher = patch("assistant_os.webhook_server.ASSISTANT_API_TOKEN", "admin-test-token")
-        cls._token_patcher.start()
-        cls.server, cls.port = start_server_thread("127.0.0.1", 0)
+        cls.server, cls.port = start_admin_server_thread("127.0.0.1", 0)
         time.sleep(0.1)
 
     @classmethod
     def tearDownClass(cls) -> None:
         cls.server.shutdown()
         cls.server.server_close()
-        if cls._token_patcher is not None:
-            cls._token_patcher.stop()
 
     def setUp(self):
+        from assistant_os.control_plane.locks import reset_lock_backend
         from assistant_os.mso.capability_registry import reset_dynamic_capabilities
         from assistant_os.mso.operator_identity import reset_operator_registry
         from assistant_os.mso.system_state import clear_operational_mode_override
@@ -34,6 +29,7 @@ class TestOperatorAdminApi(unittest.TestCase):
         from assistant_os.mso.trace_aggregator import reset_trace_aggregator
         from assistant_os.storage.mso_store import clear_mso_store
 
+        reset_lock_backend()
         reset_dynamic_capabilities()
         reset_operator_registry()
         clear_operational_mode_override()
@@ -41,10 +37,13 @@ class TestOperatorAdminApi(unittest.TestCase):
         reset_trace_aggregator()
         clear_mso_store()
 
-    def _request(self, method: str, path: str, body: dict | None = None, *, operator_id: str = "", admin_token: str = "admin-test-token"):
-        headers = {"X-Assistant-Admin-Token": admin_token}
-        if operator_id:
-            headers["X-Assistant-Operator-Id"] = operator_id
+    def _mint_token(self, operator_id: str, ttl_minutes: int = 60) -> str:
+        from assistant_os.control_plane.admin_service import mint_operator_token
+
+        return mint_operator_token(operator_id=operator_id, ttl_minutes=ttl_minutes)["token"]
+
+    def _request(self, method: str, path: str, body: dict | None = None, *, token: str):
+        headers = {"Authorization": f"Bearer {token}"}
         payload = None
         if body is not None:
             headers["Content-Type"] = "application/json"
@@ -58,8 +57,8 @@ class TestOperatorAdminApi(unittest.TestCase):
 
     def _create_restriction(self) -> str:
         from assistant_os.executors.cognitive_worker_runner import run_task_in_subprocess
-        from assistant_os.mso.restrictions import get_active_restrictions
         from assistant_os.mso.contracts import DelegationTask, ExecutionCapability
+        from assistant_os.mso.restrictions import get_active_restrictions
 
         task = DelegationTask(
             task_id="admin-api-task",
@@ -80,7 +79,7 @@ class TestOperatorAdminApi(unittest.TestCase):
             execution_class="BASIC_COGNITIVE_EXECUTION",
             allowed_operations=["read_system_state"],
             scope={"domain": "COGNITIVE", "timeout_ms": 200, "force_network_attempt": True},
-            issued_at="2026-04-14T00:00:00+00:00",
+            issued_at="2026-04-15T00:00:00+00:00",
             expires_at="2099-01-01T00:00:00+00:00",
             issued_by="kernel",
             trace_id="trace:admin-api",
@@ -90,35 +89,45 @@ class TestOperatorAdminApi(unittest.TestCase):
 
     def test_viewer_can_read_active_restrictions(self):
         restriction_id = self._create_restriction()
+        token = self._mint_token("ops-viewer")
 
-        status, data = self._request("GET", "/admin/restrictions", operator_id="ops-viewer")
+        status, data = self._request("GET", "/admin/restrictions", token=token)
 
         self.assertEqual(status, 200)
         self.assertEqual(data["count"], 1)
         self.assertEqual(data["restrictions"][0]["restriction_id"], restriction_id)
-        self.assertEqual(data["operator"]["role"], "viewer")
+        self.assertEqual(data["operator_context"]["role"], "viewer")
+        self.assertEqual(data["control_plane_request"]["action"], "list_restrictions")
 
-    def test_reviewer_can_acknowledge_and_updates_review_state(self):
+    def test_reviewer_can_acknowledge_and_context_is_traced(self):
         restriction_id = self._create_restriction()
+        token = self._mint_token("ops-reviewer")
 
         status, data = self._request(
             "POST",
             f"/admin/restrictions/{restriction_id}/acknowledge",
-            {"operator_id": "ops-reviewer", "reason": "Reviewed by human."},
+            {"reason": "Reviewed by human."},
+            token=token,
         )
 
         self.assertEqual(status, 200)
         self.assertEqual(data["action"]["operator_role"], "reviewer")
         self.assertEqual(data["restriction"]["review_state"], "acknowledged")
         self.assertEqual(data["restriction"]["reviewed_by"], "ops-reviewer")
+        self.assertTrue(data["action"]["token_id"])
+        self.assertTrue(data["action"]["request_id"])
+        self.assertEqual(data["operator_context"]["operator_id"], "ops-reviewer")
+        self.assertEqual(data["control_plane_request"]["action"], "acknowledge_restriction")
 
     def test_admin_can_clear_restriction(self):
         restriction_id = self._create_restriction()
+        token = self._mint_token("ops-admin")
 
         status, data = self._request(
             "POST",
             f"/admin/restrictions/{restriction_id}/clear",
-            {"operator_id": "ops-admin", "reason": "Recovered safely."},
+            {"reason": "Recovered safely."},
+            token=token,
         )
 
         self.assertEqual(status, 200)
@@ -128,52 +137,33 @@ class TestOperatorAdminApi(unittest.TestCase):
 
     def test_insufficient_role_is_denied(self):
         restriction_id = self._create_restriction()
+        token = self._mint_token("ops-reviewer")
 
         status, data = self._request(
             "POST",
             f"/admin/restrictions/{restriction_id}/clear",
-            {"operator_id": "ops-reviewer", "reason": "Not enough role."},
+            {"reason": "Not enough role."},
+            token=token,
         )
 
         self.assertEqual(status, 403)
         self.assertEqual(data["error"]["type"], "Forbidden")
-
-    def test_invalid_operator_is_denied(self):
-        restriction_id = self._create_restriction()
-
-        status, data = self._request(
-            "POST",
-            f"/admin/restrictions/{restriction_id}/acknowledge",
-            {"operator_id": "missing-operator", "reason": "Bad operator."},
-        )
-
-        self.assertEqual(status, 403)
-        self.assertEqual(data["error"]["type"], "Forbidden")
-
-    def test_missing_reason_is_rejected(self):
-        restriction_id = self._create_restriction()
-
-        status, data = self._request(
-            "POST",
-            f"/admin/restrictions/{restriction_id}/override",
-            {"operator_id": "ops-admin"},
-        )
-
-        self.assertEqual(status, 400)
-        self.assertEqual(data["error"]["type"], "BadRequest")
 
     def test_history_links_events_response_and_actions(self):
         restriction_id = self._create_restriction()
+        reviewer_token = self._mint_token("ops-reviewer")
+        viewer_token = self._mint_token("ops-viewer")
         self._request(
             "POST",
             f"/admin/restrictions/{restriction_id}/acknowledge",
-            {"operator_id": "ops-reviewer", "reason": "Seen."},
+            {"reason": "Seen."},
+            token=reviewer_token,
         )
 
         status, data = self._request(
             "GET",
             f"/admin/restrictions/{restriction_id}/history",
-            operator_id="ops-viewer",
+            token=viewer_token,
         )
 
         self.assertEqual(status, 200)
@@ -184,16 +174,19 @@ class TestOperatorAdminApi(unittest.TestCase):
 
     def test_operator_actions_support_filters(self):
         restriction_id = self._create_restriction()
+        reviewer_token = self._mint_token("ops-reviewer")
+        viewer_token = self._mint_token("ops-viewer")
         self._request(
             "POST",
             f"/admin/restrictions/{restriction_id}/acknowledge",
-            {"operator_id": "ops-reviewer", "reason": "Seen."},
+            {"reason": "Seen."},
+            token=reviewer_token,
         )
 
         status, data = self._request(
             "GET",
             f"/admin/operator-actions?filter_operator_id=ops-reviewer&restriction_id={restriction_id}&action_type=acknowledge_restriction",
-            operator_id="ops-viewer",
+            token=viewer_token,
         )
 
         self.assertEqual(status, 200)

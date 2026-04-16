@@ -7,7 +7,7 @@ import uuid
 from ..contracts import now_iso
 from ..storage.mso_store import list_recent_operator_actions, persist_operator_action
 from .capability_registry import clear_grant, clear_revocation, grant_temporary_capability
-from .contracts import OperatorActionRecord
+from .contracts import OperatorActionRecord, OperatorContext
 from .operator_auth import authorize_operator_action
 from .restrictions import get_restriction, mark_restriction_review, transition_restriction
 
@@ -30,6 +30,7 @@ def _record(
     reason: str,
     trace_id: str,
     result_status: str,
+    operator_context: OperatorContext | None = None,
     notes: str = "",
 ) -> OperatorActionRecord:
     record = OperatorActionRecord(
@@ -41,6 +42,8 @@ def _record(
         reason=reason,
         timestamp=now_iso(),
         trace_id=trace_id,
+        token_id=operator_context.token_id if operator_context else "",
+        request_id=operator_context.request_id if operator_context else "",
         result_status=result_status,
         notes=notes,
     )
@@ -48,7 +51,14 @@ def _record(
     return record
 
 
-def acknowledge_restriction(*, operator_id: str, restriction_id: str, reason: str, trace_id: str = "") -> OperatorActionRecord:
+def acknowledge_restriction(
+    *,
+    operator_id: str,
+    restriction_id: str,
+    reason: str,
+    trace_id: str = "",
+    operator_context: OperatorContext | None = None,
+) -> OperatorActionRecord:
     _validate_common(
         operator_id=operator_id,
         reason=reason,
@@ -71,12 +81,20 @@ def acknowledge_restriction(*, operator_id: str, restriction_id: str, reason: st
         restriction_id=restriction_id,
         reason=reason,
         trace_id=trace_id or restriction.trace_id,
+        operator_context=operator_context,
         result_status="acknowledged",
         notes=f"Restriction remains {restriction.status}.",
     )
 
 
-def clear_restriction(*, operator_id: str, restriction_id: str, reason: str, trace_id: str = "") -> OperatorActionRecord:
+def clear_restriction(
+    *,
+    operator_id: str,
+    restriction_id: str,
+    reason: str,
+    trace_id: str = "",
+    operator_context: OperatorContext | None = None,
+) -> OperatorActionRecord:
     _validate_common(
         operator_id=operator_id,
         reason=reason,
@@ -106,6 +124,7 @@ def clear_restriction(*, operator_id: str, restriction_id: str, reason: str, tra
         restriction_id=restriction_id,
         reason=reason,
         trace_id=trace_id or restriction.trace_id,
+        operator_context=operator_context,
         result_status="cleared",
     )
 
@@ -117,6 +136,7 @@ def extend_restriction(
     reason: str,
     expires_at: str,
     trace_id: str = "",
+    operator_context: OperatorContext | None = None,
 ) -> OperatorActionRecord:
     _validate_common(
         operator_id=operator_id,
@@ -156,6 +176,7 @@ def extend_restriction(
         restriction_id=restriction_id,
         reason=reason,
         trace_id=trace_id or restriction.trace_id,
+        operator_context=operator_context,
         result_status="extended",
         notes=f"Extended until {expires_at}.",
     )
@@ -169,6 +190,7 @@ def override_restriction(
     override_mode: str = "allow",
     expires_at: str = "",
     trace_id: str = "",
+    operator_context: OperatorContext | None = None,
 ) -> OperatorActionRecord:
     _validate_common(
         operator_id=operator_id,
@@ -212,6 +234,7 @@ def override_restriction(
         restriction_id=restriction_id,
         reason=reason,
         trace_id=trace_id or restriction.trace_id,
+        operator_context=operator_context,
         result_status="overridden",
         notes=f"Override mode={override_mode}.",
     )
