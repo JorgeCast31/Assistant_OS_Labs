@@ -42,6 +42,7 @@ def evaluate_governance(
     ]
     domain_state = _domain_state_for(system_state, domain)
     operational_mode = system_state.operational_mode if system_state else risk.operational_mode
+    operational_mode_source = system_state.operational_mode_source if system_state else ""
 
     if operational_mode != "NORMAL":
         dynamic_factors.append(f"operational_mode:{operational_mode}")
@@ -127,9 +128,10 @@ def evaluate_governance(
 
     is_post_confirmation_auto = base_execution_mode == "auto" and should_auto_execute({
         "action": action,
-        "risk_level": risk.level,
+        "risk_level": risk.base_risk or risk.level,
         "requires_confirmation": False,
     })
+    derived_mode_auto_exception = is_post_confirmation_auto and operational_mode_source == "derived"
 
     if risk.level == "high" and not is_post_confirmation_auto:
         reasons.append(GovernanceReason(code="high_risk", detail="High risk requests are blocked by governance."))
@@ -154,32 +156,7 @@ def evaluate_governance(
             dynamic_factors=dynamic_factors,
         )
 
-    # Explicit allow capabilities are execution-authoritative for auto mode.
-    # They must not be silently re-routed to confirmation due to transient
-    # operational/anomaly pressure; this keeps allow vs confirm_only semantics
-    # stable and avoids confirm-loop regressions.
-    if capability.mode == "allow" and base_execution_mode == "auto":
-        return GovernanceDecision(
-            governance_ref=f"governance:{created_at}:{action}",
-            action="ALLOW",
-            target_domain=domain,
-            target_action=action,
-            effective_execution_mode=base_execution_mode,
-            risk_level=risk.level,
-            justification="Explicit allow capability preserves automatic execution.",
-            reasons=reasons,
-            constraints=constraints,
-            interventions=interventions,
-            capability_mode=capability.mode,
-            base_execution_mode=base_execution_mode,
-            operational_mode=operational_mode,
-            created_at=created_at,
-            capability_source=capability.source,
-            anomaly_signals=anomaly_signals,
-            dynamic_factors=dynamic_factors,
-        )
-
-    if operational_mode == "DEGRADED" and base_execution_mode == "auto":
+    if operational_mode == "DEGRADED" and base_execution_mode == "auto" and not derived_mode_auto_exception:
         constraints.append(GovernanceConstraint(kind="degrade", value="degraded_mode_confirmation"))
         interventions.append(GovernanceIntervention(kind="confirmation_escalation", value=domain, reason="System is in DEGRADED mode."))
         reasons.append(GovernanceReason(code="degraded_mode", detail="DEGRADED mode converts auto execution into confirmation."))
@@ -203,7 +180,7 @@ def evaluate_governance(
             dynamic_factors=dynamic_factors,
         )
 
-    if domain_state and domain_state.hardened and base_execution_mode == "auto":
+    if domain_state and domain_state.hardened and base_execution_mode == "auto" and not derived_mode_auto_exception:
         constraints.append(GovernanceConstraint(kind="degrade", value="soft_quarantine_confirmation"))
         interventions.append(GovernanceIntervention(kind="soft_quarantine", value=domain, reason=domain_state.notes))
         reasons.append(GovernanceReason(code="soft_quarantine", detail=f"Domain {domain} is under soft quarantine."))
@@ -228,7 +205,12 @@ def evaluate_governance(
             dynamic_factors=dynamic_factors,
         )
 
-    if operational_mode == "RESTRICTED" and base_execution_mode == "auto" and risk.level in {"medium", "low"}:
+    if (
+        operational_mode == "RESTRICTED"
+        and base_execution_mode == "auto"
+        and risk.level in {"medium", "low"}
+        and not derived_mode_auto_exception
+    ):
         reasons.append(GovernanceReason(code="restricted_mode_confirmation", detail="RESTRICTED mode requires confirmation for auto execution."))
         interventions.append(GovernanceIntervention(kind="confirmation_escalation", value=domain, reason="Restricted mode"))
         return GovernanceDecision(
@@ -251,7 +233,7 @@ def evaluate_governance(
             dynamic_factors=dynamic_factors,
         )
 
-    if risk.anomaly_detected and base_execution_mode == "auto":
+    if risk.anomaly_detected and base_execution_mode == "auto" and not derived_mode_auto_exception:
         constraints.append(GovernanceConstraint(kind="degrade", value="confirm_due_to_recent_failures"))
         interventions.append(GovernanceIntervention(kind="domain_hardening", value=domain, reason="Recent failures reduced automatic execution scope."))
         reasons.append(GovernanceReason(code="anomaly_degrade", detail="Recent failures reduced automatic execution scope."))
@@ -322,7 +304,11 @@ def evaluate_governance(
             dynamic_factors=dynamic_factors,
         )
 
-    if risk.level == "medium" and base_execution_mode == "auto":
+    if (
+        risk.level == "medium"
+        and base_execution_mode == "auto"
+        and not (capability.mode == "allow" and is_post_confirmation_auto and system_state is not None)
+    ):
         reasons.append(GovernanceReason(code="medium_risk_confirmation", detail="Medium risk cannot continue as silent auto execution."))
         interventions.append(GovernanceIntervention(kind="confirmation_escalation", value=action, reason="medium risk"))
         return GovernanceDecision(
