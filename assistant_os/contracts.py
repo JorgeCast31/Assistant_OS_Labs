@@ -307,7 +307,11 @@ ACTION_HOST_OPEN_DIRECTORY  = "HOST_OPEN_DIRECTORY"  # Open allowed directory in
 ACTION_HOST_OPEN_URL        = "HOST_OPEN_URL"        # Open allowed URL (https only)
 ACTION_HOST_LIST_DIRECTORY  = "HOST_LIST_DIRECTORY"  # List contents of allowed directory (read-only)
 ACTION_HOST_OPEN_FILE       = "HOST_OPEN_FILE"       # Open file with default app (allowlisted ext)
-ACTION_HOST_READ_TEXT_FILE  = "HOST_READ_TEXT_FILE"  # Read text file content (read-only, ≤1 MB)
+ACTION_HOST_READ_TEXT_FILE   = "HOST_READ_TEXT_FILE"   # Read text file content (read-only, ≤1 MB)
+# Phase 5A/5B — sandboxed write actions (require confirmation; never auto-execute)
+ACTION_HOST_WRITE_TEXT_FILE  = "HOST_WRITE_TEXT_FILE"  # Write/create text file in write sandbox
+ACTION_HOST_APPEND_TEXT_FILE = "HOST_APPEND_TEXT_FILE" # Append to existing text file in write sandbox
+ACTION_HOST_CREATE_DIRECTORY = "HOST_CREATE_DIRECTORY" # Create single directory in write sandbox
 
 # Target database constants
 TARGET_DB_WORK = "work"                   # Main production work database
@@ -572,6 +576,10 @@ UI_INTENT_MAP: dict[str, str] = {
     ACTION_HOST_LIST_DIRECTORY:  "list_directory",
     ACTION_HOST_OPEN_FILE:       "open_file",
     ACTION_HOST_READ_TEXT_FILE:  "read_text_file",
+    # Phase 5A/5B — sandboxed write
+    ACTION_HOST_WRITE_TEXT_FILE:  "write_text_file",
+    ACTION_HOST_APPEND_TEXT_FILE: "append_text_file",
+    ACTION_HOST_CREATE_DIRECTORY: "create_directory",
     ACTION_BASIC_COGNITIVE_EXECUTION: "delegate",
 }
 

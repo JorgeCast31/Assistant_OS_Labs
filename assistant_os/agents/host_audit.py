@@ -82,6 +82,17 @@ class HostErrorCode(str, Enum):
     FILE_TOO_LARGE          = "file_too_large"
     INVALID_ENCODING        = "invalid_encoding"
 
+    # write_text_file / append_text_file / create_directory (Phase 5A)
+    WRITE_NOT_ALLOWED       = "write_not_allowed"
+    DIRECTORY_ALREADY_EXISTS = "directory_already_exists"
+    PATH_CONFLICT           = "path_conflict"
+
+    # symlink / junction rejection (Phase 5D)
+    # Emitted when the target path or any parent component is a symlink or
+    # NTFS junction.  Symlinks are unconditionally blocked in write sandbox
+    # paths because they can redirect writes outside the sandbox boundary.
+    SYMLINK_NOT_ALLOWED     = "symlink_not_allowed"
+
 
 # ---------------------------------------------------------------------------
 # Event type constants

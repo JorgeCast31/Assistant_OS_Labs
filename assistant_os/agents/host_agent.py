@@ -1,5 +1,8 @@
 """
-host_agent.py — HOST domain executor for Phase 1 + Phase 2 + Phase 2.5 hardening.
+host_agent.py — HOST domain executor for Phase 1 + Phase 2 + Phase 2.5 hardening
+              + Phase 3A read-only filesystem + Phase 5A sandboxed write
+              + Phase 5C sandbox hardening + atomic writes + lifecycle enrichment
+              + Phase 5D symlink/junction hardening.
 
 Canonical identity
 ------------------
@@ -10,19 +13,25 @@ The caller never supplies an agent_id.
 
 Supported actions
 -----------------
-"open_app"        — launch app from APP_REGISTRY (absolute paths)
-"close_pid"       — SIGTERM a process owned by this agent
-"open_directory"  — open an allowed directory in explorer
-"open_url"        — open an allowed URL in default browser (https only)
+"open_app"         — launch app from APP_REGISTRY (absolute paths)
+"close_pid"        — SIGTERM a process owned by this agent
+"open_directory"   — open an allowed directory in explorer
+"open_url"         — open an allowed URL in default browser (https only)
+"list_directory"   — list contents of an allowed directory (read-only)
+"open_file"        — open a whitelisted file with its default application
+"read_text_file"   — read a small text file and return its content
+"write_text_file"  — create or overwrite a text file inside the write sandbox
+"append_text_file" — append content to an existing text file in the write sandbox
+"create_directory" — create a single subdirectory inside the write sandbox
 
 Invariants enforced (all actions)
 ----------------------------------
 1. confirmed must be True
 2. HOST_AGENT_ID must be ACTIVE in control_plane
-3. Rate limit not exceeded (open_app, open_directory, open_url)
-4. action-specific validation (registry / allowlist / ownership)
+3. Rate limit not exceeded (action-specific)
+4. action-specific validation (registry / allowlist / sandbox / ownership)
 5. intent audit emitted BEFORE execution; HostAuditError → abort
-6. execution (Popen or os.kill)
+6. execution (Popen / os.kill / open / mkdir)
 7. register_in_flight for launched processes
 8. outcome audit AFTER execution
 9. gate-level rejections are audited via emit_host_rejection
@@ -30,14 +39,38 @@ Invariants enforced (all actions)
 app_name, path, url are NEVER treated as shell commands.
 No shell=True anywhere.
 
-Phase 2.5 additions
--------------------
-- HostErrorCode on every HostActionResult failure
-- validate_allowed_directory() — public, dedicated, normcase+normpath
-- validate_allowed_url()       — public, dedicated, scheme + domain check
-- reconcile_in_flight()        — called by close_pid before liveness attempt
-- Rate limiting                — sliding window per action type
-- Rejection audit              — Gate 1/2 failures emit HostRejectionEvent
+Phase 5A additions
+------------------
+- WRITE_SANDBOX_DIRECTORIES — dedicated write sandbox, separate from read allowlist
+- ALLOWED_WRITE_EXTENSIONS  — .txt / .md / .json only
+- MAX_WRITE_SIZE_BYTES       — 64 KB hard cap per write operation
+- validate_allowed_write_path()      — containment + traversal-safe
+- validate_allowed_write_directory() — containment + traversal-safe
+- _handle_write_text_file   — create/overwrite with overwrite explicitly allowed
+- _handle_append_text_file  — append-only, file must pre-exist
+- _handle_create_directory  — single-level mkdir, no recursion
+
+Phase 5C hardening
+------------------
+- _WINDOWS_RESERVED_STEMS / _reject_unsafe_path_components() — rejects trailing
+  dots, trailing spaces, and reserved Windows device names (NUL, CON, COM*, LPT*)
+  from write-path components before sandbox containment is checked.
+- write_text_file atomic overwrite — NamedTemporaryFile + os.replace() so an
+  interrupted overwrite never leaves a partially-written destination.  Create uses
+  open("x") (exclusive) for a fail-safe race condition.
+- HostActionResult.atomic_replace_used — observable in response + audit result string.
+- _IN_FLIGHT enriched — action + started_at stored at registration for observability.
+- Stale-PID audit — close_pid emits "stale_cleaned" outcome for each PID reconcile
+  removes before the ownership check.
+
+Phase 5D hardening
+------------------
+- _check_no_symlink_in_path() — called by all three write handlers (write_text_file,
+  append_text_file, create_directory) after sandbox containment is confirmed.
+  Rejects unconditionally if any existing component of the write path is a symlink
+  or NTFS junction.  Rationale: symlinks can redirect writes outside the sandbox
+  boundary; resolving and re-validating the target is vulnerable to TOCTOU races.
+  Returns SYMLINK_NOT_ALLOWED error code (HostErrorCode).
 """
 
 from __future__ import annotations
@@ -46,6 +79,7 @@ import ntpath
 import os
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -135,6 +169,98 @@ LIST_DIRECTORY_LIMIT: int = 100        # max entries returned by list_directory
 
 
 # ---------------------------------------------------------------------------
+# WRITE_SANDBOX_DIRECTORIES — Phase 5A
+# ---------------------------------------------------------------------------
+#
+# Deliberately NARROWER than ALLOWED_DIRECTORIES (the read allowlist).
+# Only paths inside this list are writable.  ALLOWED_DIRECTORIES is not
+# affected: its entries remain read-only via list_directory / read_text_file.
+#
+# Rationale for a dedicated sandbox:
+#   - Read operations are low-risk; write operations can persist state.
+#   - Keeping sandboxes separate allows independent tightening without
+#     changing read semantics.
+#   - The sandbox path is explicit and version-controlled here.
+#
+WRITE_SANDBOX_DIRECTORIES: list[str] = [
+    r"C:\Users\Jorge\Documents\assistant_sandbox",
+]
+
+# Only these extensions may be written.  Executables, scripts, and binary
+# formats are intentionally excluded.  Reason: even a text write to a .bat
+# or .ps1 file could be subsequently executed by the user or another tool.
+# ".txt", ".md", ".json" cover all legitimate assistant output use cases.
+ALLOWED_WRITE_EXTENSIONS: frozenset[str] = frozenset({
+    ".txt", ".md", ".json",
+})
+
+# 64 KB per write operation.  Generous enough for structured text, notes,
+# and small JSON blobs; small enough to prevent accidental disk exhaustion
+# and to keep audit metadata (content length) meaningful.
+MAX_WRITE_SIZE_BYTES: int = 65_536
+
+# ---------------------------------------------------------------------------
+# Windows-unsafe path component detection  (Phase 5C)
+# ---------------------------------------------------------------------------
+#
+# Windows silently strips trailing dots and trailing spaces from file/dir names,
+# creating a mismatch between the path the caller intended and the path actually
+# written.  Additionally, certain device names bypass the filesystem entirely.
+#
+# We reject these in validate_allowed_write_path / validate_allowed_write_directory
+# BEFORE the sandbox containment check, so the caller gets a clear error.
+#
+# Reserved device stems (case-insensitive): CON, PRN, AUX, NUL, COM1-COM9, LPT1-LPT9.
+# Reference: https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file
+_WINDOWS_RESERVED_STEMS: frozenset[str] = frozenset({
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+})
+
+
+def _reject_unsafe_path_components(norm_path: str) -> tuple[bool, str]:
+    """
+    Reject path components that are unsafe on Windows.
+
+    MUST be called on an ntpath.normpath()-normalised path.
+
+    Checks applied to every non-drive component:
+    1. Trailing dot:   "file.txt."  → Windows strips it → "file.txt"
+                       Audit mismatch; sandbox bypass risk on case-insensitive FS.
+    2. Trailing space: "file .txt"  → Windows strips trailing spaces from stem.
+                       Same mismatch risk.
+    3. Reserved names: NUL, CON, PRN, AUX, COM1-COM9, LPT1-LPT9.
+                       These map to Windows device objects, not the filesystem.
+                       Opening "NUL.txt" writes to the NUL device, not a file.
+
+    The check on the stem (part before first ".") covers both bare names
+    (NUL) and name-with-extension (NUL.txt, COM1.json).
+
+    Returns (True, "") if safe, (False, reason) if rejected.
+    """
+    pure = PureWindowsPath(norm_path)
+    for part in pure.parts:
+        # Skip the drive root component (e.g. "C:\\")
+        if part.upper().endswith(":\\") or part == "\\":
+            continue
+        # Trailing dot or trailing space
+        if part.endswith(".") or part.endswith(" "):
+            return False, (
+                f"path component {part!r} has a trailing dot or space "
+                f"(Windows silently strips these, creating an audit mismatch)"
+            )
+        # Reserved device name: compare stem (before first dot) case-insensitively
+        stem = part.split(".")[0].upper()
+        if stem in _WINDOWS_RESERVED_STEMS:
+            return False, (
+                f"path component {part!r} uses a reserved Windows device name "
+                f"({stem!r}); this maps to a device, not a filesystem file"
+            )
+    return True, ""
+
+
+# ---------------------------------------------------------------------------
 # Rate limits  (Phase 2.5 — P5)
 # ---------------------------------------------------------------------------
 
@@ -150,6 +276,10 @@ _ACTION_RATE_LIMITS: dict[str, tuple[int, float]] = {
     "list_directory":  (20, 60.0),
     "open_file":       (10, 60.0),
     "read_text_file":  (20, 60.0),
+    # Phase 5A — filesystem write (sandboxed)
+    "write_text_file":  (10, 60.0),
+    "append_text_file": (10, 60.0),
+    "create_directory": (10, 60.0),
 }
 
 # action → list of call timestamps (epoch seconds)
@@ -201,11 +331,14 @@ class HostActionRequest:
     ------
     execution_id : correlates audit events and _IN_FLIGHT entries
     action       : "open_app" | "close_pid" | "open_directory" | "open_url"
+                   | "list_directory" | "open_file" | "read_text_file"
+                   | "write_text_file" | "append_text_file" | "create_directory"
     confirmed    : must be True for execution to proceed
     app_name     : (open_app only) logical name — must be in APP_REGISTRY
     pid          : (close_pid only) PID to terminate — must be in _IN_FLIGHT
-    path         : (open_directory only) directory path — must be in allowlist
+    path         : (open_directory / filesystem ops) path — must be in allowlist/sandbox
     url          : (open_url only) URL — scheme https, domain in allowlist
+    content      : (write_text_file / append_text_file only) text to write
 
     Note: agent_id is NOT a caller-supplied field.  The executor always
     operates under HOST_AGENT_ID = "host_launcher".
@@ -217,6 +350,7 @@ class HostActionRequest:
     pid:          Optional[int] = None
     path:         str = ""
     url:          str = ""
+    content:      str = ""
 
 
 @dataclass
@@ -236,15 +370,18 @@ class HostActionResult:
     entries      : directory listing (list_directory only)
     content      : file text content (read_text_file only)
     """
-    ok:           bool
-    action:       str = ""
-    pid:          Optional[int] = None
-    execution_id: str = ""
-    app_name:     str = ""
-    error:        Optional[str] = None
-    error_code:   Optional[HostErrorCode] = None
-    entries:      Optional[list] = None
-    content:      Optional[str] = None
+    ok:            bool
+    action:        str = ""
+    pid:           Optional[int] = None
+    execution_id:  str = ""
+    app_name:      str = ""
+    error:         Optional[str] = None
+    error_code:    Optional[HostErrorCode] = None
+    entries:       Optional[list] = None
+    content:       Optional[str] = None
+    bytes_written:       Optional[int]  = None   # Phase 5A: bytes written (write/append ops)
+    write_mode:          Optional[str]  = None   # Phase 5A: "create" | "overwrite" | "append"
+    atomic_replace_used: Optional[bool] = None   # Phase 5C: True if overwrite used temp+replace
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +525,133 @@ def validate_allowed_file_path(path: str) -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
+# Write-path validation helpers  (Phase 5A)
+# ---------------------------------------------------------------------------
+
+
+def validate_allowed_write_path(path: str) -> tuple[bool, str]:
+    """
+    Validate that path is a file location strictly inside WRITE_SANDBOX_DIRECTORIES.
+
+    Phase 5C hardening additions (checked before sandbox containment):
+    - _reject_unsafe_path_components: trailing dots, trailing spaces,
+      reserved Windows device names (NUL, CON, COM*, LPT*).
+
+    Algorithm
+    ---------
+    1. Reject empty path.
+    2. ntpath.normpath: resolve ".." / "." with Windows rules on all platforms.
+    3. _reject_unsafe_path_components: catch Windows-unsafe components.
+    4. PureWindowsPath.is_relative_to(): case-insensitive, component-based
+       containment check against each WRITE_SANDBOX_DIRECTORIES entry.
+    5. Equality to sandbox root is explicitly rejected: a file must live
+       *inside* the sandbox, not at its root.
+
+    Returns (True, "") on success, (False, reason) on failure.
+    """
+    if not path:
+        return False, "path is empty"
+
+    norm_str = ntpath.normpath(path)
+
+    # Phase 5C: reject unsafe Windows path components before containment check
+    ok, reason = _reject_unsafe_path_components(norm_str)
+    if not ok:
+        return False, reason
+
+    norm = PureWindowsPath(norm_str)
+
+    for sandbox in WRITE_SANDBOX_DIRECTORIES:
+        sandbox_norm = PureWindowsPath(ntpath.normpath(sandbox))
+        # is_relative_to covers norm == sandbox_norm AND strict descendant.
+        # We additionally reject exact equality (the sandbox root itself is a
+        # directory, not a valid file target).
+        if norm == sandbox_norm:
+            return False, f"path {path!r} is the sandbox root, not a file inside it"
+        if norm.is_relative_to(sandbox_norm):
+            return True, ""
+
+    return False, f"path {path!r} is not within WRITE_SANDBOX_DIRECTORIES"
+
+
+def validate_allowed_write_directory(path: str) -> tuple[bool, str]:
+    """
+    Validate that path is equal to or strictly inside WRITE_SANDBOX_DIRECTORIES.
+
+    Used by create_directory: the target directory may be the sandbox root
+    itself (already exists case, caught later) or a subdirectory within it.
+
+    Phase 5C hardening: same _reject_unsafe_path_components check as
+    validate_allowed_write_path — applies to directory names too.
+
+    Returns (True, "") on success, (False, reason) on failure.
+    """
+    if not path:
+        return False, "path is empty"
+
+    norm_str = ntpath.normpath(path)
+
+    # Phase 5C: reject unsafe Windows path components before containment check
+    ok, reason = _reject_unsafe_path_components(norm_str)
+    if not ok:
+        return False, reason
+
+    norm = PureWindowsPath(norm_str)
+
+    for sandbox in WRITE_SANDBOX_DIRECTORIES:
+        sandbox_norm = PureWindowsPath(ntpath.normpath(sandbox))
+        if norm == sandbox_norm or norm.is_relative_to(sandbox_norm):
+            return True, ""
+
+    return False, f"path {path!r} is not within WRITE_SANDBOX_DIRECTORIES"
+
+
+def _check_no_symlink_in_path(norm_path: str) -> tuple[bool, str]:
+    """
+    Reject if any EXISTING component of norm_path is a symlink or junction.
+
+    Called by all three write handlers (write_text_file, append_text_file,
+    create_directory) AFTER sandbox containment is confirmed, BEFORE the
+    filesystem write/mkdir.
+
+    Algorithm
+    ---------
+    1. Parse norm_path into components via PureWindowsPath.parts.
+    2. Accumulate a concrete filesystem path component-by-component.
+    3. For each accumulated segment that lexists, call os.path.islink().
+       - os.path.islink() returns True for both NTFS symlinks AND directory
+         junctions on Python ≥ 3.8 (our minimum target is 3.11).
+       - lexists (not exists) is used so dangling symlinks are still caught.
+
+    Why unconditional rejection
+    ---------------------------
+    A symlink inside the sandbox can point anywhere — including outside it.
+    Resolving the target and re-validating is insufficient because the target
+    can change between validation and the actual write (TOCTOU).  The safest
+    policy is: NO symlinks anywhere in the write path.
+
+    Cross-platform note
+    -------------------
+    On Linux CI, sandbox paths (Windows absolute paths like "C:\\...") do not
+    exist on disk, so lexists() returns False for all segments and the check
+    is vacuously True.  Symlink mocking in tests uses patch("os.path.lexists")
+    and patch("os.path.islink") to exercise the rejection logic on all platforms.
+
+    Returns (True, "") if safe, (False, reason) if a symlink/junction is found.
+    """
+    pure = PureWindowsPath(norm_path)
+    cumulative = ""
+    for part in pure.parts:
+        cumulative = part if not cumulative else ntpath.join(cumulative, part)
+        if os.path.lexists(cumulative) and os.path.islink(cumulative):
+            return False, (
+                f"path contains a symlink or junction at {cumulative!r}; "
+                f"symlinks and junctions are not permitted in write sandbox paths"
+            )
+    return True, ""
+
+
+# ---------------------------------------------------------------------------
 # Per-action handlers (private)
 # ---------------------------------------------------------------------------
 
@@ -424,7 +688,7 @@ def _handle_open_app(request: HostActionRequest) -> HostActionResult:
     proc = subprocess.Popen([executable])
     pid = proc.pid
 
-    register_in_flight(HOST_AGENT_ID, pid, request.execution_id)
+    register_in_flight(HOST_AGENT_ID, pid, request.execution_id, action="open_app")
 
     emit_host_outcome(
         agent_id=HOST_AGENT_ID,
@@ -460,8 +724,18 @@ def _handle_close_pid(request: HostActionRequest) -> HostActionResult:
             error_code=HostErrorCode.INVALID_PID,
         )
 
-    # Reconcile first — remove dead PIDs so ownership check reflects reality
-    reconcile_in_flight(HOST_AGENT_ID)
+    # Reconcile first — remove dead PIDs so ownership check reflects reality.
+    # Phase 5C: audit any stale PIDs that were cleaned up as a side effect.
+    reconcile_result = reconcile_in_flight(HOST_AGENT_ID)
+    for stale in reconcile_result.cleaned:
+        emit_action_outcome(
+            agent_id=HOST_AGENT_ID,
+            execution_id=stale.get("execution_id", request.execution_id),
+            action="close_pid",
+            target=str(stale["pid"]),
+            result="stale_cleaned",
+            pid=stale["pid"],
+        )
 
     # Ownership check — only pids registered under HOST_AGENT_ID are allowed
     records = get_in_flight(HOST_AGENT_ID)
@@ -556,7 +830,7 @@ def _handle_open_directory(request: HostActionRequest) -> HostActionResult:
     proc = subprocess.Popen([APP_REGISTRY["explorer"], request.path])
     pid = proc.pid
 
-    register_in_flight(HOST_AGENT_ID, pid, request.execution_id)
+    register_in_flight(HOST_AGENT_ID, pid, request.execution_id, action="open_directory")
 
     emit_action_outcome(
         agent_id=HOST_AGENT_ID,
@@ -912,6 +1186,464 @@ def _handle_read_text_file(request: HostActionRequest) -> HostActionResult:
 
 
 # ---------------------------------------------------------------------------
+# Phase 5A — sandboxed write handlers
+# ---------------------------------------------------------------------------
+
+
+def _handle_write_text_file(request: HostActionRequest) -> HostActionResult:
+    """
+    write_text_file: create or overwrite a text file inside the write sandbox.
+
+    Phase 5C — Atomic write strategy
+    ----------------------------------
+    create (file does not yet exist):
+        open(path, "x", utf-8) — exclusive create.  Fails cleanly with
+        WRITE_NOT_ALLOWED if a race produces the file between isfile() and
+        open(); does not corrupt any existing file.
+
+    overwrite (file already exists):
+        1. Write content to a NamedTemporaryFile in the same directory.
+        2. os.replace(tmp, dest) — atomic on the same filesystem on both
+           POSIX (rename(2)) and Windows (ReplaceFile / MoveFileEx).
+        3. If replace fails, the temp file is unlinked and an
+           "atomic_replace_failed" outcome is audited.
+        Rationale: direct open("w") truncates the destination immediately,
+        leaving a zero-byte file if the write is interrupted.
+
+    Design decisions (unchanged from Phase 5A)
+    -------------------------------------------
+    - write_mode distinguishes "create" / "overwrite" in audit and response.
+    - Content is validated for utf-8 encodability (surrogates rejected).
+    - Audit records path + byte count; full content is NEVER logged.
+    - atomic_replace_used=True is set for overwrite; False for create.
+
+    Validation order
+    ----------------
+    1. validate_allowed_write_path     → FILE_NOT_ALLOWED
+    2. extension in ALLOWED_WRITE_EXTENSIONS → EXTENSION_NOT_ALLOWED
+    3. content encodable as utf-8      → INVALID_ENCODING
+    4. encoded length ≤ MAX_WRITE_SIZE_BYTES → FILE_TOO_LARGE
+    5. _check_no_symlink_in_path       → SYMLINK_NOT_ALLOWED  (Phase 5D)
+    6. emit_action_intent              → AUDIT_FAILURE aborts
+    7a. create: open(path, "x", utf-8)
+    7b. overwrite: NamedTemporaryFile → os.replace()
+    8. emit_action_outcome
+    """
+    ok, reason = validate_allowed_write_path(request.path)
+    if not ok:
+        return HostActionResult(
+            ok=False, action="write_text_file",
+            execution_id=request.execution_id,
+            error=reason,
+            error_code=HostErrorCode.FILE_NOT_ALLOWED,
+        )
+
+    ext = os.path.splitext(request.path)[1].lower()
+    if ext not in ALLOWED_WRITE_EXTENSIONS:
+        return HostActionResult(
+            ok=False, action="write_text_file",
+            execution_id=request.execution_id,
+            error=f"extension {ext!r} is not in ALLOWED_WRITE_EXTENSIONS",
+            error_code=HostErrorCode.EXTENSION_NOT_ALLOWED,
+        )
+
+    try:
+        encoded = request.content.encode("utf-8", errors="strict")
+    except (UnicodeEncodeError, UnicodeDecodeError) as exc:
+        return HostActionResult(
+            ok=False, action="write_text_file",
+            execution_id=request.execution_id,
+            error=f"content is not encodable as utf-8: {exc}",
+            error_code=HostErrorCode.INVALID_ENCODING,
+        )
+
+    if len(encoded) > MAX_WRITE_SIZE_BYTES:
+        return HostActionResult(
+            ok=False, action="write_text_file",
+            execution_id=request.execution_id,
+            error=(
+                f"content size {len(encoded)} bytes exceeds MAX_WRITE_SIZE_BYTES "
+                f"({MAX_WRITE_SIZE_BYTES})"
+            ),
+            error_code=HostErrorCode.FILE_TOO_LARGE,
+        )
+
+    norm_path = ntpath.normpath(request.path)
+
+    # Phase 5D: reject symlinks / junctions anywhere in the write path
+    sym_ok, sym_reason = _check_no_symlink_in_path(norm_path)
+    if not sym_ok:
+        return HostActionResult(
+            ok=False, action="write_text_file",
+            execution_id=request.execution_id,
+            error=sym_reason,
+            error_code=HostErrorCode.SYMLINK_NOT_ALLOWED,
+        )
+
+    write_mode = "overwrite" if os.path.isfile(norm_path) else "create"
+    atomic_replace_used = (write_mode == "overwrite")
+
+    try:
+        emit_action_intent(
+            agent_id=HOST_AGENT_ID,
+            execution_id=request.execution_id,
+            action="write_text_file",
+            target=request.path,
+        )
+    except HostAuditError as exc:
+        return HostActionResult(
+            ok=False, action="write_text_file",
+            execution_id=request.execution_id,
+            error=f"intent audit failed — abort: {exc}",
+            error_code=HostErrorCode.AUDIT_FAILURE,
+        )
+
+    if write_mode == "overwrite":
+        # Atomic overwrite: write to temp in the same directory, then rename.
+        # Same filesystem guaranteed → os.replace is atomic (POSIX rename(2);
+        # Windows ReplaceFile / MoveFileEx with same-volume guarantee).
+        dir_path = os.path.dirname(norm_path) or "."
+        tmp_path: Optional[str] = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8",
+                dir=dir_path, suffix=".tmp", delete=False,
+            ) as tf:
+                tf.write(request.content)
+                tmp_path = tf.name
+        except OSError as exc:
+            emit_action_outcome(
+                agent_id=HOST_AGENT_ID,
+                execution_id=request.execution_id,
+                action="write_text_file",
+                target=request.path,
+                result="write_failed",
+                pid=None,
+            )
+            return HostActionResult(
+                ok=False, action="write_text_file",
+                execution_id=request.execution_id,
+                error=f"could not write temp file for atomic overwrite: {exc}",
+                error_code=HostErrorCode.WRITE_NOT_ALLOWED,
+            )
+        try:
+            os.replace(tmp_path, norm_path)
+        except OSError as exc:
+            # Cleanup: remove the orphaned temp file; do not leave state ambiguous.
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            emit_action_outcome(
+                agent_id=HOST_AGENT_ID,
+                execution_id=request.execution_id,
+                action="write_text_file",
+                target=request.path,
+                result="atomic_replace_failed",
+                pid=None,
+            )
+            return HostActionResult(
+                ok=False, action="write_text_file",
+                execution_id=request.execution_id,
+                error=f"atomic replace failed — destination unchanged: {exc}",
+                error_code=HostErrorCode.WRITE_NOT_ALLOWED,
+                atomic_replace_used=True,
+            )
+    else:
+        # create: exclusive open — fails cleanly if file was created in a race
+        try:
+            with open(norm_path, "x", encoding="utf-8") as fh:
+                fh.write(request.content)
+        except OSError as exc:
+            emit_action_outcome(
+                agent_id=HOST_AGENT_ID,
+                execution_id=request.execution_id,
+                action="write_text_file",
+                target=request.path,
+                result="write_failed",
+                pid=None,
+            )
+            return HostActionResult(
+                ok=False, action="write_text_file",
+                execution_id=request.execution_id,
+                error=f"could not create file: {exc}",
+                error_code=HostErrorCode.WRITE_NOT_ALLOWED,
+            )
+
+    bytes_written = len(encoded)
+    # Audit result distinguishes atomic overwrite from direct create.
+    audit_result = (
+        f"overwrite:atomic:{bytes_written}b"
+        if atomic_replace_used
+        else f"create:{bytes_written}b"
+    )
+
+    emit_action_outcome(
+        agent_id=HOST_AGENT_ID,
+        execution_id=request.execution_id,
+        action="write_text_file",
+        target=request.path,
+        result=audit_result,
+        pid=None,
+    )
+
+    return HostActionResult(
+        ok=True, action="write_text_file",
+        execution_id=request.execution_id,
+        bytes_written=bytes_written,
+        write_mode=write_mode,
+        atomic_replace_used=atomic_replace_used,
+    )
+
+
+def _handle_append_text_file(request: HostActionRequest) -> HostActionResult:
+    """
+    append_text_file: append content to an existing text file in the write sandbox.
+
+    Design decisions
+    ----------------
+    - File MUST already exist.  If it does not → FILE_NOT_FOUND.
+      Rationale: append-as-create blurs the distinction between "I know this
+      file" and "create a new file"; requiring pre-existence is safer.
+    - Same sandbox, extension, encoding, and size limits as write_text_file.
+    - Size limit applies to the appended content alone, not the total file size.
+      Rationale: we do not stat the file before appending; total-size limits
+      would require a read which is a separate operation.
+
+    Validation order
+    ----------------
+    1. validate_allowed_write_path     → FILE_NOT_ALLOWED
+    2. extension in ALLOWED_WRITE_EXTENSIONS → EXTENSION_NOT_ALLOWED
+    3. _check_no_symlink_in_path       → SYMLINK_NOT_ALLOWED  (Phase 5D)
+    4. os.path.isfile                  → FILE_NOT_FOUND
+    5. content encodable as utf-8      → INVALID_ENCODING
+    6. encoded length ≤ MAX_WRITE_SIZE_BYTES → FILE_TOO_LARGE
+    7. emit_action_intent              → AUDIT_FAILURE aborts
+    8. open(path, "a", utf-8)          → WRITE_NOT_ALLOWED on OSError
+    9. emit_action_outcome
+    """
+    ok, reason = validate_allowed_write_path(request.path)
+    if not ok:
+        return HostActionResult(
+            ok=False, action="append_text_file",
+            execution_id=request.execution_id,
+            error=reason,
+            error_code=HostErrorCode.FILE_NOT_ALLOWED,
+        )
+
+    ext = os.path.splitext(request.path)[1].lower()
+    if ext not in ALLOWED_WRITE_EXTENSIONS:
+        return HostActionResult(
+            ok=False, action="append_text_file",
+            execution_id=request.execution_id,
+            error=f"extension {ext!r} is not in ALLOWED_WRITE_EXTENSIONS",
+            error_code=HostErrorCode.EXTENSION_NOT_ALLOWED,
+        )
+
+    norm_path = ntpath.normpath(request.path)
+
+    # Phase 5D: reject symlinks / junctions anywhere in the write path
+    sym_ok, sym_reason = _check_no_symlink_in_path(norm_path)
+    if not sym_ok:
+        return HostActionResult(
+            ok=False, action="append_text_file",
+            execution_id=request.execution_id,
+            error=sym_reason,
+            error_code=HostErrorCode.SYMLINK_NOT_ALLOWED,
+        )
+
+    if not os.path.isfile(norm_path):
+        return HostActionResult(
+            ok=False, action="append_text_file",
+            execution_id=request.execution_id,
+            error=f"file {request.path!r} does not exist (append requires pre-existing file)",
+            error_code=HostErrorCode.FILE_NOT_FOUND,
+        )
+
+    try:
+        encoded = request.content.encode("utf-8", errors="strict")
+    except (UnicodeEncodeError, UnicodeDecodeError) as exc:
+        return HostActionResult(
+            ok=False, action="append_text_file",
+            execution_id=request.execution_id,
+            error=f"content is not encodable as utf-8: {exc}",
+            error_code=HostErrorCode.INVALID_ENCODING,
+        )
+
+    if len(encoded) > MAX_WRITE_SIZE_BYTES:
+        return HostActionResult(
+            ok=False, action="append_text_file",
+            execution_id=request.execution_id,
+            error=(
+                f"content size {len(encoded)} bytes exceeds MAX_WRITE_SIZE_BYTES "
+                f"({MAX_WRITE_SIZE_BYTES})"
+            ),
+            error_code=HostErrorCode.FILE_TOO_LARGE,
+        )
+
+    try:
+        emit_action_intent(
+            agent_id=HOST_AGENT_ID,
+            execution_id=request.execution_id,
+            action="append_text_file",
+            target=request.path,
+        )
+    except HostAuditError as exc:
+        return HostActionResult(
+            ok=False, action="append_text_file",
+            execution_id=request.execution_id,
+            error=f"intent audit failed — abort: {exc}",
+            error_code=HostErrorCode.AUDIT_FAILURE,
+        )
+
+    try:
+        with open(norm_path, "a", encoding="utf-8") as fh:
+            fh.write(request.content)
+    except OSError as exc:
+        emit_action_outcome(
+            agent_id=HOST_AGENT_ID,
+            execution_id=request.execution_id,
+            action="append_text_file",
+            target=request.path,
+            result="append_failed",
+            pid=None,
+        )
+        return HostActionResult(
+            ok=False, action="append_text_file",
+            execution_id=request.execution_id,
+            error=f"could not append to file: {exc}",
+            error_code=HostErrorCode.WRITE_NOT_ALLOWED,
+        )
+
+    bytes_written = len(encoded)
+
+    emit_action_outcome(
+        agent_id=HOST_AGENT_ID,
+        execution_id=request.execution_id,
+        action="append_text_file",
+        target=request.path,
+        result=f"appended:{bytes_written}b",
+        pid=None,
+    )
+
+    return HostActionResult(
+        ok=True, action="append_text_file",
+        execution_id=request.execution_id,
+        bytes_written=bytes_written,
+        write_mode="append",
+    )
+
+
+def _handle_create_directory(request: HostActionRequest) -> HostActionResult:
+    """
+    create_directory: create a single subdirectory inside the write sandbox.
+
+    Design decisions
+    ----------------
+    - Single-level os.mkdir only (NOT os.makedirs).
+      Rationale: recursive mkdir can silently create deeply nested structures.
+      Requiring the parent to exist forces callers to be explicit about intent.
+    - If the path already exists as a directory → DIRECTORY_ALREADY_EXISTS.
+    - If the path already exists as a file → PATH_CONFLICT.
+    - If the parent does not exist → os.mkdir raises FileNotFoundError, mapped
+      to WRITE_NOT_ALLOWED with a descriptive message.
+
+    Validation order
+    ----------------
+    1. validate_allowed_write_directory → DIRECTORY_NOT_ALLOWED
+    2. _check_no_symlink_in_path        → SYMLINK_NOT_ALLOWED  (Phase 5D)
+    3. os.path.isfile(norm)             → PATH_CONFLICT
+    4. os.path.isdir(norm)              → DIRECTORY_ALREADY_EXISTS
+    5. emit_action_intent               → AUDIT_FAILURE aborts
+    6. os.mkdir(norm)                   → WRITE_NOT_ALLOWED on OSError
+    7. emit_action_outcome
+    """
+    ok, reason = validate_allowed_write_directory(request.path)
+    if not ok:
+        return HostActionResult(
+            ok=False, action="create_directory",
+            execution_id=request.execution_id,
+            error=reason,
+            error_code=HostErrorCode.DIRECTORY_NOT_ALLOWED,
+        )
+
+    norm_path = ntpath.normpath(request.path)
+
+    # Phase 5D: reject symlinks / junctions anywhere in the write path
+    sym_ok, sym_reason = _check_no_symlink_in_path(norm_path)
+    if not sym_ok:
+        return HostActionResult(
+            ok=False, action="create_directory",
+            execution_id=request.execution_id,
+            error=sym_reason,
+            error_code=HostErrorCode.SYMLINK_NOT_ALLOWED,
+        )
+
+    if os.path.isfile(norm_path):
+        return HostActionResult(
+            ok=False, action="create_directory",
+            execution_id=request.execution_id,
+            error=f"path {request.path!r} already exists as a file",
+            error_code=HostErrorCode.PATH_CONFLICT,
+        )
+
+    if os.path.isdir(norm_path):
+        return HostActionResult(
+            ok=False, action="create_directory",
+            execution_id=request.execution_id,
+            error=f"directory {request.path!r} already exists",
+            error_code=HostErrorCode.DIRECTORY_ALREADY_EXISTS,
+        )
+
+    try:
+        emit_action_intent(
+            agent_id=HOST_AGENT_ID,
+            execution_id=request.execution_id,
+            action="create_directory",
+            target=request.path,
+        )
+    except HostAuditError as exc:
+        return HostActionResult(
+            ok=False, action="create_directory",
+            execution_id=request.execution_id,
+            error=f"intent audit failed — abort: {exc}",
+            error_code=HostErrorCode.AUDIT_FAILURE,
+        )
+
+    try:
+        os.mkdir(norm_path)
+    except OSError as exc:
+        emit_action_outcome(
+            agent_id=HOST_AGENT_ID,
+            execution_id=request.execution_id,
+            action="create_directory",
+            target=request.path,
+            result="mkdir_failed",
+            pid=None,
+        )
+        return HostActionResult(
+            ok=False, action="create_directory",
+            execution_id=request.execution_id,
+            error=f"could not create directory: {exc}",
+            error_code=HostErrorCode.WRITE_NOT_ALLOWED,
+        )
+
+    emit_action_outcome(
+        agent_id=HOST_AGENT_ID,
+        execution_id=request.execution_id,
+        action="create_directory",
+        target=request.path,
+        result="created",
+        pid=None,
+    )
+
+    return HostActionResult(
+        ok=True, action="create_directory",
+        execution_id=request.execution_id,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public executor — dispatcher
 # ---------------------------------------------------------------------------
 
@@ -924,6 +1656,10 @@ _ACTION_HANDLERS = {
     "list_directory":  _handle_list_directory,
     "open_file":       _handle_open_file,
     "read_text_file":  _handle_read_text_file,
+    # Phase 5A — sandboxed write
+    "write_text_file":  _handle_write_text_file,
+    "append_text_file": _handle_append_text_file,
+    "create_directory": _handle_create_directory,
 }
 
 

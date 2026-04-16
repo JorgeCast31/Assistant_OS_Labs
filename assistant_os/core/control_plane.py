@@ -9,7 +9,7 @@ SINGLE SOURCE OF TRUTH for:
 Rules
 -----
 - Only ACTIVE agents may launch host processes.
-- kill_switch() quarantines the agent, then calls abort_in_flight().
+- kill_switch() quarantines the agent, reconciles stale PIDs, then calls abort_in_flight().
 - register_in_flight() is called by host_agent AFTER a successful Popen.
 - abort_in_flight() iterates all known PIDs and sends SIGTERM.
 - An agent not explicitly activated defaults to PAUSED.
@@ -27,6 +27,7 @@ from __future__ import annotations
 import os
 import signal
 import threading
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -90,7 +91,12 @@ _lock = threading.Lock()
 # Agents not yet explicitly activated default to PAUSED.
 _AGENT_STATUS: dict[str, AgentStatus] = {}
 
-# agent_id → list of {"pid": int, "execution_id": str}
+# agent_id → list of {
+#   "pid":          int   — process ID
+#   "execution_id": str   — correlates with audit events
+#   "action":       str   — action that launched the process (Phase 5C)
+#   "started_at":   float — epoch seconds at registration (Phase 5C)
+# }
 _IN_FLIGHT: dict[str, list[dict]] = {}
 
 
@@ -128,17 +134,30 @@ def get_agent_status(agent_id: str) -> AgentStatus:
 # ---------------------------------------------------------------------------
 
 
-def register_in_flight(agent_id: str, pid: int, execution_id: str) -> None:
+def register_in_flight(
+    agent_id: str,
+    pid: int,
+    execution_id: str,
+    action: str = "",
+) -> None:
     """
     Record a live PID under agent_id.
 
     Called by host_agent immediately after subprocess.Popen succeeds.
     kill_switch() reads this table to know which PIDs to terminate.
+
+    Phase 5C: action and started_at are stored for observability and
+    stale-PID diagnosis; both default safely for backward compat.
     """
     with _lock:
         if agent_id not in _IN_FLIGHT:
             _IN_FLIGHT[agent_id] = []
-        _IN_FLIGHT[agent_id].append({"pid": pid, "execution_id": execution_id})
+        _IN_FLIGHT[agent_id].append({
+            "pid":          pid,
+            "execution_id": execution_id,
+            "action":       action,
+            "started_at":   time.time(),
+        })
 
 
 def get_in_flight(agent_id: str) -> list[dict]:
@@ -250,14 +269,20 @@ def kill_switch(agent_id: str) -> KillSwitchResult:
     Authoritative kill for an agent.
 
     Steps (in order):
-    1. quarantine_agent(agent_id)  — immediately blocks new launches
-    2. abort_in_flight(agent_id)   — SIGTERM all recorded PIDs
-    3. Return KillSwitchResult     — includes per-PID outcomes
+    1. quarantine_agent(agent_id)    — immediately blocks new launches
+    2. reconcile_in_flight(agent_id) — prune dead PIDs before sending SIGTERM
+    3. abort_in_flight(agent_id)     — SIGTERM all live recorded PIDs
+    4. Return KillSwitchResult       — includes per-PID outcomes
+
+    Phase 5D: reconcile_in_flight is called before abort_in_flight so that
+    stale (already-dead) PIDs do not generate spurious OSError abort failures.
+    abort_in_flight clears _IN_FLIGHT when done.
 
     Callers must NOT assume all PIDs were successfully terminated;
     inspect KillSwitchResult.abort_results for per-PID outcomes.
     """
     quarantine_agent(agent_id)
+    reconcile_in_flight(agent_id)
     abort_results = abort_in_flight(agent_id)
     return KillSwitchResult(agent_id=agent_id, abort_results=abort_results)
 

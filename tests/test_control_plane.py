@@ -94,7 +94,8 @@ class TestInFlight:
         register_in_flight("agent-1", 1234, "exec-001")
         records = get_in_flight("agent-1")
         assert len(records) == 1
-        assert records[0] == {"pid": 1234, "execution_id": "exec-001"}
+        assert records[0]["pid"] == 1234
+        assert records[0]["execution_id"] == "exec-001"
 
     def test_register_multiple_pids(self):
         register_in_flight("agent-1", 100, "exec-001")
@@ -124,8 +125,14 @@ class TestInFlight:
     def test_multiple_agents_independent_in_flight(self):
         register_in_flight("agent-a", 10, "ea1")
         register_in_flight("agent-b", 20, "eb1")
-        assert get_in_flight("agent-a") == [{"pid": 10, "execution_id": "ea1"}]
-        assert get_in_flight("agent-b") == [{"pid": 20, "execution_id": "eb1"}]
+        a_records = get_in_flight("agent-a")
+        b_records = get_in_flight("agent-b")
+        assert len(a_records) == 1
+        assert a_records[0]["pid"] == 10
+        assert a_records[0]["execution_id"] == "ea1"
+        assert len(b_records) == 1
+        assert b_records[0]["pid"] == 20
+        assert b_records[0]["execution_id"] == "eb1"
 
 
 # ===========================================================================
@@ -160,7 +167,9 @@ class TestKillSwitch:
         with patch("os.kill") as mock_kill:
             result = kill_switch("agent-1")
 
-        mock_kill.assert_called_once_with(5555, signal.SIGTERM)
+        mock_kill.assert_any_call(5555, signal.SIGTERM)
+        sigterm_calls = [c for c in mock_kill.call_args_list if c.args[1] == signal.SIGTERM]
+        assert len(sigterm_calls) == 1
         assert len(result.abort_results) == 1
         assert result.abort_results[0].pid == 5555
         assert result.abort_results[0].execution_id == "exec-555"
@@ -175,7 +184,8 @@ class TestKillSwitch:
         with patch("os.kill") as mock_kill:
             result = kill_switch("agent-1")
 
-        assert mock_kill.call_count == 3
+        sigterm_calls = [c for c in mock_kill.call_args_list if c.args[1] == signal.SIGTERM]
+        assert len(sigterm_calls) == 3
         pids = {r.pid for r in result.abort_results}
         assert pids == {100, 200, 300}
         assert all(r.success for r in result.abort_results)
@@ -196,7 +206,9 @@ class TestKillSwitch:
         with patch("os.kill") as mock_kill:
             result = kill_switch("agent-1")
 
-        mock_kill.assert_called_once_with(888, signal.SIGTERM)
+        mock_kill.assert_any_call(888, signal.SIGTERM)
+        sigterm_calls = [c for c in mock_kill.call_args_list if c.args[1] == signal.SIGTERM]
+        assert len(sigterm_calls) == 1
         assert get_agent_status("agent-1") == AgentStatus.QUARANTINE
 
 
@@ -306,7 +318,10 @@ class TestDeregisterInFlight:
         register_in_flight("agent-b", 10, "eb1")
         deregister_in_flight("agent-a", 10)
         assert get_in_flight("agent-a") == []
-        assert get_in_flight("agent-b") == [{"pid": 10, "execution_id": "eb1"}]
+        b_records = get_in_flight("agent-b")
+        assert len(b_records) == 1
+        assert b_records[0]["pid"] == 10
+        assert b_records[0]["execution_id"] == "eb1"
 
 
 # ===========================================================================
@@ -383,7 +398,10 @@ class TestReconcileInFlight:
 
         # agent-a dead pid removed; agent-b untouched
         assert get_in_flight("agent-a") == []
-        assert get_in_flight("agent-b") == [{"pid": 22, "execution_id": "eb-1"}]
+        b_records = get_in_flight("agent-b")
+        assert len(b_records) == 1
+        assert b_records[0]["pid"] == 22
+        assert b_records[0]["execution_id"] == "eb-1"
 
     def test_returns_reconcile_result_type(self):
         register_in_flight("agent-1", 777, "exec-777")
