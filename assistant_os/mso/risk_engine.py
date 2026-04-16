@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..contracts import (
+    ACTION_BASIC_COGNITIVE_EXECUTION,
     ACTION_CODE_EXPLAIN,
     ACTION_CODE_REVIEW,
     ACTION_FIN_CHAPERON,
@@ -10,10 +11,10 @@ from ..contracts import (
     ACTION_WORK_QUERY,
     EXECUTION_MODE_AUTO,
 )
-from .contracts import GovernanceReason, RiskEvaluation
-from .system_state import build_system_state_snapshot
+from .contracts import GovernanceReason, RiskEvaluation, SystemStateSnapshot
 
 _READ_ONLY_ACTIONS = {
+    ACTION_BASIC_COGNITIVE_EXECUTION,
     ACTION_WORK_QUERY,
     ACTION_CODE_EXPLAIN,
     ACTION_CODE_REVIEW,
@@ -33,13 +34,16 @@ def evaluate_risk(
     risk_level: str,
     execution_mode: str,
     advisory_trace: dict | None = None,
+    system_state: SystemStateSnapshot | None = None,
 ) -> RiskEvaluation:
     """Evaluate risk using explicit deterministic rules."""
     reasons: list[GovernanceReason] = []
     current_level = risk_level or "medium"
-    snapshot = build_system_state_snapshot()
-    domain_summary = next((item for item in snapshot.domain_status_summary if item.domain == domain), None)
+    snapshot = system_state
+    domain_summary = next((item for item in snapshot.domain_status_summary if item.domain == domain), None) if snapshot else None
+    domain_operational_state = next((item for item in snapshot.domain_operational_states if item.domain == domain), None) if snapshot else None
     recent_failure_count = domain_summary.failed if domain_summary else 0
+    anomaly_signals = [item for item in (snapshot.recent_anomaly_signals if snapshot else []) if item.domain in {"", domain}]
 
     reasons.append(GovernanceReason(code="base_risk", detail=f"Planner risk level is {current_level}."))
 
@@ -74,6 +78,22 @@ def evaluate_risk(
     if advisory_trace and advisory_trace.get("error"):
         reasons.append(GovernanceReason(code="advisory_error", detail="Advisory layer was unavailable or incomplete; governance remained deterministic."))
 
+    if snapshot and snapshot.operational_mode != "NORMAL":
+        reasons.append(GovernanceReason(code="operational_mode", detail=f"Operational mode is {snapshot.operational_mode}."))
+        if snapshot.operational_mode == "DEGRADED" and action not in _READ_ONLY_ACTIONS:
+            current_level = _bump_risk(current_level)
+        elif snapshot.operational_mode == "RESTRICTED" and current_level == "low" and action not in _READ_ONLY_ACTIONS:
+            current_level = "medium"
+
+    if domain_operational_state and domain_operational_state.hardened:
+        anomaly_detected = True
+        reasons.append(
+            GovernanceReason(
+                code="domain_hardened",
+                detail=f"Domain {domain} is hardened by MSO due to recent anomalies.",
+            )
+        )
+
     if execution_mode == "auto" and current_level == "medium":
         reasons.append(GovernanceReason(code="auto_mode_medium_risk", detail="Auto execution combined with medium risk requires governance review."))
 
@@ -83,4 +103,6 @@ def evaluate_risk(
         base_risk=risk_level or "medium",
         recent_failure_count=recent_failure_count,
         anomaly_detected=anomaly_detected,
+        operational_mode=(snapshot.operational_mode if snapshot else "NORMAL"),
+        anomaly_signals=anomaly_signals,
     )

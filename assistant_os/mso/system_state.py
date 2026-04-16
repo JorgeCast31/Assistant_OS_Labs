@@ -1,13 +1,41 @@
-"""System state snapshot builder for MSO governance."""
+"""System state snapshot builder for dynamic MSO governance."""
 
 from __future__ import annotations
 
 from collections import defaultdict
+from threading import RLock
 
 from ..contracts import now_iso
-from .contracts import AgentStatusSummary, DomainStatusSummary, SystemStateSnapshot
+from .anomaly_engine import analyze_anomalies, build_domain_operational_states, derive_operational_mode
+from .capability_registry import list_active_revocations, list_temporary_grants
+from .contracts import AgentStatusSummary, DomainStatusSummary, OperationalMode, SystemStateSnapshot
 from .task_registry import get_recent_transitions, list_tasks
 from .trace_aggregator import get_recent_decisions, get_recent_governance_decisions, list_trace_chains
+from ..storage.mso_store import list_recent_worker_security_events
+
+_lock = RLock()
+_operational_mode_override: OperationalMode | None = None
+_operational_mode_reason = ""
+
+
+def set_operational_mode(mode: OperationalMode, *, reason: str = "") -> None:
+    """Force a system-wide operational mode until cleared."""
+    global _operational_mode_override, _operational_mode_reason
+    with _lock:
+        _operational_mode_override = mode
+        _operational_mode_reason = reason
+
+
+def clear_operational_mode_override() -> None:
+    global _operational_mode_override, _operational_mode_reason
+    with _lock:
+        _operational_mode_override = None
+        _operational_mode_reason = ""
+
+
+def get_operational_mode_override() -> tuple[OperationalMode | None, str]:
+    with _lock:
+        return _operational_mode_override, _operational_mode_reason
 
 
 def build_system_state_snapshot(*, transition_limit: int = 20, decision_limit: int = 20) -> SystemStateSnapshot:
@@ -33,8 +61,29 @@ def build_system_state_snapshot(*, transition_limit: int = 20, decision_limit: i
         for domain, counts in sorted(domain_counts.items())
     ]
 
+    recent_governance_decisions = get_recent_governance_decisions(limit=decision_limit)
+    recent_worker_security_events = list_recent_worker_security_events(limit=decision_limit)
+    anomaly_signals = analyze_anomalies(
+        domain_status_summary=domain_status_summary,
+        recent_governance_decisions=recent_governance_decisions,
+        recent_worker_security_events=recent_worker_security_events,
+    )
+    override_mode, override_reason = get_operational_mode_override()
+    operational_mode, operational_mode_reason, operational_mode_source = derive_operational_mode(
+        anomaly_signals,
+        override_mode=override_mode,
+        override_reason=override_reason,
+    )
+
+    domain_operational_states = build_domain_operational_states(
+        domain_status_summary,
+        anomaly_signals,
+        operational_mode=operational_mode,
+    )
+
     active_with_advisory = sum(1 for task in active_tasks if task.advisory_trace_ref)
     active_code_tasks = sum(1 for task in active_tasks if task.domain == "CODE")
+    active_cognitive_tasks = sum(1 for task in active_tasks if task.domain == "COGNITIVE")
     agent_status_summary = [
         AgentStatusSummary(
             agent_name="orchestrator",
@@ -54,19 +103,33 @@ def build_system_state_snapshot(*, transition_limit: int = 20, decision_limit: i
             active_tasks=active_code_tasks,
             notes="Derived from CODE-domain tasks; no direct heartbeat yet.",
         ),
+        AgentStatusSummary(
+            agent_name="local_cognitive_worker",
+            status="observed" if active_cognitive_tasks or any(task.domain == "COGNITIVE" for task in all_tasks) else "idle",
+            active_tasks=active_cognitive_tasks,
+            notes="Bounded cognitive execution worker; no persistent state mutation authority.",
+        ),
     ]
 
     trace_chains = list_trace_chains(limit=decision_limit)
     return SystemStateSnapshot(
         generated_at=now_iso(),
+        operational_mode=operational_mode,
+        operational_mode_reason=operational_mode_reason,
+        operational_mode_source=operational_mode_source,
         active_tasks=active_tasks,
         pending_tasks=pending_tasks,
         blocked_tasks=blocked_tasks,
         recent_task_transitions=get_recent_transitions(limit=transition_limit),
         recent_decisions=get_recent_decisions(limit=decision_limit),
-        recent_governance_decisions=get_recent_governance_decisions(limit=decision_limit),
+        recent_governance_decisions=recent_governance_decisions,
+        recent_anomaly_signals=anomaly_signals[:decision_limit],
+        recent_worker_security_events=recent_worker_security_events[:decision_limit],
+        active_capability_grants=list_temporary_grants()[:decision_limit],
+        active_capability_revocations=list_active_revocations()[:decision_limit],
         running_executions=[task.execution_id or task.plan_id for task in active_tasks],
         domain_status_summary=domain_status_summary,
+        domain_operational_states=domain_operational_states,
         agent_status_summary=agent_status_summary,
         trace_chain_refs=[chain.chain_id for chain in trace_chains],
     )
