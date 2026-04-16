@@ -775,13 +775,17 @@ def _governance_allow():
         return GovernanceDecision(
             governance_ref="test:bypass",
             action="ALLOW",
+            target_domain=plan.get("domain", "HOST"),
+            target_action=plan.get("action", ""),
             effective_execution_mode=execution_mode,
             risk_level="medium",
             justification="Test governance bypass",
             reasons=[],
             constraints=[],
+            interventions=[],
             capability_mode="allow",
             base_execution_mode=execution_mode,
+            operational_mode="NORMAL",
             created_at=_dt.datetime.utcnow().isoformat(),
         )
 
