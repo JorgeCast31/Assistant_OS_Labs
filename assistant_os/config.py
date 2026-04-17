@@ -242,6 +242,36 @@ RUNNER_CPU_LIMIT: str = os.environ.get("RUNNER_CPU_LIMIT", "0.5")
 # Base image — fixed, no dynamic builds.
 RUNNER_BASE_IMAGE: str = os.environ.get("RUNNER_BASE_IMAGE", "python:3.11-slim")
 
+# ---------------------------------------------------------------------------
+# HOST domain executor selection
+# ---------------------------------------------------------------------------
+# Phase 1 status: scaffold/fallback-only.
+# Execution backend for the canonical HOST pipeline.
+#   "native"   (default) — existing host_agent executor
+#   "openclaw"          — attempt eligible HOST actions through the OpenClaw
+#                          scaffold adapter first
+#
+# The HOST pipeline remains the only execution seam; this flag does NOT create
+# any alternate entrypoint or bypass.
+# Important: the OpenClaw wire client/protocol is NOT implemented yet in this
+# repository. When HOST_EXECUTOR="openclaw", eligible actions currently fall
+# back to the native executor on adapter/protocol failure.
+HOST_EXECUTOR: str = os.environ.get("HOST_EXECUTOR", "native").strip().lower() or "native"
+
+# Local OpenClaw WebSocket gateway endpoint for the future documented client.
+# In phase 1 scaffold mode, this value is only configuration metadata; the
+# adapter does not yet implement a live gateway client.
+OPENCLAW_GATEWAY_URL: str = os.environ.get(
+    "OPENCLAW_GATEWAY_URL",
+    "ws://127.0.0.1:18789",
+).strip()
+
+# Hard timeout reserved for the future documented OpenClaw round-trip.
+# In phase 1 scaffold mode this is carried as adapter config only.
+OPENCLAW_TIMEOUT_SECONDS: float = float(
+    os.environ.get("OPENCLAW_TIMEOUT_SECONDS", "5.0")
+)
+
 
 def is_command_allowed(cmd: list[str]) -> bool:
     """

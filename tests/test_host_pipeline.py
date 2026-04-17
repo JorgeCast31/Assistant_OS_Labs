@@ -612,3 +612,122 @@ class TestEndToEnd:
 
         assert result["ok"] is False
         assert result["data"]["error_code"] == HostErrorCode.CONTROL_PLANE_BLOCKED.value
+
+
+# ---------------------------------------------------------------------------
+# M. OpenClaw executor routing
+# ---------------------------------------------------------------------------
+
+
+class TestOpenClawRouting:
+    def test_default_executor_remains_native(self):
+        plan = _active(_plan(ACTION_HOST_LIST_DIRECTORY, {"confirmed": True, "path": _ALLOWED_DIR}))
+        native_result = MagicMock(
+            ok=True,
+            action="list_directory",
+            execution_id=plan["plan_id"],
+            pid=None,
+            app_name="",
+            entries=[],
+            content=None,
+            error_code=None,
+            bytes_written=None,
+            write_mode=None,
+            atomic_replace_used=None,
+        )
+        with patch("assistant_os.pipelines.host_pipeline.config.HOST_EXECUTOR", "native"), \
+             patch("assistant_os.pipelines.host_pipeline.execute_host_action", return_value=native_result) as mock_native, \
+             patch("assistant_os.pipelines.host_pipeline.execute_host_action_via_openclaw") as mock_openclaw:
+            result = host_execute(plan, "ctx")
+
+        assert result["ok"] is True
+        assert "executor" not in result["data"]
+        mock_native.assert_called_once()
+        mock_openclaw.assert_not_called()
+
+    def test_openclaw_routes_eligible_action(self):
+        plan = _active(_plan(
+            ACTION_HOST_LIST_DIRECTORY,
+            {"confirmed": True, "path": _ALLOWED_DIR, "capability": "host_read_only"},
+        ))
+        openclaw_result = MagicMock(
+            ok=True,
+            action="list_directory",
+            execution_id=plan["plan_id"],
+            pid=None,
+            app_name="",
+            entries=[{"name": "x.txt", "type": "file", "size": 1, "extension": ".txt"}],
+            content=None,
+            error_code=None,
+            bytes_written=None,
+            write_mode=None,
+            atomic_replace_used=None,
+        )
+        with patch("assistant_os.pipelines.host_pipeline.config.HOST_EXECUTOR", "openclaw"), \
+             patch("assistant_os.pipelines.host_pipeline.execute_host_action_via_openclaw", return_value=openclaw_result) as mock_openclaw, \
+             patch("assistant_os.pipelines.host_pipeline.execute_host_action") as mock_native:
+            result = host_execute(plan, "ctx")
+
+        assert result["ok"] is True
+        assert result["data"]["executor"] == "openclaw"
+        assert result["data"]["intent"] == ACTION_HOST_LIST_DIRECTORY
+        assert result["data"]["capability"] == "host_read_only"
+        mock_openclaw.assert_called_once()
+        mock_native.assert_not_called()
+
+    def test_openclaw_ineligible_action_stays_native(self):
+        plan = _active(_plan(ACTION_HOST_OPEN_APP, {"confirmed": True, "app_name": "notepad"}))
+        native_result = MagicMock(
+            ok=True,
+            action="open_app",
+            execution_id=plan["plan_id"],
+            pid=9001,
+            app_name="notepad",
+            entries=None,
+            content=None,
+            error_code=None,
+            bytes_written=None,
+            write_mode=None,
+            atomic_replace_used=None,
+        )
+        with patch("assistant_os.pipelines.host_pipeline.config.HOST_EXECUTOR", "openclaw"), \
+             patch("assistant_os.pipelines.host_pipeline.execute_host_action", return_value=native_result) as mock_native, \
+             patch("assistant_os.pipelines.host_pipeline.execute_host_action_via_openclaw") as mock_openclaw:
+            result = host_execute(plan, "ctx")
+
+        assert result["ok"] is True
+        assert "executor" not in result["data"]
+        mock_native.assert_called_once()
+        mock_openclaw.assert_not_called()
+
+    def test_openclaw_failure_falls_back_to_native(self):
+        from assistant_os.pipelines.openclaw_adapter import OpenClawProtocolNotConfigured
+
+        plan = _active(_plan(ACTION_HOST_READ_TEXT_FILE, {"confirmed": True, "path": _ALLOWED_FILE}))
+        native_result = MagicMock(
+            ok=True,
+            action="read_text_file",
+            execution_id=plan["plan_id"],
+            pid=None,
+            app_name="",
+            entries=None,
+            content="native-fallback",
+            error_code=None,
+            bytes_written=None,
+            write_mode=None,
+            atomic_replace_used=None,
+        )
+        with patch("assistant_os.pipelines.host_pipeline.config.HOST_EXECUTOR", "openclaw"), \
+             patch(
+                 "assistant_os.pipelines.host_pipeline.execute_host_action_via_openclaw",
+                 side_effect=OpenClawProtocolNotConfigured("protocol details missing"),
+             ) as mock_openclaw, \
+             patch("assistant_os.pipelines.host_pipeline.execute_host_action", return_value=native_result) as mock_native:
+            result = host_execute(plan, "ctx")
+
+        assert result["ok"] is True
+        assert result["data"]["executor"] == "native"
+        assert result["data"]["executor_fallback_reason"] == "protocol details missing"
+        assert result["data"]["content"] == "native-fallback"
+        mock_openclaw.assert_called_once()
+        mock_native.assert_called_once()
