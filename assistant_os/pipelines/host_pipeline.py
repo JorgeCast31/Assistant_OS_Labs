@@ -36,6 +36,9 @@ Invariants
   provides defense-in-depth for direct calls that bypass the pipeline.
 - execution_id = plan["plan_id"] for audit correlation.
 - HOST_AGENT_ID is NEVER taken from the payload — it is fixed in host_agent.py.
+- Phase 1 OpenClaw support is scaffold/fallback-only: no new entrypoints,
+  no MSO changes, no protocol probing, and native execution remains the
+  default/fallback path.
 """
 
 from __future__ import annotations
@@ -208,6 +211,9 @@ def _dispatch(plan: dict, context_id: str) -> DomainResult:
         content=payload.get("content", ""),  # Phase 5A/5B: write/append content
     )
 
+    # Phase 1 scaffold/fallback-only:
+    # try the OpenClaw adapter only behind the existing HOST pipeline seam.
+    # Any adapter/protocol failure falls back to the native executor.
     executor_name = "native"
     fallback_reason = ""
     if _should_use_openclaw(agent_action):
@@ -230,7 +236,12 @@ def _dispatch(plan: dict, context_id: str) -> DomainResult:
 
 
 def _should_use_openclaw(agent_action: str) -> bool:
-    """Feature-flag gate for OpenClaw routing inside the canonical HOST pipeline."""
+    """
+    Feature-flag gate for scaffold-only OpenClaw routing inside HOST.
+
+    This does not create a new execution path; it only selects an alternate
+    backend inside the canonical pipeline for the phase-1 eligible actions.
+    """
     return config.HOST_EXECUTOR == "openclaw" and is_openclaw_eligible(agent_action)
 
 
@@ -242,7 +253,13 @@ def _wrap_agent_result(
     executor_name: str,
     fallback_reason: str = "",
 ) -> DomainResult:
-    """Convert HostActionResult → DomainResult."""
+    """
+    Convert HostActionResult -> DomainResult.
+
+    OpenClaw-specific metadata is attached only when the scaffold adapter is
+    actually selected or when a fallback from OpenClaw to native occurred, so
+    the default native HOST response shape stays unchanged.
+    """
     exec_meta = build_execution_context(
         plan,
         HostActionRequest(

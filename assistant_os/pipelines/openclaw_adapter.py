@@ -1,10 +1,13 @@
 """
 OpenClaw adapter for the canonical HOST pipeline.
 
+Phase 1 status: scaffold/fallback-only.
+
 This module is intentionally narrow:
 - It only accepts HostActionRequest + canonical plan metadata.
 - It only supports the phase-1 HOST actions approved for OpenClaw.
 - It owns all OpenClaw wire/protocol details behind one helper boundary.
+- It does NOT implement a live gateway client yet.
 
 The HOST pipeline remains the sole caller and preserves canonical contracts:
 CanonicalRequest -> PolicyDecision -> ExecutionPlan -> HOST pipeline -> DomainResult
@@ -13,8 +16,8 @@ Protocol note
 -------------
 The live OpenClaw gateway protocol is intentionally NOT guessed here.
 Until the documented JSON message schema is provided in-repo, the wire helper
-raises a protocol-configuration error and the HOST pipeline falls back to the
-native executor.
+remains unimplemented, raises a protocol-configuration error, and the HOST
+pipeline falls back to the native executor.
 """
 
 from __future__ import annotations
@@ -47,7 +50,7 @@ class OpenClawGatewayTimeout(OpenClawAdapterError):
 
 @dataclass(frozen=True)
 class OpenClawExecutionContext:
-    """Canonical metadata forwarded to the gateway envelope when available."""
+    """Canonical metadata reserved for the future documented gateway envelope."""
 
     gateway_url: str
     timeout_seconds: float
@@ -89,10 +92,12 @@ def execute_host_action_via_openclaw(
     plan: dict,
 ) -> HostActionResult:
     """
-    Execute an eligible HOST action through OpenClaw.
+    Execute an eligible HOST action through the OpenClaw scaffold boundary.
 
     The adapter returns HostActionResult so the HOST pipeline can keep using
     the same wrapping logic and fallback path as the native executor.
+    In phase 1 this path is scaffold-only until the documented gateway
+    protocol is wired into _send_gateway_envelope().
     """
     if not is_openclaw_eligible(request.action):
         raise OpenClawAdapterError(
@@ -109,7 +114,12 @@ def _build_gateway_envelope(
     request: HostActionRequest,
     context: OpenClawExecutionContext,
 ) -> dict[str, Any]:
-    """Build the canonical control-plane message for the OpenClaw gateway."""
+    """
+    Build the reserved control-plane envelope for the future gateway client.
+
+    The exact outbound wire schema is not active yet; this dict is an internal
+    scaffold boundary only until the documented protocol is implemented.
+    """
     return {
         "type": "host_execution_request",
         "executor": "openclaw",
@@ -144,11 +154,13 @@ def _send_gateway_envelope(
     Send a JSON envelope to the OpenClaw WebSocket gateway.
 
     This is the only place where the gateway protocol should be implemented.
-    The current phase intentionally stops short of inventing wire semantics.
+    The current phase intentionally stops short of inventing wire semantics,
+    probing the gateway, or shipping a speculative client.
     """
     raise OpenClawProtocolNotConfigured(
-        "OpenClaw gateway wire helper is scaffolded but the documented "
-        "WebSocket JSON protocol is not defined in this repository."
+        "OpenClaw gateway wire helper is not implemented in phase 1 scaffold "
+        "mode because the documented WebSocket JSON protocol is not defined "
+        "in this repository."
     )
 
 
@@ -157,7 +169,12 @@ def _translate_gateway_response(
     *,
     request: HostActionRequest,
 ) -> HostActionResult:
-    """Translate a gateway JSON response into HostActionResult."""
+    """
+    Translate a documented gateway JSON response into HostActionResult.
+
+    This translator is kept ready behind the scaffold boundary, but it is not
+    exercised by a live client until _send_gateway_envelope() is implemented.
+    """
     if not isinstance(response, dict):
         raise OpenClawAdapterError("gateway response must be a dict")
 
