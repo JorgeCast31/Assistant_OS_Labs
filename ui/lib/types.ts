@@ -295,3 +295,49 @@ export interface HudIndicator {
   value: string | number
   status: HealthStatus | 'idle'
 }
+
+// ── M29: Cognition ────────────────────────────────────────────────────────────
+
+/** Runtime status of a single cognitive provider as reported by the backend. */
+export type CognitionProviderStatus = 'online' | 'offline' | 'degraded' | 'disabled'
+
+/** Cognitive usage policy the operator can select. */
+export type CognitionPolicy = 'auto' | 'prefer_local' | 'deterministic_only'
+
+export interface CognitionProvider {
+  provider_id: string
+  label: string
+  backend: string
+  model: string
+  status: CognitionProviderStatus
+  latency_ms: number
+  available_tasks: string[]
+  degraded: boolean
+  last_health_check: string | null
+  error: string | null
+  feature_enabled: boolean
+}
+
+export interface CognitionProvidersResponse {
+  ok: boolean
+  providers: CognitionProvider[]
+  ui_cognition_enabled: boolean
+  default_policy: CognitionPolicy
+}
+
+export interface CognitionPreferences {
+  ok: boolean
+  policy: CognitionPolicy
+  set_by: 'user' | 'default'
+}
+
+/** Per-message trace of local LLM participation (M29). */
+export interface CognitiveTrace {
+  used: boolean
+  provider: string | null
+  task_type: string | null
+  validation: string | null
+  confidence: number | null
+  fallback_used: boolean
+  path?: string
+}

@@ -1,13 +1,14 @@
 'use client'
 
-import { useUIStore }        from '@/stores/ui-store'
-import { useSystemPolling }  from '@/hooks/use-system-polling'
-import { Sidebar }           from './sidebar'
-import { TopHUD }            from './top-hud'
-import { ChatView }          from '@/components/views/chat-view'
-import { ExecutionsView }    from '@/components/views/executions-view'
-import { SystemView }        from '@/components/views/system-view'
-import { ActionsView }       from '@/components/views/actions-view'
+import { useUIStore }          from '@/stores/ui-store'
+import { useSystemPolling }    from '@/hooks/use-system-polling'
+import { useCognitionPolling } from '@/hooks/use-cognition-polling'
+import { Sidebar }             from './sidebar'
+import { TopHUD }              from './top-hud'
+import { ChatView }            from '@/components/views/chat-view'
+import { ExecutionsView }      from '@/components/views/executions-view'
+import { SystemView }          from '@/components/views/system-view'
+import { ActionsView }         from '@/components/views/actions-view'
 
 export function AppShell() {
   const { activeView } = useUIStore()
@@ -15,6 +16,10 @@ export function AppShell() {
   // Starts polling system health for the app lifetime.
   // TopHUD and SystemView read from Zustand — no prop drilling needed.
   useSystemPolling()
+
+  // M29: Starts polling cognition provider health for the app lifetime.
+  // CognitivePresenceBadge and CognitiveStatusPanel read from cognition-store.
+  useCognitionPolling()
 
   return (
     <div className="flex h-screen w-screen bg-os-base overflow-hidden text-tx-primary">
