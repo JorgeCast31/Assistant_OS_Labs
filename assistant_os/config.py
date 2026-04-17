@@ -234,6 +234,28 @@ RUNNER_CPU_LIMIT: str = os.environ.get("RUNNER_CPU_LIMIT", "0.5")
 # Base image — fixed, no dynamic builds.
 RUNNER_BASE_IMAGE: str = os.environ.get("RUNNER_BASE_IMAGE", "python:3.11-slim")
 
+# ---------------------------------------------------------------------------
+# HOST domain executor selection
+# ---------------------------------------------------------------------------
+# Execution backend for the canonical HOST pipeline.
+#   "native"   (default) — existing host_agent executor
+#   "openclaw"          — route eligible HOST actions through the OpenClaw adapter
+#
+# The HOST pipeline remains the only execution seam; this flag does NOT create
+# any alternate entrypoint or bypass.
+HOST_EXECUTOR: str = os.environ.get("HOST_EXECUTOR", "native").strip().lower() or "native"
+
+# Local OpenClaw WebSocket gateway endpoint.
+OPENCLAW_GATEWAY_URL: str = os.environ.get(
+    "OPENCLAW_GATEWAY_URL",
+    "ws://127.0.0.1:18789",
+).strip()
+
+# Hard timeout for a single OpenClaw adapter round-trip.
+OPENCLAW_TIMEOUT_SECONDS: float = float(
+    os.environ.get("OPENCLAW_TIMEOUT_SECONDS", "5.0")
+)
+
 
 def is_command_allowed(cmd: list[str]) -> bool:
     """

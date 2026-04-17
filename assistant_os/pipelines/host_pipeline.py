@@ -40,6 +40,7 @@ Invariants
 
 from __future__ import annotations
 
+from .. import config
 from ..contracts import (
     DomainResult,
     make_domain_result,
@@ -56,6 +57,12 @@ from ..contracts import (
     RESULT_TYPE_HOST_ACTION,
 )
 from ..agents.host_agent import HostActionRequest, execute_host_action
+from .openclaw_adapter import (
+    OpenClawAdapterError,
+    build_execution_context,
+    execute_host_action_via_openclaw,
+    is_openclaw_eligible,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -201,17 +208,58 @@ def _dispatch(plan: dict, context_id: str) -> DomainResult:
         content=payload.get("content", ""),  # Phase 5A/5B: write/append content
     )
 
-    agent_result = execute_host_action(request)
+    executor_name = "native"
+    fallback_reason = ""
+    if _should_use_openclaw(agent_action):
+        try:
+            agent_result = execute_host_action_via_openclaw(request, plan=plan)
+            executor_name = "openclaw"
+        except OpenClawAdapterError as exc:
+            fallback_reason = str(exc)
+            agent_result = execute_host_action(request)
+    else:
+        agent_result = execute_host_action(request)
 
-    return _wrap_agent_result(agent_result, plan, agent_action)
+    return _wrap_agent_result(
+        agent_result,
+        plan,
+        agent_action,
+        executor_name=executor_name,
+        fallback_reason=fallback_reason,
+    )
 
 
-def _wrap_agent_result(agent_result, plan: dict, agent_action: str) -> DomainResult:
+def _should_use_openclaw(agent_action: str) -> bool:
+    """Feature-flag gate for OpenClaw routing inside the canonical HOST pipeline."""
+    return config.HOST_EXECUTOR == "openclaw" and is_openclaw_eligible(agent_action)
+
+
+def _wrap_agent_result(
+    agent_result,
+    plan: dict,
+    agent_action: str,
+    *,
+    executor_name: str,
+    fallback_reason: str = "",
+) -> DomainResult:
     """Convert HostActionResult → DomainResult."""
+    exec_meta = build_execution_context(
+        plan,
+        HostActionRequest(
+            execution_id=agent_result.execution_id,
+            action=agent_result.action,
+        ),
+    )
     data: dict = {
         "action":       agent_result.action,
         "execution_id": agent_result.execution_id,
     }
+    if executor_name != "native" or fallback_reason:
+        data["executor"] = executor_name
+    if executor_name == "openclaw":
+        data["intent"] = exec_meta.intent
+    if executor_name == "openclaw" and exec_meta.capability is not None:
+        data["capability"] = exec_meta.capability
     if agent_result.pid is not None:
         data["pid"] = agent_result.pid
     if agent_result.app_name:
@@ -230,6 +278,8 @@ def _wrap_agent_result(agent_result, plan: dict, agent_action: str) -> DomainRes
     # Phase 5C — atomic write observability
     if agent_result.atomic_replace_used is not None:
         data["atomic_replace_used"] = agent_result.atomic_replace_used
+    if fallback_reason:
+        data["executor_fallback_reason"] = fallback_reason
     # Include path for write actions so the caller knows what was written.
     # Never include the content itself — only metadata.
     _domain_payload = plan.get("domain_payload") or {}
