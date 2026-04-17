@@ -2,6 +2,7 @@
 
 import { useUIStore } from '@/stores/ui-store'
 import type { ViewId, HealthStatus } from '@/lib/types'
+import { CognitivePresenceBadge } from '@/components/cognition/CognitivePresenceBadge'
 
 const VIEW_TITLES: Record<ViewId, string> = {
   chat:       'Chat',
@@ -54,6 +55,9 @@ export function TopHUD() {
 
       {/* Right: live indicators */}
       <div className="flex items-center gap-4">
+
+        {/* M29: Local cognitive engine presence badge */}
+        <CognitivePresenceBadge />
 
         {/* Overall health dot */}
         <div className="flex items-center gap-1.5" title={`API: ${apiStatus} · Webhook: ${webhookStatus}`}>

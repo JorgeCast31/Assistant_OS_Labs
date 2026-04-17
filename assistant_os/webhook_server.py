@@ -1301,7 +1301,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if path == "/codeops/pr":
             self._handle_codeops_pr(remote)
             return
-        
+
+        # M29: POST /cognition/preferences — update cognitive usage policy
+        if path == "/cognition/preferences":
+            self._handle_cognition_preferences_post(remote)
+            return
+
         # 404 for unknown paths
         status, error = _make_json_error(404, f"Not found: {path}", "NotFound")
         _log_webhook_event(path, remote, ok=False)
@@ -1392,11 +1397,24 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if path == "/fin/sheets/status":
             self._handle_fin_sheets_status()
             return
-        
+
         if path == "/work/schema":
             self._handle_work_schema_get()
             return
-        
+
+        # M29: Cognition presence endpoints (feature-flagged)
+        if path == "/cognition/providers":
+            self._handle_cognition_providers_get()
+            return
+
+        if path == "/cognition/providers/health":
+            self._handle_cognition_providers_health_get()
+            return
+
+        if path == "/cognition/preferences":
+            self._handle_cognition_preferences_get()
+            return
+
         # 405 for everything else
         status, error = _make_json_error(405, "Method not allowed. Use POST.", "MethodNotAllowed")
         self._send_json_response(status, error)
@@ -1851,7 +1869,19 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         req = normalize_request(text=text)
         result = handle_request(req, forced_operation=forced_operation)
-        return _adapt_result_to_response(result, req["context_id"])
+        response = _adapt_result_to_response(result, req["context_id"])
+
+        # M30: Lift cognitive_trace from DomainResult data to the top-level
+        # HTTP response when ASSISTANT_LOCAL_LLM_ENABLED is set.
+        # This exposes real LLM participation metadata to callers without
+        # changing existing output contracts (it's an additive field).
+        from .config import ASSISTANT_LOCAL_LLM_ENABLED
+        if ASSISTANT_LOCAL_LLM_ENABLED:
+            ct = (result.get("data") or {}).get("cognitive_trace")
+            if ct:
+                response["cognitive_trace"] = ct
+
+        return response
     
     def _execute_work_query_from_plan(self, plan: Plan, context_id: str) -> Response:
         """Execute a WORK query from a Plan and return Response."""
@@ -2232,7 +2262,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             base_audit.setdefault("action_id",     action_raw.get("id"))
 
         # Convert ChatCoreResponse to JSON-serializable dict
-        response_data = {
+        response_data: dict = {
             "ok": True,
             "message": rendered.message,
             "trace_id": response.get("trace_id", ""),
@@ -2246,6 +2276,21 @@ class WebhookHandler(BaseHTTPRequestHandler):
             "session": dict(response.get("session", {})),
             "audit": base_audit,
         }
+
+        # M29: Attach cognitive_trace when the feature is enabled.
+        # The chat path is deterministic — local LLM is never consulted here.
+        # cognitive_trace.used = False is the truthful value.
+        from .config import ASSISTANT_LOCAL_LLM_ENABLED
+        if ASSISTANT_LOCAL_LLM_ENABLED:
+            response_data["cognitive_trace"] = {
+                "used": False,
+                "provider": None,
+                "task_type": None,
+                "validation": None,
+                "confidence": None,
+                "fallback_used": False,
+                "path": "deterministic",
+            }
 
         # M17: persist messages + update context_id if session_id was provided
         if session_id:
@@ -3488,6 +3533,92 @@ class WebhookHandler(BaseHTTPRequestHandler):
             })
 
     # -------------------------------------------------------------------------
+    # M29: Cognition Presence Endpoints
+    # -------------------------------------------------------------------------
+
+    def _handle_cognition_providers_get(self) -> None:
+        """GET /cognition/providers — list all cognitive providers and their health."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+        try:
+            from .cognition.providers import get_providers
+            result = get_providers()
+            self._send_json_response(200, result)
+        except Exception as exc:
+            status, error = _make_json_error(500, f"Cognition providers error: {exc}", "InternalError")
+            self._send_json_response(status, error)
+
+    def _handle_cognition_providers_health_get(self) -> None:
+        """GET /cognition/providers/health — compact health snapshot for all providers."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+        try:
+            from .cognition.providers import get_providers_health
+            providers = get_providers_health()
+            self._send_json_response(200, {"ok": True, "providers": providers})
+        except Exception as exc:
+            status, error = _make_json_error(500, f"Cognition health error: {exc}", "InternalError")
+            self._send_json_response(status, error)
+
+    def _handle_cognition_preferences_get(self) -> None:
+        """GET /cognition/preferences — return current cognitive usage policy."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+        try:
+            from .cognition.preferences import get_preferences
+            prefs = get_preferences()
+            self._send_json_response(200, {"ok": True, **prefs})
+        except Exception as exc:
+            status, error = _make_json_error(500, f"Cognition preferences error: {exc}", "InternalError")
+            self._send_json_response(status, error)
+
+    def _handle_cognition_preferences_post(self, remote: str) -> None:
+        """POST /cognition/preferences — update cognitive usage policy."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+        result = self._read_body(max_bytes=WEBHOOK_MAX_BYTES)
+        if result[1] is not None:
+            status, error = result[1]
+            self._send_json_response(status, error)
+            return
+        try:
+            body = json.loads(result[0]) if result[0] else {}
+        except json.JSONDecodeError as exc:
+            status, error = _make_json_error(400, f"Invalid JSON: {exc}", "InvalidJSON")
+            self._send_json_response(status, error)
+            return
+        policy = body.get("policy", "")
+        if not isinstance(policy, str) or not policy:
+            status, error = _make_json_error(400, "Missing required field: policy", "BadRequest")
+            self._send_json_response(status, error)
+            return
+        try:
+            from .cognition.preferences import set_preferences
+            success, err_msg = set_preferences(policy)
+            if not success:
+                status, error = _make_json_error(400, err_msg, "BadRequest")
+                self._send_json_response(status, error)
+                return
+            from .cognition.preferences import get_preferences
+            prefs = get_preferences()
+            self._send_json_response(200, {"ok": True, **prefs})
+        except Exception as exc:
+            status, error = _make_json_error(500, f"Cognition preferences update error: {exc}", "InternalError")
+            self._send_json_response(status, error)
+
+    # -------------------------------------------------------------------------
     # CodeOps Endpoints
     # -------------------------------------------------------------------------
 
@@ -4138,10 +4269,18 @@ def start_server_thread(host: str = WEBHOOK_HOST, port: int = 0) -> tuple[Webhoo
     """
     server = WebhookHTTPServer(host, port)
     actual_port = server.server_address[1]
-    
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+
+    # poll_interval=0.05 (50 ms) vs default 0.5 s: server notices shutdown()
+    # faster and releases the socket sooner.  This reduces the Windows loopback
+    # socket-churn window that causes WinError 10053 (ConnectionAborted) when
+    # many test servers start and stop in rapid succession within one process.
+    thread = threading.Thread(
+        target=server.serve_forever,
+        kwargs={"poll_interval": 0.05},
+        daemon=True,
+    )
     thread.start()
-    
+
     return server, actual_port
 
 

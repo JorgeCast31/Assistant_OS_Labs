@@ -359,10 +359,58 @@ def _publish_mso_observation(
                 error_message=(result.get("error") or {}).get("message", ""),
                 execution_id=result.get("plan_id", "") or plan_id,
             )
+
+        # M30: Inject cognitive_trace into result data so the HTTP layer can
+        # surface real LLM participation without changing DomainResult contracts.
+        # This is additive and non-breaking — only set when advisory was consulted.
+        if advisory_trace:
+            _inject_cognitive_trace(result, advisory_trace)
+
         return result
     except Exception as exc:
         _log.debug("mso state publication failed non-fatally: %s", exc)
         return result
+
+
+def _inject_cognitive_trace(result: DomainResult, advisory_trace: dict) -> None:
+    """
+    Attach a cognitive_trace dict to result["data"] from an advisory_trace.
+
+    Non-fatal — called inside a try/except in _publish_mso_observation.
+    Never overrides existing cognitive_trace (domain pipelines may set one).
+    """
+    try:
+        from ..mso.local_llm_adapter import _normalized_provider
+
+        status = advisory_trace.get("status", "disabled")
+        used   = status == "ok" and bool(advisory_trace.get("consulted"))
+
+        cognitive_trace = {
+            "used":         used,
+            "provider":     "local_llm",
+            "backend":      advisory_trace.get("provider", _normalized_provider()),
+            "task_type":    "orchestrator_advisory",
+            "validation":   "passed" if status == "ok" else status,
+            "confidence":   None,   # advisory schema uses confidence_note string; not yet numeric
+            "fallback_used": not used,
+        }
+
+        existing_data = result.get("data")
+        if isinstance(existing_data, dict):
+            if "cognitive_trace" not in existing_data:
+                existing_data["cognitive_trace"] = cognitive_trace
+        elif existing_data is None:
+            # result.data is None — create a fresh dict
+            result["data"] = {"cognitive_trace": cognitive_trace}
+        else:
+            # Non-dict, non-None data is unexpected in DomainResult; do NOT
+            # overwrite it — log and skip rather than silently destroy data.
+            _log.warning(
+                "_inject_cognitive_trace: unexpected data type %s, skipping trace injection",
+                type(existing_data).__name__,
+            )
+    except Exception as exc:
+        _log.debug("_inject_cognitive_trace failed non-fatally: %s", exc)
 
 
 def handle_request(
