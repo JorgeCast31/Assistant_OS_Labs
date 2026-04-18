@@ -24,6 +24,7 @@ class MachineOperatorAuditEventType:
     MO_EXECUTION_SKIPPED = "mo_execution_skipped"
     MO_BACKEND_UNAVAILABLE = "mo_backend_unavailable"
     MO_ABORTED = "mo_aborted"
+    MO_EPHEMERAL_SCOPE_CLOSED = "mo_ephemeral_scope_closed"
 
 
 @dataclass(frozen=True)

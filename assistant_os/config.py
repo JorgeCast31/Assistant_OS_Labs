@@ -258,16 +258,15 @@ RUNNER_BASE_IMAGE: str = os.environ.get("RUNNER_BASE_IMAGE", "python:3.11-slim")
 # back to the native executor on adapter/protocol failure.
 HOST_EXECUTOR: str = os.environ.get("HOST_EXECUTOR", "native").strip().lower() or "native"
 
-# Local OpenClaw WebSocket gateway endpoint for the future documented client.
-# In phase 1 scaffold mode, this value is only configuration metadata; the
-# adapter does not yet implement a live gateway client.
+# Local OpenClaw gateway endpoint for MACHINE_OPERATOR Tier A execution.
+# Accepts ws(s) or http(s) URLs; the adapter translates ws(s) to the matching
+# http(s) execute endpoint and keeps transport details inside the MO lane.
 OPENCLAW_GATEWAY_URL: str = os.environ.get(
     "OPENCLAW_GATEWAY_URL",
     "ws://127.0.0.1:18789",
 ).strip()
 
-# Hard timeout reserved for the future documented OpenClaw round-trip.
-# In phase 1 scaffold mode this is carried as adapter config only.
+# Hard timeout cap for one MACHINE_OPERATOR backend round-trip.
 OPENCLAW_TIMEOUT_SECONDS: float = float(
     os.environ.get("OPENCLAW_TIMEOUT_SECONDS", "5.0")
 )
