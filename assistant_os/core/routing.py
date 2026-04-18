@@ -29,6 +29,7 @@ from ..pipelines.work_pipeline import execute as _work_execute
 from ..pipelines.fin_pipeline import execute as _fin_execute
 from ..pipelines.code_pipeline import execute as _code_execute
 from ..pipelines.host_pipeline import execute as _host_execute
+from ..pipelines.machine_operator_pipeline import execute as _machine_operator_execute
 
 # ---------------------------------------------------------------------------
 # Domain Registry
@@ -40,6 +41,7 @@ DOMAIN_PIPELINES: dict[str, Callable] = {
     "FIN":  _fin_execute,
     "CODE": _code_execute,
     "HOST": _host_execute,
+    "MACHINE_OPERATOR": _machine_operator_execute,
 }
 
 
@@ -64,6 +66,8 @@ def action_domain(action: str) -> str:
         return "CODE"
     if action.startswith("HOST_"):
         return "HOST"
+    if action.startswith("MACHINE_OPERATOR_"):
+        return "MACHINE_OPERATOR"
     if action == "BASIC_COGNITIVE_EXECUTION":
         return "COGNITIVE"
     return "UNKNOWN"
@@ -99,4 +103,7 @@ def get_pipeline(domain: str) -> Optional[Callable]:
     if domain == "HOST" and stored is _host_execute:
         from ..pipelines import host_pipeline
         return host_pipeline.execute
+    if domain == "MACHINE_OPERATOR" and stored is _machine_operator_execute:
+        from ..pipelines import machine_operator_pipeline
+        return machine_operator_pipeline.execute
     return stored
