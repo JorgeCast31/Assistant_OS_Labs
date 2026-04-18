@@ -297,10 +297,11 @@ ACTION_CODE_REVIEW  = "CODE_REVIEW"       # Review / audit code (read-only)
 ACTION_CODE_FIX     = "CODE_FIX"          # Fix a bug (mutating: preview → confirm → apply)
 ACTION_CODE_CREATE  = "CODE_CREATE"       # Create a new file / class / function (mutating)
 ACTION_BASIC_COGNITIVE_EXECUTION = "BASIC_COGNITIVE_EXECUTION"  # Bounded cognitive worker dispatch
+ACTION_MACHINE_OPERATOR_EXECUTE = "MACHINE_OPERATOR_EXECUTE"  # Bounded machine-operator lane dispatch
 ACTION_COMMAND = "COMMAND"                # Generic prefixed command (CODE/DOC/JOBS/BIZ)
 ACTION_CLASSIFY = "CLASSIFY"              # Classification only (no execution)
 ACTION_UNKNOWN = "UNKNOWN"                # Unknown action
-# HOST domain action constants (OpenClaw / host_launcher)
+# HOST domain action constants
 ACTION_HOST_OPEN_APP        = "HOST_OPEN_APP"        # Launch app from APP_REGISTRY
 ACTION_HOST_CLOSE_PID       = "HOST_CLOSE_PID"       # SIGTERM a managed process
 ACTION_HOST_OPEN_DIRECTORY  = "HOST_OPEN_DIRECTORY"  # Open allowed directory in explorer
@@ -499,6 +500,7 @@ _AUTO_EXECUTE_WHITELIST: frozenset[tuple[str, str]] = frozenset({
     # ACTION_HOST_OPEN_FILE → RISK_MEDIUM, confirm required (not whitelisted)
     # ACTION_HOST_CLOSE_PID → RISK_MEDIUM, confirm required (not whitelisted)
     (ACTION_BASIC_COGNITIVE_EXECUTION, RISK_LOW),  # Bounded cognitive execution, no persistent mutation
+    (ACTION_MACHINE_OPERATOR_EXECUTE, RISK_LOW),   # Stubbed lane execution after contract/policy validation
 })
 
 
@@ -581,6 +583,7 @@ UI_INTENT_MAP: dict[str, str] = {
     ACTION_HOST_APPEND_TEXT_FILE: "append_text_file",
     ACTION_HOST_CREATE_DIRECTORY: "create_directory",
     ACTION_BASIC_COGNITIVE_EXECUTION: "delegate",
+    ACTION_MACHINE_OPERATOR_EXECUTE: "machine_operator",
 }
 
 
@@ -699,9 +702,10 @@ RESULT_TYPE_CODE_EXPLAIN = "code_explain"  # Read-only: code explanation
 RESULT_TYPE_CODE_REVIEW  = "code_review"   # Read-only: code review / audit
 RESULT_TYPE_CODE_PREVIEW = "code_preview"  # Mutating: change proposal preview (pre-confirm)
 RESULT_TYPE_CODE_APPLY   = "code_apply"    # Mutating: change applied (post-confirm)
-# HOST domain result types (OpenClaw)
+# HOST domain result types
 RESULT_TYPE_HOST_ACTION  = "host_action"   # All HOST domain actions (action in data["action"])
 RESULT_TYPE_COGNITIVE_EXECUTION = "cognitive_execution"  # Bounded cognitive worker result
+RESULT_TYPE_MACHINE_OPERATOR_ACTION = "machine_operator_action"  # Stubbed MACHINE_OPERATOR lane result
 
 
 
