@@ -1,7 +1,28 @@
 import unittest
+from unittest.mock import patch
+
+import requests
+
+
+class _FakeResponse:
+    def __init__(self, body, status_code=200):
+        self._body = body
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._body
 
 
 class TestMachineOperatorPipeline(unittest.TestCase):
+    def setUp(self):
+        from assistant_os.mso.machine_operator_audit import MACHINE_OPERATOR_AUDIT_LOG
+
+        MACHINE_OPERATOR_AUDIT_LOG.clear()
+
     def _request(self, **overrides):
         from assistant_os.mso.contracts import (
             MachineOperatorBudget,
@@ -53,29 +74,473 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         plan.update(overrides)
         return plan
 
-    def test_valid_request_returns_stub_domain_result(self):
+    def test_valid_request_returns_real_execution_domain_result(self):
         from assistant_os.contracts import RESULT_TYPE_MACHINE_OPERATOR_ACTION
         from assistant_os.pipelines.machine_operator_pipeline import execute
 
-        result = execute(self._plan(), "ctx-machine-1")
+        response_body = {
+            "status": "ok",
+            "final_url": "https://example.test/",
+            "observation": {
+                "summary": "Snapshot captured.",
+                "detail": "Page snapshot collected through the machine operator backend.",
+                "structured_data": {"page_title": "Example Domain"},
+            },
+            "evidence_refs": [
+                {
+                    "ref_id": "evidence-001",
+                    "evidence_type": "artifact",
+                    "uri": "memory://snapshot/001",
+                    "description": "Structured page snapshot",
+                    "media_type": "application/json",
+                }
+            ],
+            "consumed_budget": {
+                "steps": 1,
+                "duration_ms": 120,
+                "output_bytes": 512,
+                "side_effects": 0,
+            },
+            "side_effects_declared": [],
+            "backend_execution_performed": True,
+            "machine_action_performed": True,
+        }
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(response_body),
+        ):
+            result = execute(self._plan(), "ctx-machine-1")
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["result_type"], RESULT_TYPE_MACHINE_OPERATOR_ACTION)
         self.assertEqual(result["domain"], "MACHINE_OPERATOR")
-        self.assertEqual(result["data"]["lane_outcome"], "accepted_not_executed")
+        self.assertEqual(result["data"]["lane_outcome"], "success")
         self.assertTrue(result["data"]["contract_validation"]["ok"])
+        self.assertTrue(result["data"]["policy_validation"]["ok"])
+        self.assertTrue(result["data"]["backend_execution_attempted"])
+        self.assertTrue(result["data"]["backend_execution_performed"])
+        self.assertTrue(result["data"]["machine_action_performed"])
+        self.assertEqual(result["data"]["machine_operator_response"]["status"], "ok")
+        self.assertEqual(result["data"]["machine_operator_response"]["evidence_refs"][0]["uri"], "memory://snapshot/001")
+        self.assertEqual(
+            result["data"]["machine_operator_response"]["consumed_budget"],
+            {
+                "steps": 1,
+                "duration_ms": 120,
+                "output_bytes": 512,
+                "side_effects": 0,
+            },
+        )
+        self.assertEqual(result["data"]["machine_operator_response"]["side_effects_declared"], [])
+
+    def test_pipeline_calls_adapter_boundary(self):
+        from assistant_os.mso.contracts import (
+            MachineOperatorBudgetUsage,
+            MachineOperatorObservation,
+        )
+        from assistant_os.mso.machine_operator_adapter import MachineOperatorAdapterResult
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        class FakeAdapter:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, request, context):
+                self.calls.append((request, context))
+                return MachineOperatorAdapterResult(
+                    status="ok",
+                    observation=MachineOperatorObservation(
+                        summary="Fake boundary invoked.",
+                        detail="Real pipeline path stayed behind the adapter.",
+                        structured_data={},
+                    ),
+                    evidence_refs=[],
+                    consumed_budget=MachineOperatorBudgetUsage(
+                        steps=1,
+                        duration_ms=25,
+                        output_bytes=10,
+                        side_effects=0,
+                    ),
+                    side_effects_declared=[],
+                    metadata={
+                        "lane_outcome": "success",
+                        "backend_status": "completed",
+                        "backend_execution_attempted": True,
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                        "adapter_status": "completed",
+                    },
+                    audit_event_ids=["audit-fake-001"],
+                )
+
+        fake_adapter = FakeAdapter()
+        with patch(
+            "assistant_os.pipelines.machine_operator_pipeline.DEFAULT_MACHINE_OPERATOR_ADAPTER",
+            fake_adapter,
+        ):
+            result = execute(self._plan(), "ctx-machine-boundary")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(fake_adapter.calls), 1)
+        self.assertEqual(result["data"]["machine_operator_response"]["observation"]["summary"], "Fake boundary invoked.")
+        self.assertEqual(result["data"]["machine_operator_response"]["audit_event_ids"], ["audit-fake-001"])
+
+    def test_valid_request_emits_real_execution_audit_events(self):
+        from assistant_os.mso.machine_operator_audit import (
+            MACHINE_OPERATOR_AUDIT_LOG,
+            MachineOperatorAuditEventType,
+        )
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        response_body = {
+            "status": "ok",
+            "final_url": "https://example.test/",
+            "observation": {
+                "summary": "Visible text captured.",
+                "detail": "Text read safely.",
+                "structured_data": {"visible_text": "Example Domain", "is_truncated": False},
+            },
+            "evidence_refs": [],
+            "consumed_budget": {
+                "steps": 1,
+                "duration_ms": 80,
+                "output_bytes": 64,
+                "side_effects": 0,
+            },
+            "side_effects_declared": [],
+            "backend_execution_performed": True,
+            "machine_action_performed": True,
+        }
+
+        request = self._request(capability_name="browser.read_visible_text")
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(response_body),
+        ):
+            result = execute(self._plan(request), "ctx-machine-audit")
+
+        event_types = [event.event_type for event in MACHINE_OPERATOR_AUDIT_LOG.events()]
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            event_types,
+            [
+                MachineOperatorAuditEventType.MO_INTENT_RECEIVED,
+                MachineOperatorAuditEventType.MO_POLICY_EVALUATED,
+                MachineOperatorAuditEventType.MO_STEP_STARTED,
+                MachineOperatorAuditEventType.MO_STEP_COMPLETED,
+            ],
+        )
+
+    def test_timeout_returns_truthful_failure(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=requests.Timeout(),
+        ):
+            result = execute(self._plan(), "ctx-machine-timeout")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorExecutionFailed")
+        self.assertEqual(result["data"]["lane_outcome"], "execution_failed")
+        self.assertEqual(result["data"]["machine_operator_response"]["status"], "failed")
+        self.assertTrue(result["data"]["backend_execution_attempted"])
         self.assertFalse(result["data"]["backend_execution_performed"])
         self.assertFalse(result["data"]["machine_action_performed"])
-        self.assertTrue(result["data"]["policy_validation"]["ok"])
-        self.assertEqual(result["data"]["execution_id"], result["plan_id"])
-        self.assertEqual(result["data"]["machine_operator_response"]["status"], "aborted")
-        self.assertEqual(
-            result["data"]["machine_operator_response"]["observation"]["summary"],
-            "MACHINE_OPERATOR lane accepted; backend not implemented.",
-        )
         self.assertEqual(result["data"]["machine_operator_response"]["evidence_refs"], [])
-        self.assertEqual(result["data"]["machine_operator_response"]["audit_event_ids"], [])
         self.assertEqual(result["data"]["machine_operator_response"]["side_effects_declared"], [])
+
+    def test_malformed_url_fails_closed(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        request = self._request(arguments={"url": "https://user@example.test"})
+        with patch("assistant_os.mso.machine_operator_adapter.requests.post") as post_mock:
+            result = execute(self._plan(request), "ctx-machine-malformed")
+
+        post_mock.assert_not_called()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "InvalidMachineOperatorRequest")
+        self.assertEqual(result["data"]["machine_operator_response"]["status"], "failed")
+        self.assertEqual(result["data"]["backend_status"], "invalid_arguments")
+
+    def test_backend_invalid_envelope_fails_closed(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        response_body = {
+            "status": "ok",
+            "observation": {
+                "summary": "Missing final URL.",
+                "detail": "Invalid backend response.",
+                "structured_data": {"page_title": "Example"},
+            },
+            "evidence_refs": [
+                {
+                    "ref_id": "evidence-001",
+                    "evidence_type": "artifact",
+                    "uri": "memory://snapshot/001",
+                }
+            ],
+            "consumed_budget": {
+                "steps": 1,
+                "duration_ms": 120,
+                "output_bytes": 256,
+                "side_effects": 0,
+            },
+            "side_effects_declared": [],
+            "backend_execution_performed": True,
+            "machine_action_performed": True,
+        }
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(response_body),
+        ):
+            result = execute(self._plan(), "ctx-machine-invalid-envelope")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorExecutionFailed")
+        self.assertEqual(result["data"]["backend_status"], "invalid_backend_response")
+
+    def test_backend_execution_lie_fails_closed(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        response_body = {
+            "status": "ok",
+            "final_url": "https://example.test/",
+            "observation": {
+                "summary": "Snapshot captured.",
+                "detail": "Conflicting execution claims.",
+                "structured_data": {"page_title": "Example"},
+            },
+            "evidence_refs": [
+                {
+                    "ref_id": "evidence-001",
+                    "evidence_type": "artifact",
+                    "uri": "memory://snapshot/001",
+                }
+            ],
+            "consumed_budget": {
+                "steps": 1,
+                "duration_ms": 120,
+                "output_bytes": 128,
+                "side_effects": 0,
+            },
+            "side_effects_declared": [],
+            "backend_execution_performed": False,
+            "machine_action_performed": False,
+        }
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(response_body),
+        ):
+            result = execute(self._plan(), "ctx-machine-lie")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["data"]["backend_status"], "invalid_backend_response")
+
+    def test_read_visible_text_oversized_payload_is_rejected(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        request = self._request(capability_name="browser.read_visible_text")
+        oversized = "X" * 5000
+        response_body = {
+            "status": "ok",
+            "final_url": "https://example.test/",
+            "observation": {
+                "summary": "Visible text captured.",
+                "detail": "Payload too large.",
+                "structured_data": {"visible_text": oversized, "is_truncated": False},
+            },
+            "evidence_refs": [],
+            "consumed_budget": {
+                "steps": 1,
+                "duration_ms": 80,
+                "output_bytes": len(oversized.encode("utf-8")),
+                "side_effects": 0,
+            },
+            "side_effects_declared": [],
+            "backend_execution_performed": True,
+            "machine_action_performed": True,
+        }
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(response_body),
+        ):
+            result = execute(self._plan(request), "ctx-machine-oversized-text")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["data"]["backend_status"], "invalid_backend_response")
+
+    def test_budget_overflow_is_rejected(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        response_body = {
+            "status": "ok",
+            "final_url": "https://example.test/",
+            "observation": {
+                "summary": "Snapshot captured.",
+                "detail": "Budget exceeded.",
+                "structured_data": {"page_title": "Example"},
+            },
+            "evidence_refs": [
+                {
+                    "ref_id": "evidence-001",
+                    "evidence_type": "artifact",
+                    "uri": "memory://snapshot/001",
+                }
+            ],
+            "consumed_budget": {
+                "steps": 9,
+                "duration_ms": 9999,
+                "output_bytes": 9999,
+                "side_effects": 0,
+            },
+            "side_effects_declared": [],
+            "backend_execution_performed": True,
+            "machine_action_performed": True,
+        }
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(response_body),
+        ):
+            result = execute(self._plan(), "ctx-machine-budget")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["data"]["backend_status"], "invalid_backend_response")
+
+    def test_partial_result_is_not_reported_as_completed(self):
+        from assistant_os.mso.machine_operator_audit import (
+            MACHINE_OPERATOR_AUDIT_LOG,
+            MachineOperatorAuditEventType,
+        )
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        response_body = {
+            "status": "partial",
+            "final_url": "https://example.test/",
+            "observation": {
+                "summary": "Snapshot partially captured.",
+                "detail": "Only part of the page fit in budget.",
+                "structured_data": {"page_title": "Example"},
+            },
+            "evidence_refs": [
+                {
+                    "ref_id": "evidence-001",
+                    "evidence_type": "artifact",
+                    "uri": "memory://snapshot/partial",
+                }
+            ],
+            "consumed_budget": {
+                "steps": 1,
+                "duration_ms": 120,
+                "output_bytes": 128,
+                "side_effects": 0,
+            },
+            "side_effects_declared": [],
+            "backend_execution_performed": True,
+            "machine_action_performed": True,
+        }
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(response_body),
+        ):
+            result = execute(self._plan(), "ctx-machine-partial")
+
+        event_types = [event.event_type for event in MACHINE_OPERATOR_AUDIT_LOG.events()]
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorExecutionPartial")
+        self.assertEqual(result["data"]["lane_outcome"], "execution_partial")
+        self.assertIn(MachineOperatorAuditEventType.MO_STEP_PARTIAL, event_types)
+        self.assertNotIn(MachineOperatorAuditEventType.MO_STEP_COMPLETED, event_types)
+
+    def test_allowlist_violation_fails_closed_without_execution(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        request = self._request(arguments={"url": "https://blocked.test"})
+        with patch("assistant_os.mso.machine_operator_adapter.requests.post") as post_mock:
+            result = execute(self._plan(request), "ctx-machine-allowlist")
+
+        post_mock.assert_not_called()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorPolicyViolation")
+        self.assertEqual(result["data"]["lane_outcome"], "policy_violation")
+        self.assertEqual(result["data"]["machine_operator_response"]["status"], "denied")
+        self.assertFalse(result["data"]["backend_execution_attempted"])
+        self.assertFalse(result["data"]["backend_execution_performed"])
+        self.assertFalse(result["data"]["machine_action_performed"])
+        self.assertEqual(result["data"]["machine_operator_response"]["evidence_refs"], [])
+        self.assertEqual(result["data"]["machine_operator_response"]["side_effects_declared"], [])
+
+    def test_execution_time_approval_rejection_prevents_backend_dispatch(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        request = self._request(capability_name="browser.navigate")
+        request.capability_tier = "interactive"
+        request.policy_context.approval_mode = "required"
+        with patch("assistant_os.mso.machine_operator_adapter.requests.post") as post_mock:
+            result = execute(self._plan(request), "ctx-machine-approval")
+
+        post_mock.assert_not_called()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "InvalidMachineOperatorRequest")
+        self.assertEqual(result["data"]["lane_outcome"], "invalid_request")
+        self.assertFalse(result["data"]["backend_execution_attempted"])
+        self.assertNotIn("machine_operator_response", result["data"])
+
+    def test_local_abort_maps_to_aborted_result(self):
+        from assistant_os.mso.machine_operator_audit import (
+            MACHINE_OPERATOR_AUDIT_LOG,
+            MachineOperatorAuditEventType,
+        )
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        request = self._request(arguments={"url": "https://example.test", "abort_requested": True})
+        with patch("assistant_os.mso.machine_operator_adapter.requests.post") as post_mock:
+            result = execute(self._plan(request), "ctx-machine-abort")
+
+        event_types = [event.event_type for event in MACHINE_OPERATOR_AUDIT_LOG.events()]
+        post_mock.assert_not_called()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorExecutionAborted")
+        self.assertEqual(result["data"]["lane_outcome"], "execution_aborted")
+        self.assertEqual(result["data"]["machine_operator_response"]["status"], "aborted")
+        self.assertFalse(result["data"]["backend_execution_attempted"])
+        self.assertIn(MachineOperatorAuditEventType.MO_ABORTED, event_types)
+        self.assertNotIn(MachineOperatorAuditEventType.MO_STEP_COMPLETED, event_types)
+
+    def test_backend_unavailable_maps_to_canonical_failure(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=requests.ConnectionError("backend offline"),
+        ):
+            result = execute(self._plan(), "ctx-machine-backend-unavailable")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorBackendUnavailable")
+        self.assertEqual(result["data"]["lane_outcome"], "backend_unavailable")
+        self.assertEqual(result["data"]["machine_operator_response"]["status"], "aborted")
+        self.assertTrue(result["data"]["backend_execution_attempted"])
+        self.assertFalse(result["data"]["backend_execution_performed"])
+
+    def test_invalid_budget_fails_before_execution(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        request = self._request()
+        request.budget.max_steps = 9
+        with patch("assistant_os.mso.machine_operator_adapter.requests.post") as post_mock:
+            result = execute(self._plan(request), "ctx-machine-invalid-budget")
+
+        post_mock.assert_not_called()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorPolicyViolation")
+        self.assertEqual(result["data"]["lane_outcome"], "policy_violation")
 
     def test_invalid_request_fails_closed(self):
         from assistant_os.pipelines.machine_operator_pipeline import execute
@@ -113,11 +578,30 @@ class TestMachineOperatorPipeline(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["type"], "MachineOperatorPolicyViolation")
-        self.assertEqual(result["data"]["lane_outcome"], "rejected_by_policy")
+        self.assertEqual(result["data"]["lane_outcome"], "policy_violation")
         self.assertEqual(result["data"]["policy_validation"]["reason_code"], "unknown_capability")
         self.assertEqual(result["data"]["machine_operator_response"]["status"], "denied")
         self.assertFalse(result["data"]["backend_execution_performed"])
         self.assertFalse(result["data"]["machine_action_performed"])
+
+    def test_rejected_request_never_calls_adapter_boundary(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        class FailingAdapter:
+            def execute(self, request, context):
+                raise AssertionError("adapter should not be invoked for rejected requests")
+
+        with patch(
+            "assistant_os.pipelines.machine_operator_pipeline.DEFAULT_MACHINE_OPERATOR_ADAPTER",
+            FailingAdapter(),
+        ):
+            result = execute(
+                self._plan(self._request(capability_name="browser.click")),
+                "ctx-machine-no-adapter",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorPolicyViolation")
 
     def test_approval_required_request_without_approval_is_rejected_as_invalid_request(self):
         from assistant_os.pipelines.machine_operator_pipeline import execute
@@ -149,11 +633,31 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         result = execute(self._plan(request), "ctx-machine-5")
 
         self.assertFalse(result["ok"])
-        self.assertEqual(result["data"]["lane_outcome"], "rejected_by_policy")
+        self.assertEqual(result["data"]["lane_outcome"], "policy_violation")
         self.assertEqual(result["data"]["policy_validation"]["reason_code"], "approval_mode_mismatch")
         self.assertEqual(result["data"]["machine_operator_response"]["status"], "denied")
         self.assertFalse(result["data"]["backend_execution_performed"])
         self.assertFalse(result["data"]["machine_action_performed"])
+
+    def test_backend_unavailable_audit_does_not_collapse_into_execution_failed(self):
+        from assistant_os.mso.machine_operator_audit import (
+            MACHINE_OPERATOR_AUDIT_LOG,
+            MachineOperatorAuditEventType,
+        )
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=requests.ConnectionError("backend offline"),
+        ):
+            result = execute(self._plan(), "ctx-machine-backend-audit")
+
+        event_types = [event.event_type for event in MACHINE_OPERATOR_AUDIT_LOG.events()]
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["data"]["lane_outcome"], "backend_unavailable")
+        self.assertIn(MachineOperatorAuditEventType.MO_BACKEND_UNAVAILABLE, event_types)
+        self.assertNotIn(MachineOperatorAuditEventType.MO_EXECUTION_FAILED, event_types)
+        self.assertNotIn(MachineOperatorAuditEventType.MO_ABORTED, event_types)
 
     def test_routing_registry_adds_machine_operator_without_affecting_host(self):
         from assistant_os.contracts import ACTION_HOST_LIST_DIRECTORY, ACTION_MACHINE_OPERATOR_EXECUTE
@@ -165,3 +669,7 @@ class TestMachineOperatorPipeline(unittest.TestCase):
 
         self.assertEqual(action_domain(ACTION_HOST_LIST_DIRECTORY), "HOST")
         self.assertIs(get_pipeline("HOST"), host_pipeline.execute)
+
+
+if __name__ == "__main__":
+    unittest.main()
