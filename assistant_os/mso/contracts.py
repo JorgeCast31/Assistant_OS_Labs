@@ -235,12 +235,61 @@ MachineOperatorStatus = Literal["ok", "partial", "failed", "aborted", "denied"]
 MachineOperatorCapabilityTier = Literal["read_only", "interactive", "mutating"]
 MachineOperatorApprovalMode = Literal["none", "required"]
 MachineOperatorPolicyLevel = Literal["N0", "N1", "N2"]
+MachineOperatorLaneOutcome = Literal[
+    "invalid_request",
+    "policy_violation",
+    "backend_unavailable",
+    "execution_aborted",
+    "execution_partial",
+    "execution_failed",
+    "success",
+]
+MachineOperatorTransitionState = Literal[
+    "requested",
+    "invalid_request",
+    "policy_violation",
+    "backend_unavailable",
+    "execution_aborted",
+    "execution_partial",
+    "execution_failed",
+    "success",
+]
 MachineOperatorScalar: TypeAlias = None | bool | int | float | str
 MachineOperatorValue: TypeAlias = (
     MachineOperatorScalar
     | list["MachineOperatorValue"]
     | dict[str, "MachineOperatorValue"]
 )
+
+MACHINE_OPERATOR_STATE_REQUESTED = "requested"
+MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST = "invalid_request"
+MACHINE_OPERATOR_OUTCOME_POLICY_VIOLATION = "policy_violation"
+MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE = "backend_unavailable"
+MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED = "execution_aborted"
+MACHINE_OPERATOR_OUTCOME_EXECUTION_PARTIAL = "execution_partial"
+MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED = "execution_failed"
+MACHINE_OPERATOR_OUTCOME_SUCCESS = "success"
+MACHINE_OPERATOR_CANONICAL_OUTCOMES: frozenset[MachineOperatorLaneOutcome] = frozenset(
+    {
+        MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST,
+        MACHINE_OPERATOR_OUTCOME_POLICY_VIOLATION,
+        MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
+        MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
+        MACHINE_OPERATOR_OUTCOME_EXECUTION_PARTIAL,
+        MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
+        MACHINE_OPERATOR_OUTCOME_SUCCESS,
+    }
+)
+MACHINE_OPERATOR_ALLOWED_STATE_TRANSITIONS: dict[MachineOperatorTransitionState, frozenset[MachineOperatorTransitionState]] = {
+    MACHINE_OPERATOR_STATE_REQUESTED: frozenset(MACHINE_OPERATOR_CANONICAL_OUTCOMES),
+    MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST: frozenset(),
+    MACHINE_OPERATOR_OUTCOME_POLICY_VIOLATION: frozenset(),
+    MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE: frozenset(),
+    MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED: frozenset(),
+    MACHINE_OPERATOR_OUTCOME_EXECUTION_PARTIAL: frozenset(),
+    MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED: frozenset(),
+    MACHINE_OPERATOR_OUTCOME_SUCCESS: frozenset(),
+}
 
 _MACHINE_OPERATOR_STATUS_VALUES = {"ok", "partial", "failed", "aborted", "denied"}
 _MACHINE_OPERATOR_CAPABILITY_TIER_VALUES = {"read_only", "interactive", "mutating"}
@@ -303,6 +352,17 @@ _MACHINE_OPERATOR_SIDE_EFFECT_FIELDS = {
     "description",
     "target_ref",
 }
+
+
+def is_machine_operator_lane_outcome(value: str) -> bool:
+    return value in MACHINE_OPERATOR_CANONICAL_OUTCOMES
+
+
+def is_machine_operator_transition_allowed(
+    source_state: MachineOperatorTransitionState,
+    target_state: MachineOperatorTransitionState,
+) -> bool:
+    return target_state in MACHINE_OPERATOR_ALLOWED_STATE_TRANSITIONS.get(source_state, frozenset())
 
 
 @dataclass(slots=True)

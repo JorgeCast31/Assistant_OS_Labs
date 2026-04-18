@@ -280,6 +280,39 @@ class TestMachineOperatorContracts(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("structured_data", error)
 
+    def test_state_transition_matrix_allows_requested_to_each_canonical_terminal_state(self):
+        from assistant_os.mso.contracts import (
+            MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
+            MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
+            MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
+            MACHINE_OPERATOR_OUTCOME_EXECUTION_PARTIAL,
+            MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST,
+            MACHINE_OPERATOR_OUTCOME_POLICY_VIOLATION,
+            MACHINE_OPERATOR_OUTCOME_SUCCESS,
+            MACHINE_OPERATOR_STATE_REQUESTED,
+            is_machine_operator_transition_allowed,
+        )
+
+        for outcome in (
+            MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST,
+            MACHINE_OPERATOR_OUTCOME_POLICY_VIOLATION,
+            MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
+            MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
+            MACHINE_OPERATOR_OUTCOME_EXECUTION_PARTIAL,
+            MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
+            MACHINE_OPERATOR_OUTCOME_SUCCESS,
+        ):
+            self.assertTrue(is_machine_operator_transition_allowed(MACHINE_OPERATOR_STATE_REQUESTED, outcome))
+
+    def test_state_transition_matrix_rejects_terminal_to_terminal_hops(self):
+        from assistant_os.mso.contracts import (
+            MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
+            MACHINE_OPERATOR_OUTCOME_SUCCESS,
+            is_machine_operator_transition_allowed,
+        )
+
+        self.assertFalse(is_machine_operator_transition_allowed(MACHINE_OPERATOR_OUTCOME_SUCCESS, MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED))
+
     def test_validate_machine_operator_response_rejects_unknown_field(self):
         from assistant_os.mso.contracts import validate_machine_operator_response
 
