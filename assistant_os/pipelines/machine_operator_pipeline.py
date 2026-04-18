@@ -364,6 +364,11 @@ def _build_domain_data(
         "backend_execution_performed": metadata["backend_execution_performed"],
         "machine_action_performed": metadata["machine_action_performed"],
         "adapter_status": metadata["adapter_status"],
+        "session_mode": metadata.get("session_mode", ""),
+        "session_reused": metadata.get("session_reused", False),
+        "session_persisted": metadata.get("session_persisted", False),
+        "session_retained_after_terminal": metadata.get("session_retained_after_terminal", False),
+        "cleanup_semantics": metadata.get("cleanup_semantics", ""),
         "machine_operator_response": asdict(response),
     }
 

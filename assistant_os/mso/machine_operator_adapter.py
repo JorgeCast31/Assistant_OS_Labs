@@ -159,7 +159,7 @@ class StubMachineOperatorAdapter:
                     trace_id=context.trace_id,
                     intent_id=request_dict["intent_id"],
                     correlation_id=request_dict["correlation_id"],
-                    capability_name=context.capability_name,
+                    capability_name=request_dict["capability_name"],
                     status="backend_unavailable",
                     detail="No MACHINE_OPERATOR backend is configured.",
                 ),
@@ -170,7 +170,7 @@ class StubMachineOperatorAdapter:
                     trace_id=context.trace_id,
                     intent_id=request_dict["intent_id"],
                     correlation_id=request_dict["correlation_id"],
-                    capability_name=context.capability_name,
+                    capability_name=request_dict["capability_name"],
                     status="skipped",
                     detail="Execution was intentionally skipped; no machine action occurred.",
                 ),
@@ -181,24 +181,29 @@ class StubMachineOperatorAdapter:
                     trace_id=context.trace_id,
                     intent_id=request_dict["intent_id"],
                     correlation_id=request_dict["correlation_id"],
-                    capability_name=context.capability_name,
+                    capability_name=request_dict["capability_name"],
                     status="aborted",
                     detail="Request aborted because no backend execution path exists.",
                 ),
             ]
         )
-        return _build_nonexecuted_result(
-            status="aborted",
-            summary="MACHINE_OPERATOR adapter reached; backend unavailable.",
-            detail="No real machine or browser action was performed.",
-            metadata={
-                "lane_outcome": MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
-                "backend_status": "unavailable",
-                "backend_execution_attempted": False,
-                "backend_execution_performed": False,
-                "machine_action_performed": False,
-                "adapter_status": "backend_unavailable",
-            },
+        return _finalize_terminal_result(
+            result=_build_nonexecuted_result(
+                status="aborted",
+                summary="MACHINE_OPERATOR adapter reached; backend unavailable.",
+                detail="No real machine or browser action was performed.",
+                metadata={
+                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
+                    "backend_status": "unavailable",
+                    "backend_execution_attempted": False,
+                    "backend_execution_performed": False,
+                    "machine_action_performed": False,
+                    "adapter_status": "backend_unavailable",
+                },
+                audit_event_ids=audit_event_ids,
+            ),
+            request_dict=request_dict,
+            context=context,
             audit_event_ids=audit_event_ids,
         )
 
@@ -210,6 +215,8 @@ class OpenClawGatewayMachineOperatorAdapter:
     The adapter seals all OpenClaw transport details behind a narrow boundary.
     It executes one ephemeral request at a time, with strict timeout handling
     and fail-closed validation around URL allowlisting and no-side-effect rules.
+    No reusable session handle or persistent browser profile is retained across
+    requests; Sprint 7 makes that lifecycle explicit in terminal metadata/audit.
     """
 
     def execute(
@@ -247,18 +254,23 @@ class OpenClawGatewayMachineOperatorAdapter:
                     include_aborted=True,
                 )
             )
-            return _build_nonexecuted_result(
-                status="aborted",
-                summary="MACHINE_OPERATOR capability is not implemented for live execution.",
-                detail=f"Capability remains non-executing in Sprint 5: {capability_name}",
-                metadata={
-                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
-                    "backend_status": "unsupported_capability",
-                    "backend_execution_attempted": False,
-                    "backend_execution_performed": False,
-                    "machine_action_performed": False,
-                    "adapter_status": "unsupported_capability",
-                },
+            return _finalize_terminal_result(
+                result=_build_nonexecuted_result(
+                    status="aborted",
+                    summary="MACHINE_OPERATOR capability is not implemented for live execution.",
+                    detail=f"Capability remains non-executing in Sprint 5: {capability_name}",
+                    metadata={
+                        "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
+                        "backend_status": "unsupported_capability",
+                        "backend_execution_attempted": False,
+                        "backend_execution_performed": False,
+                        "machine_action_performed": False,
+                        "adapter_status": "unsupported_capability",
+                    },
+                    audit_event_ids=audit_event_ids,
+                ),
+                request_dict=request_dict,
+                context=context,
                 audit_event_ids=audit_event_ids,
             )
 
@@ -273,18 +285,23 @@ class OpenClawGatewayMachineOperatorAdapter:
                     include_aborted=True,
                 )
             )
-            return _build_nonexecuted_result(
-                status="aborted",
-                summary="MACHINE_OPERATOR execution aborted before backend dispatch.",
-                detail="Abort was requested locally for the MACHINE_OPERATOR lane.",
-                metadata={
-                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
-                    "backend_status": "aborted",
-                    "backend_execution_attempted": False,
-                    "backend_execution_performed": False,
-                    "machine_action_performed": False,
-                    "adapter_status": "aborted",
-                },
+            return _finalize_terminal_result(
+                result=_build_nonexecuted_result(
+                    status="aborted",
+                    summary="MACHINE_OPERATOR execution aborted before backend dispatch.",
+                    detail="Abort was requested locally for the MACHINE_OPERATOR lane.",
+                    metadata={
+                        "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
+                        "backend_status": "aborted",
+                        "backend_execution_attempted": False,
+                        "backend_execution_performed": False,
+                        "machine_action_performed": False,
+                        "adapter_status": "aborted",
+                    },
+                    audit_event_ids=audit_event_ids,
+                ),
+                request_dict=request_dict,
+                context=context,
                 audit_event_ids=audit_event_ids,
             )
 
@@ -300,18 +317,23 @@ class OpenClawGatewayMachineOperatorAdapter:
                     include_skipped=True,
                 )
             )
-            return _build_nonexecuted_result(
-                status="failed",
-                summary="MACHINE_OPERATOR request is missing a safe browser target.",
-                detail=str(exc),
-                metadata={
-                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST,
-                    "backend_status": "invalid_arguments",
-                    "backend_execution_attempted": False,
-                    "backend_execution_performed": False,
-                    "machine_action_performed": False,
-                    "adapter_status": "invalid_arguments",
-                },
+            return _finalize_terminal_result(
+                result=_build_nonexecuted_result(
+                    status="failed",
+                    summary="MACHINE_OPERATOR request is missing a safe browser target.",
+                    detail=str(exc),
+                    metadata={
+                        "lane_outcome": MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST,
+                        "backend_status": "invalid_arguments",
+                        "backend_execution_attempted": False,
+                        "backend_execution_performed": False,
+                        "machine_action_performed": False,
+                        "adapter_status": "invalid_arguments",
+                    },
+                    audit_event_ids=audit_event_ids,
+                ),
+                request_dict=request_dict,
+                context=context,
                 audit_event_ids=audit_event_ids,
             )
 
@@ -325,18 +347,23 @@ class OpenClawGatewayMachineOperatorAdapter:
                     include_skipped=True,
                 )
             )
-            return _build_nonexecuted_result(
-                status="denied",
-                summary="MACHINE_OPERATOR request blocked by runtime allowlist.",
-                detail="The requested URL is not permitted by the provided allowlist_refs.",
-                metadata={
-                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_POLICY_VIOLATION,
-                    "backend_status": "allowlist_blocked",
-                    "backend_execution_attempted": False,
-                    "backend_execution_performed": False,
-                    "machine_action_performed": False,
-                    "adapter_status": "allowlist_blocked",
-                },
+            return _finalize_terminal_result(
+                result=_build_nonexecuted_result(
+                    status="denied",
+                    summary="MACHINE_OPERATOR request blocked by runtime allowlist.",
+                    detail="The requested URL is not permitted by the provided allowlist_refs.",
+                    metadata={
+                        "lane_outcome": MACHINE_OPERATOR_OUTCOME_POLICY_VIOLATION,
+                        "backend_status": "allowlist_blocked",
+                        "backend_execution_attempted": False,
+                        "backend_execution_performed": False,
+                        "machine_action_performed": False,
+                        "adapter_status": "allowlist_blocked",
+                    },
+                    audit_event_ids=audit_event_ids,
+                ),
+                request_dict=request_dict,
+                context=context,
                 audit_event_ids=audit_event_ids,
             )
 
@@ -391,19 +418,24 @@ class OpenClawGatewayMachineOperatorAdapter:
                     include_execution_failed=True,
                 )
             )
-            return _build_nonexecuted_result(
-                status="failed",
-                summary="MACHINE_OPERATOR backend returned an invalid execution envelope.",
-                detail=str(exc),
-                metadata={
-                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
-                    "backend_status": "invalid_backend_response",
-                    "backend_execution_attempted": True,
-                    "backend_execution_performed": False,
-                    "machine_action_performed": False,
-                    "adapter_status": "invalid_backend_response",
-                    "timeout_seconds": timeout_seconds,
-                },
+            return _finalize_terminal_result(
+                result=_build_nonexecuted_result(
+                    status="failed",
+                    summary="MACHINE_OPERATOR backend returned an invalid execution envelope.",
+                    detail=str(exc),
+                    metadata={
+                        "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
+                        "backend_status": "invalid_backend_response",
+                        "backend_execution_attempted": True,
+                        "backend_execution_performed": False,
+                        "machine_action_performed": False,
+                        "adapter_status": "invalid_backend_response",
+                        "timeout_seconds": timeout_seconds,
+                    },
+                    audit_event_ids=audit_event_ids,
+                ),
+                request_dict=request_dict,
+                context=context,
                 audit_event_ids=audit_event_ids,
             )
 
@@ -463,8 +495,12 @@ class OpenClawGatewayMachineOperatorAdapter:
                     detail=result.observation.summary,
                 )
             )
-        result.audit_event_ids = audit_event_ids
-        return result
+        return _finalize_terminal_result(
+            result=result,
+            request_dict=request_dict,
+            context=context,
+            audit_event_ids=audit_event_ids,
+        )
 
 
 DEFAULT_MACHINE_OPERATOR_ADAPTER: MachineOperatorAdapter = OpenClawGatewayMachineOperatorAdapter()
@@ -579,6 +615,70 @@ def _emit_terminal_events(
     return event_ids
 
 
+def _finalize_terminal_result(
+    *,
+    result: MachineOperatorAdapterResult,
+    request_dict: dict[str, Any],
+    context: MachineOperatorAdapterContext,
+    audit_event_ids: list[str],
+) -> MachineOperatorAdapterResult:
+    lane_outcome = str(result.metadata.get("lane_outcome", ""))
+    if not is_machine_operator_transition_allowed(MACHINE_OPERATOR_STATE_REQUESTED, lane_outcome):
+        raise ValueError(f"Unsupported MACHINE_OPERATOR lane_outcome: {lane_outcome}")
+
+    result.metadata.update(_ephemeral_session_metadata())
+    structured_data = dict(result.observation.structured_data)
+    structured_data.update(_ephemeral_session_structured_data())
+    structured_data.update(
+        {
+            "evidence_available": bool(result.evidence_refs),
+            "evidence_count": len(result.evidence_refs),
+        }
+    )
+    result.observation = MachineOperatorObservation(
+        summary=result.observation.summary,
+        detail=result.observation.detail,
+        structured_data=structured_data,
+    )
+
+    finalized_audit_ids = list(audit_event_ids)
+    finalized_audit_ids.append(
+        emit_machine_operator_event(
+            event_type=MachineOperatorAuditEventType.MO_EPHEMERAL_SCOPE_CLOSED,
+            plan_id=context.plan_id,
+            execution_id=context.execution_id,
+            trace_id=context.trace_id,
+            intent_id=request_dict["intent_id"],
+            correlation_id=request_dict["correlation_id"],
+            capability_name=request_dict["capability_name"],
+            status=lane_outcome,
+            detail="MACHINE_OPERATOR retained no reusable session state after terminal outcome.",
+        )
+    )
+    result.audit_event_ids = finalized_audit_ids
+    return result
+
+
+def _ephemeral_session_metadata() -> dict[str, Any]:
+    return {
+        "session_mode": "ephemeral",
+        "session_reused": False,
+        "session_persisted": False,
+        "session_retained_after_terminal": False,
+        "cleanup_semantics": "no_reusable_session_retained",
+    }
+
+
+def _ephemeral_session_structured_data() -> dict[str, Any]:
+    return {
+        "session_mode": "ephemeral",
+        "session_reused": False,
+        "session_persisted": False,
+        "session_retained_after_terminal": False,
+        "cleanup_semantics": "no_reusable_session_retained",
+    }
+
+
 def _validate_context_consistency(
     *,
     request_dict: dict[str, Any],
@@ -601,18 +701,23 @@ def _validate_context_consistency(
             include_skipped=True,
         )
     )
-    return _build_nonexecuted_result(
-        status="failed",
-        summary="MACHINE_OPERATOR adapter context is inconsistent with the request.",
-        detail=detail,
-        metadata={
-            "lane_outcome": MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST,
-            "backend_status": "invalid_context",
-            "backend_execution_attempted": False,
-            "backend_execution_performed": False,
-            "machine_action_performed": False,
-            "adapter_status": "invalid_context",
-        },
+    return _finalize_terminal_result(
+        result=_build_nonexecuted_result(
+            status="failed",
+            summary="MACHINE_OPERATOR adapter context is inconsistent with the request.",
+            detail=detail,
+            metadata={
+                "lane_outcome": MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST,
+                "backend_status": "invalid_context",
+                "backend_execution_attempted": False,
+                "backend_execution_performed": False,
+                "machine_action_performed": False,
+                "adapter_status": "invalid_context",
+            },
+            audit_event_ids=audit_event_ids,
+        ),
+        request_dict=request_dict,
+        context=context,
         audit_event_ids=audit_event_ids,
     )
 
@@ -648,18 +753,23 @@ def _validate_execution_governance(
             include_skipped=True,
         )
     )
-    return _build_nonexecuted_result(
-        status=status,
-        summary=summary,
-        detail=decision.message,
-        metadata={
-            "lane_outcome": lane_outcome,
-            "backend_status": "not_executed",
-            "backend_execution_attempted": False,
-            "backend_execution_performed": False,
-            "machine_action_performed": False,
-            "adapter_status": adapter_status,
-        },
+    return _finalize_terminal_result(
+        result=_build_nonexecuted_result(
+            status=status,
+            summary=summary,
+            detail=decision.message,
+            metadata={
+                "lane_outcome": lane_outcome,
+                "backend_status": "not_executed",
+                "backend_execution_attempted": False,
+                "backend_execution_performed": False,
+                "machine_action_performed": False,
+                "adapter_status": adapter_status,
+            },
+            audit_event_ids=audit_event_ids,
+        ),
+        request_dict=request_dict,
+        context=context,
         audit_event_ids=audit_event_ids,
     )
 
@@ -696,19 +806,24 @@ def _handle_gateway_exception(
                 include_backend_unavailable=True,
             )
         )
-        return _build_nonexecuted_result(
-            status="aborted",
-            summary="MACHINE_OPERATOR backend is unavailable.",
-            detail=detail,
-            metadata={
-                "lane_outcome": MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
-                "backend_status": "unavailable",
-                "backend_execution_attempted": False,
-                "backend_execution_performed": False,
-                "machine_action_performed": False,
-                "adapter_status": "backend_unavailable",
-                "timeout_seconds": timeout_seconds,
-            },
+        return _finalize_terminal_result(
+            result=_build_nonexecuted_result(
+                status="aborted",
+                summary="MACHINE_OPERATOR backend is unavailable.",
+                detail=detail,
+                metadata={
+                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
+                    "backend_status": "unavailable",
+                    "backend_execution_attempted": False,
+                    "backend_execution_performed": False,
+                    "machine_action_performed": False,
+                    "adapter_status": "backend_unavailable",
+                    "timeout_seconds": timeout_seconds,
+                },
+                audit_event_ids=audit_event_ids,
+            ),
+            request_dict=request_dict,
+            context=context,
             audit_event_ids=audit_event_ids,
         )
 
@@ -723,25 +838,30 @@ def _handle_gateway_exception(
                 include_execution_failed=True,
             )
         )
-        return _build_nonexecuted_result(
-            status="failed",
-            summary="MACHINE_OPERATOR execution timed out.",
-            detail=detail,
-            metadata={
-                "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
-                "backend_status": "timed_out",
-                "backend_execution_attempted": True,
-                "backend_execution_performed": False,
-                "machine_action_performed": False,
-                "adapter_status": "timed_out",
-                "timeout_seconds": timeout_seconds,
-            },
-            consumed_budget=MachineOperatorBudgetUsage(
-                steps=0,
-                duration_ms=max(elapsed_ms, 0),
-                output_bytes=0,
-                side_effects=0,
+        return _finalize_terminal_result(
+            result=_build_nonexecuted_result(
+                status="failed",
+                summary="MACHINE_OPERATOR execution timed out.",
+                detail=detail,
+                metadata={
+                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
+                    "backend_status": "timed_out",
+                    "backend_execution_attempted": True,
+                    "backend_execution_performed": False,
+                    "machine_action_performed": False,
+                    "adapter_status": "timed_out",
+                    "timeout_seconds": timeout_seconds,
+                },
+                consumed_budget=MachineOperatorBudgetUsage(
+                    steps=0,
+                    duration_ms=max(elapsed_ms, 0),
+                    output_bytes=0,
+                    side_effects=0,
+                ),
+                audit_event_ids=audit_event_ids,
             ),
+            request_dict=request_dict,
+            context=context,
             audit_event_ids=audit_event_ids,
         )
 
@@ -755,25 +875,30 @@ def _handle_gateway_exception(
             include_backend_unavailable=True,
         )
     )
-    return _build_nonexecuted_result(
-        status="aborted",
-        summary="MACHINE_OPERATOR backend is unavailable.",
-        detail=detail,
-        metadata={
-            "lane_outcome": MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
-            "backend_status": "unavailable",
-            "backend_execution_attempted": True,
-            "backend_execution_performed": False,
-            "machine_action_performed": False,
-            "adapter_status": "backend_unavailable",
-            "timeout_seconds": timeout_seconds,
-        },
-        consumed_budget=MachineOperatorBudgetUsage(
-            steps=0,
-            duration_ms=max(elapsed_ms, 0),
-            output_bytes=0,
-            side_effects=0,
+    return _finalize_terminal_result(
+        result=_build_nonexecuted_result(
+            status="aborted",
+            summary="MACHINE_OPERATOR backend is unavailable.",
+            detail=detail,
+            metadata={
+                "lane_outcome": MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
+                "backend_status": "unavailable",
+                "backend_execution_attempted": True,
+                "backend_execution_performed": False,
+                "machine_action_performed": False,
+                "adapter_status": "backend_unavailable",
+                "timeout_seconds": timeout_seconds,
+            },
+            consumed_budget=MachineOperatorBudgetUsage(
+                steps=0,
+                duration_ms=max(elapsed_ms, 0),
+                output_bytes=0,
+                side_effects=0,
+            ),
+            audit_event_ids=audit_event_ids,
         ),
+        request_dict=request_dict,
+        context=context,
         audit_event_ids=audit_event_ids,
     )
 
@@ -945,7 +1070,7 @@ def _build_gateway_payload(
     return {
         "intent_id": request_dict["intent_id"],
         "correlation_id": request_dict["correlation_id"],
-        "capability_name": context.capability_name,
+        "capability_name": request_dict["capability_name"],
         "arguments": dict(request_dict["arguments"]),
         "budget": {
             "max_steps": request_dict["budget"]["max_steps"],
@@ -999,6 +1124,8 @@ def _build_evidence_refs(payload: Any) -> list[MachineOperatorEvidenceRef]:
     if not isinstance(payload, list):
         raise ValueError("MACHINE_OPERATOR backend evidence_refs must be a list.")
     evidence_refs: list[MachineOperatorEvidenceRef] = []
+    seen_ref_ids: set[str] = set()
+    seen_uris: set[str] = set()
     for item in payload:
         if not isinstance(item, dict):
             raise ValueError("MACHINE_OPERATOR backend evidence_refs entries must be dicts.")
@@ -1011,14 +1138,34 @@ def _build_evidence_refs(payload: Any) -> list[MachineOperatorEvidenceRef]:
             raise ValueError("MACHINE_OPERATOR backend evidence_refs.evidence_type must be a non-empty string.")
         if not isinstance(uri, str) or not uri.strip():
             raise ValueError("MACHINE_OPERATOR backend evidence_refs.uri must be a non-empty string.")
+        normalized_ref_id = ref_id.strip()
+        normalized_uri = uri.strip()
+        if normalized_ref_id in seen_ref_ids:
+            raise ValueError("MACHINE_OPERATOR backend evidence_refs.ref_id values must be unique.")
+        if normalized_uri in seen_uris:
+            raise ValueError("MACHINE_OPERATOR backend evidence_refs.uri values must be unique.")
+        seen_ref_ids.add(normalized_ref_id)
+        seen_uris.add(normalized_uri)
         evidence_refs.append(
             MachineOperatorEvidenceRef(
-                ref_id=ref_id.strip(),
+                ref_id=normalized_ref_id,
                 evidence_type=evidence_type.strip(),
-                uri=uri.strip(),
-                description=str(item.get("description", "")),
-                media_type=str(item.get("media_type", "")),
-                digest=str(item.get("digest", "")),
+                uri=normalized_uri,
+                description=_optional_string_field(
+                    item,
+                    field_name="description",
+                    contract_name="MACHINE_OPERATOR backend evidence_refs",
+                ),
+                media_type=_optional_string_field(
+                    item,
+                    field_name="media_type",
+                    contract_name="MACHINE_OPERATOR backend evidence_refs",
+                ),
+                digest=_optional_string_field(
+                    item,
+                    field_name="digest",
+                    contract_name="MACHINE_OPERATOR backend evidence_refs",
+                ),
             )
         )
     return evidence_refs
@@ -1170,6 +1317,18 @@ def _estimate_output_bytes(
     observation_bytes = len(json.dumps(asdict(observation), sort_keys=True).encode("utf-8"))
     evidence_bytes = sum(len(evidence.uri.encode("utf-8")) for evidence in evidence_refs)
     return observation_bytes + evidence_bytes
+
+
+def _optional_string_field(
+    payload: dict[str, Any],
+    *,
+    field_name: str,
+    contract_name: str,
+) -> str:
+    value = payload.get(field_name, "")
+    if not isinstance(value, str):
+        raise ValueError(f"{contract_name}.{field_name} must be a string when present.")
+    return value
 
 
 def _build_nonexecuted_result(

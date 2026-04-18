@@ -146,6 +146,12 @@ class TestMachineOperatorAdapter(unittest.TestCase):
         self.assertEqual(result.consumed_budget.steps, 1)
         self.assertEqual(result.evidence_refs[0].uri, "memory://snapshot/001")
         self.assertEqual(result.side_effects_declared, [])
+        self.assertEqual(result.metadata["session_mode"], "ephemeral")
+        self.assertFalse(result.metadata["session_reused"])
+        self.assertFalse(result.metadata["session_persisted"])
+        self.assertFalse(result.metadata["session_retained_after_terminal"])
+        self.assertEqual(result.observation.structured_data["cleanup_semantics"], "no_reusable_session_retained")
+        self.assertEqual(result.observation.structured_data["evidence_count"], 1)
         self.assertEqual(
             event_types,
             [
@@ -153,6 +159,7 @@ class TestMachineOperatorAdapter(unittest.TestCase):
                 MachineOperatorAuditEventType.MO_POLICY_EVALUATED,
                 MachineOperatorAuditEventType.MO_STEP_STARTED,
                 MachineOperatorAuditEventType.MO_STEP_COMPLETED,
+                MachineOperatorAuditEventType.MO_EPHEMERAL_SCOPE_CLOSED,
             ],
         )
 
@@ -182,6 +189,7 @@ class TestMachineOperatorAdapter(unittest.TestCase):
                 MachineOperatorAuditEventType.MO_INTENT_RECEIVED,
                 MachineOperatorAuditEventType.MO_POLICY_EVALUATED,
                 MachineOperatorAuditEventType.MO_EXECUTION_SKIPPED,
+                MachineOperatorAuditEventType.MO_EPHEMERAL_SCOPE_CLOSED,
             ],
         )
 
@@ -237,6 +245,8 @@ class TestMachineOperatorAdapter(unittest.TestCase):
         self.assertEqual(result.evidence_refs, [])
         self.assertEqual(result.side_effects_declared, [])
         self.assertEqual(result.consumed_budget.side_effects, 0)
+        self.assertEqual(result.observation.structured_data["evidence_count"], 0)
+        self.assertEqual(result.observation.structured_data["session_mode"], "ephemeral")
         self.assertEqual(
             event_types,
             [
@@ -244,6 +254,7 @@ class TestMachineOperatorAdapter(unittest.TestCase):
                 MachineOperatorAuditEventType.MO_POLICY_EVALUATED,
                 MachineOperatorAuditEventType.MO_STEP_STARTED,
                 MachineOperatorAuditEventType.MO_EXECUTION_FAILED,
+                MachineOperatorAuditEventType.MO_EPHEMERAL_SCOPE_CLOSED,
             ],
         )
 
@@ -423,6 +434,7 @@ class TestMachineOperatorAdapter(unittest.TestCase):
                 MachineOperatorAuditEventType.MO_INTENT_RECEIVED,
                 MachineOperatorAuditEventType.MO_POLICY_EVALUATED,
                 MachineOperatorAuditEventType.MO_EXECUTION_SKIPPED,
+                MachineOperatorAuditEventType.MO_EPHEMERAL_SCOPE_CLOSED,
             ],
         )
 
@@ -451,6 +463,7 @@ class TestMachineOperatorAdapter(unittest.TestCase):
                 MachineOperatorAuditEventType.MO_POLICY_EVALUATED,
                 MachineOperatorAuditEventType.MO_EXECUTION_SKIPPED,
                 MachineOperatorAuditEventType.MO_ABORTED,
+                MachineOperatorAuditEventType.MO_EPHEMERAL_SCOPE_CLOSED,
             ],
         )
 
@@ -479,6 +492,7 @@ class TestMachineOperatorAdapter(unittest.TestCase):
         self.assertIn(MachineOperatorAuditEventType.MO_BACKEND_UNAVAILABLE, event_types)
         self.assertNotIn(MachineOperatorAuditEventType.MO_EXECUTION_FAILED, event_types)
         self.assertNotIn(MachineOperatorAuditEventType.MO_ABORTED, event_types)
+        self.assertIn(MachineOperatorAuditEventType.MO_EPHEMERAL_SCOPE_CLOSED, event_types)
 
     def test_partial_uses_partial_audit_event(self):
         from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
@@ -523,6 +537,7 @@ class TestMachineOperatorAdapter(unittest.TestCase):
         self.assertEqual(result.status, "partial")
         self.assertIn(MachineOperatorAuditEventType.MO_STEP_PARTIAL, event_types)
         self.assertNotIn(MachineOperatorAuditEventType.MO_STEP_COMPLETED, event_types)
+        self.assertIn(MachineOperatorAuditEventType.MO_EPHEMERAL_SCOPE_CLOSED, event_types)
 
     def test_backend_reported_abort_does_not_claim_completion(self):
         from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
@@ -561,6 +576,7 @@ class TestMachineOperatorAdapter(unittest.TestCase):
         self.assertEqual(result.metadata["lane_outcome"], "execution_aborted")
         self.assertNotIn(MachineOperatorAuditEventType.MO_STEP_COMPLETED, event_types)
         self.assertIn(MachineOperatorAuditEventType.MO_ABORTED, event_types)
+        self.assertIn(MachineOperatorAuditEventType.MO_EPHEMERAL_SCOPE_CLOSED, event_types)
 
     def test_context_mismatch_fails_closed_before_transport(self):
         from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
@@ -576,6 +592,85 @@ class TestMachineOperatorAdapter(unittest.TestCase):
         self.assertEqual(result.status, "failed")
         self.assertEqual(result.metadata["lane_outcome"], "invalid_request")
         self.assertEqual(result.metadata["backend_status"], "invalid_context")
+        self.assertEqual(result.observation.structured_data["session_mode"], "ephemeral")
+
+    def test_duplicate_evidence_refs_fail_closed(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        response_body = {
+            "status": "ok",
+            "final_url": "https://example.test/",
+            "observation": {
+                "summary": "Snapshot captured.",
+                "detail": "Duplicate evidence should fail.",
+                "structured_data": {"page_title": "Example"},
+            },
+            "evidence_refs": [
+                {
+                    "ref_id": "evidence-001",
+                    "evidence_type": "artifact",
+                    "uri": "memory://snapshot/001",
+                },
+                {
+                    "ref_id": "evidence-001",
+                    "evidence_type": "artifact",
+                    "uri": "memory://snapshot/002",
+                },
+            ],
+            "consumed_budget": {
+                "steps": 1,
+                "duration_ms": 120,
+                "output_bytes": 128,
+                "side_effects": 0,
+            },
+            "side_effects_declared": [],
+        }
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(response_body),
+        ):
+            result = OpenClawGatewayMachineOperatorAdapter().execute(self._request(), self._context())
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.metadata["backend_status"], "invalid_backend_response")
+
+    def test_malformed_evidence_optional_field_fails_closed(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        response_body = {
+            "status": "ok",
+            "final_url": "https://example.test/",
+            "observation": {
+                "summary": "Snapshot captured.",
+                "detail": "Malformed evidence metadata.",
+                "structured_data": {"page_title": "Example"},
+            },
+            "evidence_refs": [
+                {
+                    "ref_id": "evidence-001",
+                    "evidence_type": "artifact",
+                    "uri": "memory://snapshot/001",
+                    "description": 123,
+                }
+            ],
+            "consumed_budget": {
+                "steps": 1,
+                "duration_ms": 120,
+                "output_bytes": 128,
+                "side_effects": 0,
+            },
+            "side_effects_declared": [],
+        }
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(response_body),
+        ):
+            result = OpenClawGatewayMachineOperatorAdapter().execute(self._request(), self._context())
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.metadata["backend_status"], "invalid_backend_response")
 
     def test_gateway_execute_url_rejects_backslashes(self):
         from assistant_os.mso.machine_operator_adapter import _gateway_execute_url
