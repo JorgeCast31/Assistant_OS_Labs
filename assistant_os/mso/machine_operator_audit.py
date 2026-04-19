@@ -41,6 +41,7 @@ class MachineOperatorAuditEvent:
     capability_name: str
     status: str
     detail: str
+    backend_state: str
     timestamp: float
 
     def to_dict(self) -> dict[str, object]:
@@ -55,6 +56,7 @@ class MachineOperatorAuditEvent:
             "capability_name": self.capability_name,
             "status": self.status,
             "detail": self.detail,
+            "backend_state": self.backend_state,
             "timestamp": self.timestamp,
         }
 
@@ -73,6 +75,7 @@ def emit_machine_operator_event(
     capability_name: str,
     status: str,
     detail: str,
+    backend_state: str = "",
 ) -> str:
     """Emit one MACHINE_OPERATOR audit event and return its identifier."""
     event = MachineOperatorAuditEvent(
@@ -86,6 +89,7 @@ def emit_machine_operator_event(
         capability_name=capability_name,
         status=status,
         detail=detail,
+        backend_state=backend_state,
         timestamp=time.time(),
     )
     MACHINE_OPERATOR_AUDIT_LOG.emit(event)

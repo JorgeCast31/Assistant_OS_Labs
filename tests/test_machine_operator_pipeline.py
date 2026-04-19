@@ -20,22 +20,29 @@ class _FakeResponse:
 class TestMachineOperatorPipeline(unittest.TestCase):
     def setUp(self):
         from assistant_os.mso.machine_operator_audit import MACHINE_OPERATOR_AUDIT_LOG
+        from assistant_os.mso.machine_operator_adapter import reset_machine_operator_backend_health
 
         MACHINE_OPERATOR_AUDIT_LOG.clear()
+        reset_machine_operator_backend_health()
 
     def _request(self, **overrides):
         from assistant_os.mso.contracts import (
             MachineOperatorBudget,
             MachineOperatorIntentRequest,
             MachineOperatorPolicyContext,
+            MachineOperatorWorkflowStep,
         )
 
         request = MachineOperatorIntentRequest(
             intent_id="intent-003",
             correlation_id="corr-003",
-            capability_name="browser.snapshot",
-            capability_tier="read_only",
-            arguments={"url": "https://example.test"},
+            workflow_steps=[
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.snapshot",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test"},
+                )
+            ],
             policy_context=MachineOperatorPolicyContext(
                 policy_decision_ref="policy-003",
                 governance_ref="gov-003",
@@ -55,7 +62,14 @@ class TestMachineOperatorPipeline(unittest.TestCase):
             approval_token=None,
         )
         for key, value in overrides.items():
-            setattr(request, key, value)
+            if key == "capability_name":
+                request.workflow_steps[0].capability_name = value
+            elif key == "capability_tier":
+                request.workflow_steps[0].capability_tier = value
+            elif key == "arguments":
+                request.workflow_steps[0].arguments = value
+            else:
+                setattr(request, key, value)
         return request
 
     def _plan(self, request=None, **overrides):
@@ -121,6 +135,10 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         self.assertTrue(result["data"]["backend_execution_attempted"])
         self.assertTrue(result["data"]["backend_execution_performed"])
         self.assertTrue(result["data"]["machine_action_performed"])
+        self.assertEqual(result["data"]["backend_state"], "HEALTHY")
+        self.assertEqual(result["data"]["backend_error_type"], "")
+        self.assertEqual(result["data"]["circuit_state"], "closed")
+        self.assertGreaterEqual(result["data"]["backend_latency_ms"], 0)
         self.assertEqual(result["data"]["session_mode"], "ephemeral")
         self.assertFalse(result["data"]["session_reused"])
         self.assertFalse(result["data"]["session_persisted"])
@@ -255,20 +273,51 @@ class TestMachineOperatorPipeline(unittest.TestCase):
             result = execute(self._plan(), "ctx-machine-timeout")
 
         self.assertFalse(result["ok"])
-        self.assertEqual(result["error"]["type"], "MachineOperatorExecutionFailed")
-        self.assertEqual(result["data"]["lane_outcome"], "execution_failed")
-        self.assertEqual(result["data"]["machine_operator_response"]["status"], "failed")
+        self.assertEqual(result["error"]["type"], "MachineOperatorExecutionAborted")
+        self.assertEqual(result["data"]["lane_outcome"], "execution_aborted")
+        self.assertEqual(result["data"]["backend_status"], "timeout")
+        self.assertEqual(result["data"]["adapter_status"], "timeout")
+        self.assertEqual(result["data"]["backend_state"], "DEGRADED")
+        self.assertEqual(result["data"]["backend_error_type"], "Timeout")
+        self.assertEqual(result["data"]["circuit_state"], "closed")
+        self.assertGreaterEqual(result["data"]["backend_latency_ms"], 0)
+        self.assertEqual(result["data"]["machine_operator_response"]["status"], "aborted")
         self.assertTrue(result["data"]["backend_execution_attempted"])
         self.assertFalse(result["data"]["backend_execution_performed"])
         self.assertFalse(result["data"]["machine_action_performed"])
         self.assertEqual(result["data"]["machine_operator_response"]["evidence_refs"], [])
         self.assertEqual(result["data"]["machine_operator_response"]["side_effects_declared"], [])
         self.assertEqual(result["data"]["session_mode"], "ephemeral")
-        self.assertEqual(result["data"]["evidence_semantics"], "failure_before_evidence")
+        self.assertEqual(result["data"]["evidence_semantics"], "aborted_before_evidence")
         self.assertEqual(
             result["data"]["machine_operator_response"]["observation"]["structured_data"]["evidence_count"],
             0,
         )
+
+    def test_pipeline_surfaces_circuit_open_without_execution_leakage(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=requests.ConnectionError("backend offline"),
+        ):
+            execute(self._plan(), "ctx-machine-failure-1")
+            execute(self._plan(), "ctx-machine-failure-2")
+
+        with patch("assistant_os.mso.machine_operator_adapter.requests.post") as post_mock:
+            result = execute(self._plan(), "ctx-machine-open-circuit")
+
+        post_mock.assert_not_called()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorBackendUnavailable")
+        self.assertEqual(result["data"]["lane_outcome"], "backend_unavailable")
+        self.assertEqual(result["data"]["backend_status"], "unavailable")
+        self.assertEqual(result["data"]["adapter_status"], "circuit_open")
+        self.assertEqual(result["data"]["backend_state"], "UNAVAILABLE")
+        self.assertEqual(result["data"]["circuit_state"], "open")
+        self.assertFalse(result["data"]["backend_execution_attempted"])
+        self.assertFalse(result["data"]["backend_execution_performed"])
+        self.assertFalse(result["data"]["machine_action_performed"])
 
     def test_malformed_url_fails_closed(self):
         from assistant_os.pipelines.machine_operator_pipeline import execute
@@ -506,7 +555,7 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         from assistant_os.pipelines.machine_operator_pipeline import execute
 
         request = self._request(capability_name="browser.navigate")
-        request.capability_tier = "interactive"
+        request.workflow_steps[0].capability_tier = "interactive"
         request.policy_context.approval_mode = "required"
         with patch("assistant_os.mso.machine_operator_adapter.requests.post") as post_mock:
             result = execute(self._plan(request), "ctx-machine-approval")
@@ -670,7 +719,7 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         self.assertFalse(result["data"]["backend_execution_performed"])
         self.assertFalse(result["data"]["machine_action_performed"])
 
-    def test_backend_unavailable_audit_does_not_collapse_into_execution_failed(self):
+    def test_gateway_failure_audit_preserves_backend_unavailable_lane_outcome(self):
         from assistant_os.mso.machine_operator_audit import (
             MACHINE_OPERATOR_AUDIT_LOG,
             MachineOperatorAuditEventType,
@@ -686,9 +735,10 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         event_types = [event.event_type for event in MACHINE_OPERATOR_AUDIT_LOG.events()]
         self.assertFalse(result["ok"])
         self.assertEqual(result["data"]["lane_outcome"], "backend_unavailable")
+        self.assertEqual(result["data"]["backend_state"], "DEGRADED")
+        self.assertEqual(result["data"]["backend_error_type"], "ConnectionError")
         self.assertIn(MachineOperatorAuditEventType.MO_BACKEND_UNAVAILABLE, event_types)
         self.assertNotIn(MachineOperatorAuditEventType.MO_EXECUTION_FAILED, event_types)
-        self.assertNotIn(MachineOperatorAuditEventType.MO_ABORTED, event_types)
         self.assertIn(MachineOperatorAuditEventType.MO_EPHEMERAL_SCOPE_CLOSED, event_types)
 
     def test_duplicate_evidence_fails_closed_in_pipeline(self):
@@ -861,6 +911,314 @@ class TestMachineOperatorPipeline(unittest.TestCase):
             self.assertFalse(result["data"]["session_reused"])
             self.assertFalse(result["data"]["session_persisted"])
             self.assertFalse(result["data"]["session_retained_after_terminal"])
+
+    def test_multi_step_workflow_success_returns_aggregated_step_results(self):
+        from assistant_os.mso.contracts import MachineOperatorWorkflowStep
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        request = self._request(
+            workflow_steps=[
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.navigate",
+                    capability_tier="interactive",
+                    arguments={"url": "https://example.test/"},
+                ),
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.snapshot",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test/"},
+                ),
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.read_visible_text",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test/"},
+                ),
+            ]
+        )
+        request.policy_context.approval_mode = "required"
+        request.approval_token = "approval-workflow-001"
+        request.budget.max_steps = 5
+        request.budget.max_duration_ms = 30000
+
+        responses = [
+            _FakeResponse(
+                {
+                    "status": "ok",
+                    "final_url": "https://example.test/",
+                    "observation": {
+                        "summary": "Navigation completed.",
+                        "detail": "Reached the destination.",
+                        "structured_data": {"http_status": 200},
+                    },
+                    "evidence_refs": [],
+                    "consumed_budget": {"steps": 1, "duration_ms": 60, "output_bytes": 32, "side_effects": 0},
+                    "side_effects_declared": [],
+                    "backend_execution_performed": True,
+                    "machine_action_performed": True,
+                }
+            ),
+            _FakeResponse(
+                {
+                    "status": "ok",
+                    "final_url": "https://example.test/",
+                    "observation": {
+                        "summary": "Snapshot captured.",
+                        "detail": "Snapshot collected.",
+                        "structured_data": {"page_title": "Example"},
+                    },
+                    "evidence_refs": [
+                        {
+                            "ref_id": "evidence-001",
+                            "evidence_type": "artifact",
+                            "uri": "memory://snapshot/001",
+                        }
+                    ],
+                    "consumed_budget": {"steps": 1, "duration_ms": 80, "output_bytes": 128, "side_effects": 0},
+                    "side_effects_declared": [],
+                    "backend_execution_performed": True,
+                    "machine_action_performed": True,
+                }
+            ),
+            _FakeResponse(
+                {
+                    "status": "ok",
+                    "final_url": "https://example.test/",
+                    "observation": {
+                        "summary": "Visible text captured.",
+                        "detail": "Text read safely.",
+                        "structured_data": {"visible_text": "Example Domain", "is_truncated": False},
+                    },
+                    "evidence_refs": [],
+                    "consumed_budget": {"steps": 1, "duration_ms": 70, "output_bytes": 64, "side_effects": 0},
+                    "side_effects_declared": [],
+                    "backend_execution_performed": True,
+                    "machine_action_performed": True,
+                }
+            ),
+        ]
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=responses,
+        ):
+            result = execute(self._plan(request), "ctx-machine-workflow-success")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"]["lane_outcome"], "success")
+        self.assertEqual(result["data"]["workflow_step_count"], 3)
+        self.assertEqual(
+            result["data"]["machine_operator_response"]["observation"]["structured_data"]["workflow_completed_steps"],
+            3,
+        )
+        self.assertEqual(
+            [step["status"] for step in result["data"]["machine_operator_response"]["observation"]["structured_data"]["step_results"]],
+            ["ok", "ok", "ok"],
+        )
+
+    def test_multi_step_workflow_partial_stops_after_first_failed_step(self):
+        from assistant_os.mso.contracts import MachineOperatorWorkflowStep
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        request = self._request(
+            workflow_steps=[
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.snapshot",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test/"},
+                ),
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.read_visible_text",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test/"},
+                ),
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.screenshot",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test/"},
+                ),
+            ]
+        )
+        request.budget.max_steps = 4
+        request.budget.max_duration_ms = 24000
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=[
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Snapshot captured.",
+                            "detail": "Snapshot collected.",
+                            "structured_data": {"page_title": "Example"},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "evidence-001",
+                                "evidence_type": "artifact",
+                                "uri": "memory://snapshot/001",
+                            }
+                        ],
+                        "consumed_budget": {"steps": 1, "duration_ms": 80, "output_bytes": 128, "side_effects": 0},
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+                _FakeResponse(
+                    {
+                        "status": "failed",
+                        "observation": {
+                            "summary": "Visible text capture failed.",
+                            "detail": "Backend could not complete the step.",
+                            "structured_data": {},
+                        },
+                        "evidence_refs": [],
+                        "consumed_budget": {"steps": 1, "duration_ms": 50, "output_bytes": 0, "side_effects": 0},
+                        "side_effects_declared": [],
+                        "backend_execution_performed": False,
+                        "machine_action_performed": False,
+                    }
+                ),
+            ],
+        ) as post_mock:
+            result = execute(self._plan(request), "ctx-machine-workflow-partial")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorExecutionPartial")
+        self.assertEqual(result["data"]["evidence_semantics"], "partial_evidence")
+        self.assertEqual(post_mock.call_count, 2)
+        self.assertEqual(
+            [step["status"] for step in result["data"]["machine_operator_response"]["observation"]["structured_data"]["step_results"]],
+            ["ok", "failed"],
+        )
+
+    def test_multi_step_workflow_duplicate_evidence_across_steps_fails_closed(self):
+        from assistant_os.mso.contracts import MachineOperatorWorkflowStep
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        request = self._request(
+            workflow_steps=[
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.snapshot",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test/"},
+                ),
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.screenshot",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test/"},
+                ),
+            ]
+        )
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=[
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Snapshot captured.",
+                            "detail": "Snapshot collected.",
+                            "structured_data": {"page_title": "Example"},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "evidence-001",
+                                "evidence_type": "artifact",
+                                "uri": "memory://snapshot/001",
+                            }
+                        ],
+                        "consumed_budget": {"steps": 1, "duration_ms": 80, "output_bytes": 128, "side_effects": 0},
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Screenshot captured.",
+                            "detail": "Screenshot collected.",
+                            "structured_data": {"page_title": "Example"},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "evidence-002",
+                                "evidence_type": "artifact",
+                                "uri": "memory://snapshot/001",
+                            }
+                        ],
+                        "consumed_budget": {"steps": 1, "duration_ms": 70, "output_bytes": 128, "side_effects": 0},
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+            ],
+        ):
+            result = execute(self._plan(request), "ctx-machine-workflow-duplicate-evidence")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorExecutionPartial")
+        self.assertEqual(result["data"]["backend_status"], "invalid_evidence_aggregation")
+
+    def test_multi_step_workflow_budget_overflow_aborts_before_next_step(self):
+        from assistant_os.mso.contracts import MachineOperatorWorkflowStep
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        request = self._request(
+            workflow_steps=[
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.snapshot",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test/"},
+                ),
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.read_visible_text",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test/"},
+                ),
+            ]
+        )
+        request.budget.max_steps = 2
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(
+                {
+                    "status": "ok",
+                    "final_url": "https://example.test/",
+                    "observation": {
+                        "summary": "Snapshot captured.",
+                        "detail": "Snapshot collected.",
+                        "structured_data": {"page_title": "Example"},
+                    },
+                    "evidence_refs": [
+                        {
+                            "ref_id": "evidence-001",
+                            "evidence_type": "artifact",
+                            "uri": "memory://snapshot/001",
+                        }
+                    ],
+                    "consumed_budget": {"steps": 2, "duration_ms": 80, "output_bytes": 128, "side_effects": 0},
+                    "side_effects_declared": [],
+                    "backend_execution_performed": True,
+                    "machine_action_performed": True,
+                }
+            ),
+        ) as post_mock:
+            result = execute(self._plan(request), "ctx-machine-workflow-budget-overflow")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorExecutionAborted")
+        self.assertEqual(result["data"]["backend_status"], "workflow_budget_exceeded")
+        self.assertEqual(post_mock.call_count, 1)
 
     def test_routing_registry_adds_machine_operator_without_affecting_host(self):
         from assistant_os.contracts import ACTION_HOST_LIST_DIRECTORY, ACTION_MACHINE_OPERATOR_EXECUTE

@@ -20,22 +20,29 @@ class _FakeResponse:
 class TestMachineOperatorAdapter(unittest.TestCase):
     def setUp(self):
         from assistant_os.mso.machine_operator_audit import MACHINE_OPERATOR_AUDIT_LOG
+        from assistant_os.mso.machine_operator_adapter import reset_machine_operator_backend_health
 
         MACHINE_OPERATOR_AUDIT_LOG.clear()
+        reset_machine_operator_backend_health()
 
     def _request(self, **overrides):
         from assistant_os.mso.contracts import (
             MachineOperatorBudget,
             MachineOperatorIntentRequest,
             MachineOperatorPolicyContext,
+            MachineOperatorWorkflowStep,
         )
 
         request = MachineOperatorIntentRequest(
             intent_id="intent-adapter-001",
             correlation_id="corr-adapter-001",
-            capability_name="browser.snapshot",
-            capability_tier="read_only",
-            arguments={"url": "https://example.test"},
+            workflow_steps=[
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.snapshot",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test"},
+                )
+            ],
             policy_context=MachineOperatorPolicyContext(
                 policy_decision_ref="policy-adapter-001",
                 governance_ref="gov-adapter-001",
@@ -55,7 +62,14 @@ class TestMachineOperatorAdapter(unittest.TestCase):
             approval_token=None,
         )
         for key, value in overrides.items():
-            setattr(request, key, value)
+            if key == "capability_name":
+                request.workflow_steps[0].capability_name = value
+            elif key == "capability_tier":
+                request.workflow_steps[0].capability_tier = value
+            elif key == "arguments":
+                request.workflow_steps[0].arguments = value
+            else:
+                setattr(request, key, value)
         return request
 
     def _context(self):
@@ -150,6 +164,10 @@ class TestMachineOperatorAdapter(unittest.TestCase):
         self.assertFalse(result.metadata["session_reused"])
         self.assertFalse(result.metadata["session_persisted"])
         self.assertFalse(result.metadata["session_retained_after_terminal"])
+        self.assertEqual(result.metadata["backend_state"], "HEALTHY")
+        self.assertEqual(result.metadata["backend_error_type"], "")
+        self.assertEqual(result.metadata["circuit_state"], "closed")
+        self.assertGreaterEqual(result.metadata["backend_latency_ms"], 0)
         self.assertEqual(result.observation.structured_data["cleanup_semantics"], "no_reusable_session_retained")
         self.assertTrue(result.metadata["evidence_expected"])
         self.assertTrue(result.metadata["evidence_available"])
@@ -243,15 +261,21 @@ class TestMachineOperatorAdapter(unittest.TestCase):
             )
 
         event_types = [event.event_type for event in MACHINE_OPERATOR_AUDIT_LOG.events()]
-        self.assertEqual(result.status, "failed")
-        self.assertEqual(result.metadata["backend_status"], "timed_out")
+        self.assertEqual(result.status, "aborted")
+        self.assertEqual(result.metadata["backend_status"], "timeout")
+        self.assertEqual(result.metadata["lane_outcome"], "execution_aborted")
+        self.assertEqual(result.metadata["adapter_status"], "timeout")
+        self.assertEqual(result.metadata["backend_state"], "DEGRADED")
+        self.assertEqual(result.metadata["backend_error_type"], "Timeout")
+        self.assertEqual(result.metadata["circuit_state"], "closed")
+        self.assertGreaterEqual(result.metadata["backend_latency_ms"], 0)
         self.assertTrue(result.metadata["backend_execution_attempted"])
         self.assertFalse(result.metadata["backend_execution_performed"])
         self.assertFalse(result.metadata["machine_action_performed"])
         self.assertEqual(result.evidence_refs, [])
         self.assertEqual(result.side_effects_declared, [])
         self.assertEqual(result.consumed_budget.side_effects, 0)
-        self.assertEqual(result.metadata["evidence_semantics"], "failure_before_evidence")
+        self.assertEqual(result.metadata["evidence_semantics"], "aborted_before_evidence")
         self.assertEqual(result.observation.structured_data["evidence_count"], 0)
         self.assertEqual(result.observation.structured_data["session_mode"], "ephemeral")
         self.assertEqual(
@@ -260,7 +284,7 @@ class TestMachineOperatorAdapter(unittest.TestCase):
                 MachineOperatorAuditEventType.MO_INTENT_RECEIVED,
                 MachineOperatorAuditEventType.MO_POLICY_EVALUATED,
                 MachineOperatorAuditEventType.MO_STEP_STARTED,
-                MachineOperatorAuditEventType.MO_EXECUTION_FAILED,
+                MachineOperatorAuditEventType.MO_ABORTED,
                 MachineOperatorAuditEventType.MO_EPHEMERAL_SCOPE_CLOSED,
             ],
         )
@@ -420,7 +444,7 @@ class TestMachineOperatorAdapter(unittest.TestCase):
         )
 
         request = self._request(capability_name="browser.navigate")
-        request.capability_tier = "interactive"
+        request.workflow_steps[0].capability_tier = "interactive"
         request.policy_context.approval_mode = "required"
         context = self._context()
         context.capability_name = "browser.navigate"
@@ -474,7 +498,7 @@ class TestMachineOperatorAdapter(unittest.TestCase):
             ],
         )
 
-    def test_backend_unavailable_maps_separately_from_execution_failure(self):
+    def test_gateway_failure_keeps_backend_unavailable_semantics_without_fake_completion(self):
         from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
         from assistant_os.mso.machine_operator_audit import (
             MACHINE_OPERATOR_AUDIT_LOG,
@@ -494,13 +518,179 @@ class TestMachineOperatorAdapter(unittest.TestCase):
         self.assertEqual(result.status, "aborted")
         self.assertEqual(result.metadata["lane_outcome"], "backend_unavailable")
         self.assertEqual(result.metadata["backend_status"], "unavailable")
+        self.assertEqual(result.metadata["backend_state"], "DEGRADED")
+        self.assertEqual(result.metadata["backend_error_type"], "ConnectionError")
+        self.assertEqual(result.metadata["circuit_state"], "closed")
         self.assertTrue(result.metadata["backend_execution_attempted"])
         self.assertEqual(result.metadata["evidence_semantics"], "aborted_before_evidence")
         self.assertNotIn(MachineOperatorAuditEventType.MO_STEP_COMPLETED, event_types)
         self.assertIn(MachineOperatorAuditEventType.MO_BACKEND_UNAVAILABLE, event_types)
         self.assertNotIn(MachineOperatorAuditEventType.MO_EXECUTION_FAILED, event_types)
-        self.assertNotIn(MachineOperatorAuditEventType.MO_ABORTED, event_types)
         self.assertIn(MachineOperatorAuditEventType.MO_EPHEMERAL_SCOPE_CLOSED, event_types)
+        self.assertTrue(
+            any("error_type=ConnectionError" in event.detail for event in MACHINE_OPERATOR_AUDIT_LOG.events())
+        )
+
+    def test_backend_becomes_unavailable_after_repeated_failures(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        adapter = OpenClawGatewayMachineOperatorAdapter()
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=requests.ConnectionError("backend offline"),
+        ):
+            first = adapter.execute(self._request(), self._context())
+            second = adapter.execute(self._request(), self._context())
+
+        self.assertEqual(first.metadata["backend_state"], "DEGRADED")
+        self.assertEqual(first.metadata["circuit_state"], "closed")
+        self.assertEqual(second.metadata["backend_state"], "UNAVAILABLE")
+        self.assertEqual(second.metadata["circuit_state"], "open")
+
+    def test_circuit_breaker_blocks_execution_when_backend_is_unavailable(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+        from assistant_os.mso.machine_operator_audit import (
+            MACHINE_OPERATOR_AUDIT_LOG,
+            MachineOperatorAuditEventType,
+        )
+
+        adapter = OpenClawGatewayMachineOperatorAdapter()
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=requests.ConnectionError("backend offline"),
+        ):
+            adapter.execute(self._request(), self._context())
+            adapter.execute(self._request(), self._context())
+
+        MACHINE_OPERATOR_AUDIT_LOG.clear()
+        post_mock = Mock()
+        with patch("assistant_os.mso.machine_operator_adapter.requests.post", post_mock):
+            result = adapter.execute(self._request(), self._context())
+
+        event_types = [event.event_type for event in MACHINE_OPERATOR_AUDIT_LOG.events()]
+        post_mock.assert_not_called()
+        self.assertEqual(result.status, "aborted")
+        self.assertEqual(result.metadata["lane_outcome"], "backend_unavailable")
+        self.assertEqual(result.metadata["backend_status"], "unavailable")
+        self.assertEqual(result.metadata["adapter_status"], "circuit_open")
+        self.assertEqual(result.metadata["backend_state"], "UNAVAILABLE")
+        self.assertEqual(result.metadata["circuit_state"], "open")
+        self.assertFalse(result.metadata["backend_execution_attempted"])
+        self.assertFalse(result.metadata["backend_execution_performed"])
+        self.assertFalse(result.metadata["machine_action_performed"])
+        self.assertIn(MachineOperatorAuditEventType.MO_BACKEND_UNAVAILABLE, event_types)
+        self.assertNotIn(MachineOperatorAuditEventType.MO_STEP_STARTED, event_types)
+
+    def test_gateway_failures_are_not_retried(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        post_mock = Mock(side_effect=requests.ConnectionError("backend offline"))
+        with patch("assistant_os.mso.machine_operator_adapter.requests.post", post_mock):
+            result = OpenClawGatewayMachineOperatorAdapter().execute(self._request(), self._context())
+
+        self.assertEqual(post_mock.call_count, 1)
+        self.assertEqual(result.metadata["backend_error_type"], "ConnectionError")
+
+    def test_backend_recovers_from_unavailable_after_cooldown_probe(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        adapter = OpenClawGatewayMachineOperatorAdapter()
+        response_body = {
+            "status": "ok",
+            "final_url": "https://example.test/",
+            "observation": {
+                "summary": "Snapshot captured.",
+                "detail": "Probe succeeded.",
+                "structured_data": {"page_title": "Example Domain"},
+            },
+            "evidence_refs": [
+                {
+                    "ref_id": "evidence-probe-001",
+                    "evidence_type": "artifact",
+                    "uri": "memory://snapshot/probe-001",
+                }
+            ],
+            "consumed_budget": {
+                "steps": 1,
+                "duration_ms": 100,
+                "output_bytes": 128,
+                "side_effects": 0,
+            },
+            "side_effects_declared": [],
+            "backend_execution_performed": True,
+            "machine_action_performed": True,
+        }
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=requests.ConnectionError("backend offline"),
+        ):
+            adapter.execute(self._request(), self._context())
+            adapter.execute(self._request(), self._context())
+
+        adapter._backend_health.last_failure_timestamp -= 31.0
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(response_body),
+        ) as post_mock:
+            result = adapter.execute(self._request(), self._context())
+
+        self.assertEqual(post_mock.call_count, 1)
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.metadata["backend_state"], "HEALTHY")
+        self.assertEqual(result.metadata["circuit_state"], "closed")
+        self.assertEqual(adapter._backend_health.consecutive_failures, 0)
+        self.assertGreater(adapter._backend_health.last_success_timestamp, 0)
+
+    def test_backend_probe_failure_keeps_unavailable_without_retry_loop(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        adapter = OpenClawGatewayMachineOperatorAdapter()
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=requests.ConnectionError("backend offline"),
+        ):
+            adapter.execute(self._request(), self._context())
+            adapter.execute(self._request(), self._context())
+
+        adapter._backend_health.last_failure_timestamp -= 31.0
+        post_mock = Mock(side_effect=requests.ConnectionError("backend still offline"))
+        with patch("assistant_os.mso.machine_operator_adapter.requests.post", post_mock):
+            result = adapter.execute(self._request(), self._context())
+
+        self.assertEqual(post_mock.call_count, 1)
+        self.assertEqual(result.metadata["lane_outcome"], "backend_unavailable")
+        self.assertEqual(result.metadata["backend_state"], "UNAVAILABLE")
+        self.assertEqual(result.metadata["circuit_state"], "open")
+
+    def test_backend_is_not_permanently_locked_after_cooldown(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        adapter = OpenClawGatewayMachineOperatorAdapter()
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=requests.ConnectionError("backend offline"),
+        ):
+            adapter.execute(self._request(), self._context())
+            adapter.execute(self._request(), self._context())
+
+        adapter._backend_health.last_failure_timestamp -= 31.0
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=requests.ConnectionError("probe failure"),
+        ) as first_probe:
+            adapter.execute(self._request(), self._context())
+
+        adapter._backend_health.last_failure_timestamp -= 31.0
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=requests.ConnectionError("second probe failure"),
+        ) as second_probe:
+            adapter.execute(self._request(), self._context())
+
+        self.assertEqual(first_probe.call_count, 1)
+        self.assertEqual(second_probe.call_count, 1)
 
     def test_partial_uses_partial_audit_event(self):
         from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
@@ -770,6 +960,273 @@ class TestMachineOperatorAdapter(unittest.TestCase):
         self.assertFalse(result.metadata["evidence_available"])
         self.assertEqual(result.metadata["evidence_count"], 0)
         self.assertEqual(result.metadata["evidence_semantics"], "no_evidence_expected")
+
+    def test_multi_step_workflow_success_reuses_internal_ephemeral_scope(self):
+        from assistant_os.mso.contracts import MachineOperatorWorkflowStep
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+        from assistant_os.mso.machine_operator_audit import MACHINE_OPERATOR_AUDIT_LOG, MachineOperatorAuditEventType
+
+        request = self._request(
+            workflow_steps=[
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.navigate",
+                    capability_tier="interactive",
+                    arguments={"url": "https://example.test/"},
+                ),
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.snapshot",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test/"},
+                ),
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.read_visible_text",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test/"},
+                ),
+            ]
+        )
+        request.policy_context.approval_mode = "required"
+        request.approval_token = "approval-workflow-001"
+        request.budget.max_steps = 5
+        request.budget.max_duration_ms = 30000
+        context = self._context()
+        context.capability_name = "workflow:browser.navigate->browser.snapshot->browser.read_visible_text"
+        context.capability_tier = "interactive"
+
+        responses = [
+            _FakeResponse(
+                {
+                    "status": "ok",
+                    "final_url": "https://example.test/",
+                    "observation": {
+                        "summary": "Navigation completed.",
+                        "detail": "Reached the destination.",
+                        "structured_data": {"http_status": 200},
+                    },
+                    "evidence_refs": [],
+                    "consumed_budget": {"steps": 1, "duration_ms": 60, "output_bytes": 32, "side_effects": 0},
+                    "side_effects_declared": [],
+                    "backend_execution_performed": True,
+                    "machine_action_performed": True,
+                }
+            ),
+            _FakeResponse(
+                {
+                    "status": "ok",
+                    "final_url": "https://example.test/",
+                    "observation": {
+                        "summary": "Snapshot captured.",
+                        "detail": "Snapshot collected.",
+                        "structured_data": {"page_title": "Example"},
+                    },
+                    "evidence_refs": [
+                        {
+                            "ref_id": "evidence-001",
+                            "evidence_type": "artifact",
+                            "uri": "memory://snapshot/001",
+                        }
+                    ],
+                    "consumed_budget": {"steps": 1, "duration_ms": 80, "output_bytes": 128, "side_effects": 0},
+                    "side_effects_declared": [],
+                    "backend_execution_performed": True,
+                    "machine_action_performed": True,
+                }
+            ),
+            _FakeResponse(
+                {
+                    "status": "ok",
+                    "final_url": "https://example.test/",
+                    "observation": {
+                        "summary": "Visible text captured.",
+                        "detail": "Text read safely.",
+                        "structured_data": {"visible_text": "Example Domain", "is_truncated": False},
+                    },
+                    "evidence_refs": [],
+                    "consumed_budget": {"steps": 1, "duration_ms": 70, "output_bytes": 64, "side_effects": 0},
+                    "side_effects_declared": [],
+                    "backend_execution_performed": True,
+                    "machine_action_performed": True,
+                }
+            ),
+        ]
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=responses,
+        ) as post_mock:
+            result = OpenClawGatewayMachineOperatorAdapter().execute(request, context)
+
+        event_types = [event.event_type for event in MACHINE_OPERATOR_AUDIT_LOG.events()]
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.metadata["lane_outcome"], "success")
+        self.assertEqual(result.metadata["evidence_count"], 1)
+        self.assertEqual(result.metadata["evidence_semantics"], "evidence_present")
+        self.assertEqual(len(result.observation.structured_data["step_results"]), 3)
+        self.assertEqual(
+            [step["status"] for step in result.observation.structured_data["step_results"]],
+            ["ok", "ok", "ok"],
+        )
+        self.assertEqual(post_mock.call_count, 3)
+        self.assertFalse(post_mock.call_args_list[0].kwargs["json"]["execution"]["reuse_session"])
+        self.assertTrue(post_mock.call_args_list[1].kwargs["json"]["execution"]["reuse_session"])
+        self.assertEqual(
+            post_mock.call_args_list[1].kwargs["json"]["execution"]["workflow_execution_id"],
+            post_mock.call_args_list[2].kwargs["json"]["execution"]["workflow_execution_id"],
+        )
+        self.assertTrue(post_mock.call_args_list[2].kwargs["json"]["execution"]["close_session"])
+        self.assertEqual(
+            event_types,
+            [
+                MachineOperatorAuditEventType.MO_INTENT_RECEIVED,
+                MachineOperatorAuditEventType.MO_POLICY_EVALUATED,
+                MachineOperatorAuditEventType.MO_STEP_STARTED,
+                MachineOperatorAuditEventType.MO_STEP_COMPLETED,
+                MachineOperatorAuditEventType.MO_STEP_STARTED,
+                MachineOperatorAuditEventType.MO_STEP_COMPLETED,
+                MachineOperatorAuditEventType.MO_STEP_STARTED,
+                MachineOperatorAuditEventType.MO_STEP_COMPLETED,
+                MachineOperatorAuditEventType.MO_EPHEMERAL_SCOPE_CLOSED,
+            ],
+        )
+
+    def test_multi_step_workflow_returns_partial_when_later_step_fails(self):
+        from assistant_os.mso.contracts import MachineOperatorWorkflowStep
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        request = self._request(
+            workflow_steps=[
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.snapshot",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test/"},
+                ),
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.read_visible_text",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test/"},
+                ),
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.screenshot",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test/"},
+                ),
+            ]
+        )
+        request.budget.max_steps = 4
+        request.budget.max_duration_ms = 24000
+        context = self._context()
+        context.capability_name = "workflow:browser.snapshot->browser.read_visible_text->browser.screenshot"
+        context.capability_tier = "read_only"
+
+        responses = [
+            _FakeResponse(
+                {
+                    "status": "ok",
+                    "final_url": "https://example.test/",
+                    "observation": {
+                        "summary": "Snapshot captured.",
+                        "detail": "Snapshot collected.",
+                        "structured_data": {"page_title": "Example"},
+                    },
+                    "evidence_refs": [
+                        {
+                            "ref_id": "evidence-001",
+                            "evidence_type": "artifact",
+                            "uri": "memory://snapshot/001",
+                        }
+                    ],
+                    "consumed_budget": {"steps": 1, "duration_ms": 80, "output_bytes": 128, "side_effects": 0},
+                    "side_effects_declared": [],
+                    "backend_execution_performed": True,
+                    "machine_action_performed": True,
+                }
+            ),
+            _FakeResponse(
+                {
+                    "status": "failed",
+                    "observation": {
+                        "summary": "Visible text capture failed.",
+                        "detail": "Backend could not complete the step.",
+                        "structured_data": {},
+                    },
+                    "evidence_refs": [],
+                    "consumed_budget": {"steps": 1, "duration_ms": 50, "output_bytes": 0, "side_effects": 0},
+                    "side_effects_declared": [],
+                    "backend_execution_performed": False,
+                    "machine_action_performed": False,
+                }
+            ),
+        ]
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=responses,
+        ) as post_mock:
+            result = OpenClawGatewayMachineOperatorAdapter().execute(request, context)
+
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.metadata["lane_outcome"], "execution_partial")
+        self.assertEqual(result.metadata["evidence_semantics"], "partial_evidence")
+        self.assertEqual(post_mock.call_count, 2)
+        self.assertEqual(
+            [step["status"] for step in result.observation.structured_data["step_results"]],
+            ["ok", "failed"],
+        )
+
+    def test_multi_step_workflow_aborts_when_budget_is_exhausted_mid_sequence(self):
+        from assistant_os.mso.contracts import MachineOperatorWorkflowStep
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        request = self._request(
+            workflow_steps=[
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.snapshot",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test/"},
+                ),
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.read_visible_text",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test/"},
+                ),
+            ]
+        )
+        request.budget.max_steps = 2
+        context = self._context()
+        context.capability_name = "workflow:browser.snapshot->browser.read_visible_text"
+        context.capability_tier = "read_only"
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(
+                {
+                    "status": "ok",
+                    "final_url": "https://example.test/",
+                    "observation": {
+                        "summary": "Snapshot captured.",
+                        "detail": "Snapshot collected.",
+                        "structured_data": {"page_title": "Example"},
+                    },
+                    "evidence_refs": [
+                        {
+                            "ref_id": "evidence-001",
+                            "evidence_type": "artifact",
+                            "uri": "memory://snapshot/001",
+                        }
+                    ],
+                    "consumed_budget": {"steps": 2, "duration_ms": 80, "output_bytes": 128, "side_effects": 0},
+                    "side_effects_declared": [],
+                    "backend_execution_performed": True,
+                    "machine_action_performed": True,
+                }
+            ),
+        ) as post_mock:
+            result = OpenClawGatewayMachineOperatorAdapter().execute(request, context)
+
+        self.assertEqual(result.status, "aborted")
+        self.assertEqual(result.metadata["backend_status"], "workflow_budget_exceeded")
+        self.assertEqual(len(result.observation.structured_data["step_results"]), 1)
+        self.assertEqual(post_mock.call_count, 1)
 
     def test_gateway_execute_url_rejects_backslashes(self):
         from assistant_os.mso.machine_operator_adapter import _gateway_execute_url
