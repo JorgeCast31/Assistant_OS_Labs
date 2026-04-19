@@ -1002,9 +1002,12 @@ class TestFailurePaths:
             audit_log=audit,
         )
 
-        # execution_started was emitted, and execution_failed was emitted
+        # execution_started was emitted; backend crash → EXECUTION_BACKEND_UNAVAILABLE
+        # (not EXECUTION_FAILED — backend failures are semantically distinct from
+        # sandbox code failures, per TerminationReason.INTERNAL_ERROR semantics).
         assert audit.count(AuditEventType.EXECUTION_STARTED) == 1
-        assert audit.count(AuditEventType.EXECUTION_FAILED) == 1
+        assert audit.count(AuditEventType.EXECUTION_BACKEND_UNAVAILABLE) == 1
+        assert audit.count(AuditEventType.EXECUTION_FAILED) == 0
 
     def test_secrets_invalidated_when_backend_raises(self, tmp_path):
         from assistant_os.sandbox.runner_api import RunnerAPI

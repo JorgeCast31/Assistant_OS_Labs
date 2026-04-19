@@ -37,10 +37,17 @@ from typing import Any, Optional
 
 class AuditEventType:
     # Execution lifecycle
-    EXECUTION_STARTED   = "execution_started"
-    EXECUTION_COMPLETED = "execution_completed"
-    EXECUTION_FAILED    = "execution_failed"
-    EXECUTION_ABORTED   = "execution_aborted"
+    EXECUTION_STARTED             = "execution_started"
+    EXECUTION_COMPLETED           = "execution_completed"
+    EXECUTION_FAILED              = "execution_failed"
+    EXECUTION_ABORTED             = "execution_aborted"
+    # Backend infrastructure failure — distinct from sandbox code failure.
+    # Emitted when TerminationReason.INTERNAL_ERROR is set (backend.execute()
+    # raised an unhandled exception).  Do NOT use EXECUTION_FAILED for this
+    # case — audit consumers must be able to distinguish infrastructure
+    # unavailability from sandbox code-level failures without inspecting
+    # the termination_reason field.
+    EXECUTION_BACKEND_UNAVAILABLE = "execution_backend_unavailable"
 
     # Secret access
     SECRET_RESOLVED     = "secret_resolved"

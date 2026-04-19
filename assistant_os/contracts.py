@@ -167,6 +167,10 @@ class ChatSession(TypedDict, total=False):
     context_id: str               # ID to pass on next turn
     last_domain: Optional[str]    # Last classified domain
     last_action_type: Optional[str]
+    # F1: Identity fields — optional, backward compatible.
+    # Populated when RequestIdentity is available at the entrypoint.
+    principal_id: Optional[str]   # Principal.id of the acting party
+    subject_state: Optional[str]  # SubjectState value ("active"|"suspended"|...)
 
 
 class ChatAction(TypedDict, total=False):
@@ -831,12 +835,33 @@ def make_domain_result(
 # normalized fields — never raw HTTP body values directly.
 # ---------------------------------------------------------------------------
 
-class CanonicalRequest(TypedDict):
-    """Normalized entry-point contract for all user inputs."""
-    text: str        # Normalized user utterance (stripped, always str, never None)
-    context_id: str  # Request context UUID (generated if absent)
-    filters: dict    # Pre-parsed filter hints (always dict, {} if absent)
-    metadata: dict   # Caller metadata (always dict, {} if absent)
+class CanonicalRequest(TypedDict, total=False):
+    """
+    Normalized entry-point contract for all user inputs.
+
+    Required fields (always present after normalize_request):
+        text        — Normalized user utterance (stripped, always str, never None)
+        context_id  — Request context UUID (generated if absent)
+        filters     — Pre-parsed filter hints (always dict, {} if absent)
+        metadata    — Caller metadata (always dict, {} if absent)
+
+    Optional identity/guard fields (F2–F4, backward-compatible):
+        principal_id    — Principal.id string from RequestIdentity
+        subject_state   — SubjectState.value string ("active"|"suspended"|…)
+        guard_decision  — GuardDecision.value string ("allow"|"deny"|"degraded")
+        action_type     — ActionType.value string ("read"|"write"|"execute"|…)  [F4]
+    """
+    # Required fields — always set by normalize_request
+    text:           str
+    context_id:     str
+    filters:        dict
+    metadata:       dict
+    # F2/F3: Identity / guard fields — optional, set when an identity is available
+    principal_id:   Optional[str]   # Principal.id of the acting party
+    subject_state:  Optional[str]   # SubjectState value at request time
+    guard_decision: Optional[str]   # GuardDecision value ("allow"|"deny"|"degraded")
+    # F4: Policy engine fields — optional, set by build_guarded_request
+    action_type:    Optional[str]   # ActionType value ("read"|"write"|"execute"|…)
 
 
 def normalize_request(
@@ -844,6 +869,9 @@ def normalize_request(
     context_id: Optional[str] = None,
     filters: Optional[dict] = None,
     metadata: Optional[dict] = None,
+    *,
+    identity: Optional[Any] = None,
+    action_type: Optional[str] = None,
 ) -> "CanonicalRequest":
     """
     Normalize raw user input into a CanonicalRequest.
@@ -854,22 +882,38 @@ def normalize_request(
     - context_id: generated if absent or blank
     - filters: any non-dict value → {}
     - metadata: any non-dict value → {}
+    - identity: optional RequestIdentity; injects principal_id + subject_state (F2)
+    - action_type: optional ActionType.value string; injected directly when provided (F4)
 
     Args:
-        text:       Raw user utterance (may be None or have surrounding whitespace)
-        context_id: Optional request context ID; generated UUID4 if absent
-        filters:    Optional pre-parsed filter hints
-        metadata:   Optional caller metadata
+        text:        Raw user utterance (may be None or have surrounding whitespace)
+        context_id:  Optional request context ID; generated UUID4 if absent
+        filters:     Optional pre-parsed filter hints
+        metadata:    Optional caller metadata
+        identity:    Optional RequestIdentity (keyword-only, F2)
+        action_type: Optional ActionType value string (keyword-only, F4)
 
     Returns:
-        CanonicalRequest with all fields present and safe defaults applied.
+        CanonicalRequest with all required fields present and safe defaults applied.
+        Identity/guard/action fields are set only when the corresponding arguments
+        are provided (backward-compatible — callers that omit them get a plain req).
     """
-    return CanonicalRequest(
+    req = CanonicalRequest(
         text=(text or "").strip(),
         context_id=context_id if (context_id and isinstance(context_id, str)) else new_context_id(),
         filters=filters if isinstance(filters, dict) else {},
         metadata=metadata if isinstance(metadata, dict) else {},
     )
+    if identity is not None:
+        req["principal_id"] = identity.principal.id
+        req["subject_state"] = identity.subject_state.value
+        # guard_decision and action_type are stamped by build_guarded_request after
+        # running the policy engine; leave them absent here so callers can tell
+        # whether the guard has run yet.
+        req["guard_decision"] = None
+    if action_type is not None:
+        req["action_type"] = action_type
+    return req
 
 
 def build_policy_decision(

@@ -13,7 +13,11 @@ import hashlib
 import logging
 import re
 import time
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from .identity import RequestIdentity
+    from .identity_guard import GuardResult
 
 _log = logging.getLogger(__name__)
 
@@ -2037,11 +2041,49 @@ def _resolve_code_preview(
 # Core Routing Logic
 # ---------------------------------------------------------------------------
 
+def _inject_identity(
+    response: ChatCoreResponse,
+    identity: "RequestIdentity",
+    guard_result: Optional["GuardResult"] = None,
+) -> ChatCoreResponse:
+    """
+    F1/F2: Attach RequestIdentity (and optional GuardResult) to a ChatCoreResponse.
+
+    Merges principal_id and subject_state into the session dict so they
+    round-trip to the client and back.  Also stamps audit["_identity"] so
+    every response carries a traceable identity record.
+
+    When guard_result is supplied (F2), audit["_guard"] is also stamped so
+    the guard decision is traceable per response.
+
+    This is the single injection point — called by process_chat_input after
+    dispatching to any sub-handler, so all code paths (structured action,
+    pending flow, domain routing, passthrough) are covered uniformly without
+    modifying each sub-handler.
+    """
+    # Augment session with identity fields (TypedDicts are plain dicts at runtime)
+    sess = dict(response.get("session", {}))
+    sess["principal_id"] = identity.principal.id
+    sess["subject_state"] = identity.subject_state.value
+    response["session"] = ChatSession(**sess)  # type: ignore[misc]
+
+    # Stamp audit with full identity snapshot
+    audit = dict(response.get("audit", {}))
+    audit["_identity"] = identity.to_audit_dict()
+    if guard_result is not None:
+        audit["_guard"] = guard_result.to_audit_dict()
+    response["audit"] = audit
+
+    return response
+
+
 def process_chat_input(
     text: str,
     session: Optional[ChatSession] = None,
     domain_hint: Optional[str] = None,
     action: Optional[dict] = None,
+    identity: Optional["RequestIdentity"] = None,
+    guard_result: Optional["GuardResult"] = None,
 ) -> ChatCoreResponse:
     """
     Layer 1: Process user input and produce structured response.
@@ -2056,14 +2098,27 @@ def process_chat_input(
     3. Classification + domain routing — normal text-based path.
 
     Args:
-        text:        User input text (may be empty when action is provided)
-        session:     Optional session state from previous turn
-        domain_hint: Optional domain hint (e.g., from endpoint)
-        action:      Optional structured action dict from the frontend (M12)
+        text:         User input text (may be empty when action is provided)
+        session:      Optional session state from previous turn
+        domain_hint:  Optional domain hint (e.g., from endpoint)
+        action:       Optional structured action dict from the frontend (M12)
+        identity:     Optional RequestIdentity (F1). When present, principal_id
+                      and subject_state are stamped on the session and audit.
+                      Absent → backward-compatible; no identity fields added.
+        guard_result: Optional GuardResult (F2). When DEGRADED, write operations
+                      are blocked before domain routing. Absent → no enforcement.
 
     Returns:
         ChatCoreResponse — structured response for Layer 2
     """
+    # F1: Pre-seed the session with identity fields when provided.
+    # We make a shallow copy to avoid mutating the caller's dict.
+    if identity is not None and session is not None:
+        sess_copy = dict(session)
+        sess_copy.setdefault("principal_id", identity.principal.id)
+        sess_copy.setdefault("subject_state", identity.subject_state.value)
+        session = ChatSession(**sess_copy)  # type: ignore[misc]
+
     session = session or ChatSession(context_id=new_context_id())
     text = (text or "").strip()
 
@@ -2072,31 +2127,40 @@ def process_chat_input(
         parsed, err = parse_action(action)
         if err:
             _log.warning("process_chat_input: malformed action: %s", err)
-            return make_chat_core_response(
+            result = make_chat_core_response(
                 domain="*",
                 intent="error",
                 mode="chat",
                 session=session,
                 audit={"error_message": f"Malformed action: {err}"},
             )
+            if identity is not None:
+                _inject_identity(result, identity, guard_result)
+            return result
         if parsed and parsed["type"] in STRUCTURED_ACTION_TYPES:
             _log.debug(
                 "structured_action=%s pending_flow=%s",
                 parsed["type"], session.get("pending_flow") or "None",
             )
-            return _process_structured_action(parsed, session, text)
+            result = _process_structured_action(parsed, session, text)
+            if identity is not None:
+                _inject_identity(result, identity, guard_result)
+            return result
         # Unknown / unsupported type (e.g. "chip") — fall through to text flow
         _log.debug("action type %r not structured, falling through to text", action.get("type"))
 
     # Require at least some text for the text-based path
     if not text:
-        return make_chat_core_response(
+        result = make_chat_core_response(
             domain="*",
             intent="empty",
             mode="chat",
             session=session,
             audit={"error": "empty_input"},
         )
+        if identity is not None:
+            _inject_identity(result, identity, guard_result)
+        return result
 
     # --- PENDING FLOW ROUTING (skip re-classification) ---
     pending_flow = session.get("pending_flow")
@@ -2104,13 +2168,16 @@ def process_chat_input(
         resolver = PENDING_FLOW_RESOLVERS.get(pending_flow)
         if resolver:
             pending_data = session.get("pending_data", {})
-            return resolver(text, session, pending_data)
+            result = resolver(text, session, pending_data)
+            if identity is not None:
+                _inject_identity(result, identity, guard_result)
+            return result
         # Unknown pending flow - clear it and continue
         session = ChatSession(
             context_id=session.get("context_id", new_context_id()),
             pending_flow=None,
         )
-    
+
     # --- CLASSIFICATION ---
     # Use classifier to determine domain and intent
     try:
@@ -2121,18 +2188,21 @@ def process_chat_input(
         confidence = classify_result.get("confidence", 0.0)
         needs_confirm = classify_result.get("needs_confirmation", False)
     except Exception as e:
-        return make_chat_core_response(
+        result = make_chat_core_response(
             domain="*",
             intent="error",
             mode="chat",
             session=session,
             audit={"error_message": str(e)},
         )
-    
+        if identity is not None:
+            _inject_identity(result, identity, guard_result)
+        return result
+
     # Override with domain hint if provided
     if domain_hint and domain_hint != "auto":
         domain = domain_hint
-    
+
     # --- INTENT-BASED ROUTING (priority over domain) ---
 
     _op = classify_result.get("operation")
@@ -2143,26 +2213,72 @@ def process_chat_input(
     if _op in _WORK_MUTATION_OPS:
         domain = "WORK"
 
+    # --- F2: DEGRADED WRITE-OP GUARD ---
+    # When the guard says DEGRADED, block any write/mutating operations.
+    # Read-only paths (WORK_QUERY, passthrough) are still allowed.
+    if guard_result is not None and not guard_result.allow_write:
+        from .identity_guard import is_write_operation
+        # FIN is always a write domain (expense recording)
+        _is_fin_write = (domain == "FIN")
+        # WORK mutations are write ops; WORK_QUERY is read-only
+        _is_work_write = (domain == "WORK" and _op in _WORK_MUTATION_OPS)
+        # CODE_FIX / CODE_CREATE are write ops
+        _is_code_write = (domain == "CODE" and is_write_operation(_op))
+        if _is_fin_write or _is_work_write or _is_code_write:
+            _log.info(
+                "identity_guard: DEGRADED — blocking write op=%s domain=%s principal=%s",
+                _op, domain, identity.principal.id if identity is not None else "unknown",
+            )
+            result = make_chat_core_response(
+                domain=domain,
+                intent="suspended",
+                mode="chat",
+                session=ChatSession(
+                    context_id=session.get("context_id", new_context_id()),
+                    last_domain=domain,
+                ),
+                audit={
+                    "blocked_op": _op or "unknown",
+                    "guard_reason": guard_result.reason,
+                    "subject_state": guard_result.subject_state,
+                },
+            )
+            if identity is not None:
+                _inject_identity(result, identity, guard_result)
+            return result
+
     # WORK_QUERY takes priority UNLESS the classifier has already determined
     # this is a CODE operation (M23) OR a WORK mutation (M26-B).
     # WORK_CREATE/UPDATE/DELETE must reach _process_work_input — is_work_query
     # matches "tarea" broadly and would swallow all mutation prompts otherwise.
     if is_work_query(text, domain) and domain != "CODE" and _op not in _WORK_MUTATION_OPS:
-        return _process_work_query(text, session, classify_result)
+        result = _process_work_query(text, session, classify_result)
+        if identity is not None:
+            _inject_identity(result, identity, guard_result)
+        return result
 
     # --- DOMAIN-SPECIFIC ROUTING ---
 
     if domain == "FIN":
-        return _process_fin_input(text, session, classify_result)
+        result = _process_fin_input(text, session, classify_result)
+        if identity is not None:
+            _inject_identity(result, identity, guard_result)
+        return result
 
     if domain == "WORK":
-        return _process_work_input(text, session, classify_result)
+        result = _process_work_input(text, session, classify_result)
+        if identity is not None:
+            _inject_identity(result, identity, guard_result)
+        return result
 
     if domain == "CODE":
-        return _process_code_input(text, session, classify_result)
+        result = _process_code_input(text, session, classify_result)
+        if identity is not None:
+            _inject_identity(result, identity, guard_result)
+        return result
 
     # Generic passthrough for other domains
-    return make_chat_core_response(
+    result = make_chat_core_response(
         domain=domain,
         intent="passthrough",
         mode="chat",
@@ -2172,6 +2288,9 @@ def process_chat_input(
         ),
         audit={"raw_text": text, "confidence": confidence},
     )
+    if identity is not None:
+        _inject_identity(result, identity, guard_result)
+    return result
 
 
 # ---------------------------------------------------------------------------

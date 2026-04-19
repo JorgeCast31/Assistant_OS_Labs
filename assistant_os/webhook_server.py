@@ -2227,8 +2227,44 @@ class WebhookHandler(BaseHTTPRequestHandler):
             text[:40],
         )
 
+        # F3: Build RequestIdentity and run the centralized guard in one call.
+        # build_guarded_request is the single canonical path:
+        #   anonymous_human → normalize_request → identity_guard (once) → guard_decision stamped
+        # The returned (req, guard_result) pair is the authoritative source.
+        # Downstream must NOT call identity_guard() independently.
+        from .identity import anonymous_human
+        from .identity_guard import build_guarded_request, enforce_guard_for_handler
+        request_identity = anonymous_human(session_id=session_id)
+        req, guard_result = build_guarded_request(request_identity, text=text)
+
+        _log.debug(
+            "guard: principal=%s state=%s decision=%s",
+            request_identity.principal.id,
+            request_identity.subject_state.value,
+            req["guard_decision"],
+        )
+
+        # F3: Enforcement reads guard_decision FROM CanonicalRequest — not recomputed.
+        # DENY → HTTP 403 immediately; no domain logic executes.
+        # DEGRADED + write-op → blocked inside process_chat_input via guard_result.
+        guard_error = enforce_guard_for_handler(
+            req, action=None,  # chat path: no ACTION_* constant; write-op check is in process_chat_input
+            principal_id=request_identity.principal.id,
+        )
+        if guard_error and guard_error[0] == "access_denied":
+            self._send_json_response(403, {
+                "ok": False,
+                "error": "access_denied",
+                "reason": guard_result.reason,
+                "subject_state": guard_result.subject_state,
+                "identity": request_identity.to_audit_dict(),
+                "guard": guard_result.to_audit_dict(),
+            })
+            return
+
         response: ChatCoreResponse = process_chat_input(
-            text, session, action=action_raw
+            text, session, action=action_raw,
+            identity=request_identity, guard_result=guard_result,
         )
 
         ui_action_types = [a.get("type", "") for a in response.get("ui_actions", [])]
@@ -2275,6 +2311,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             "ui_actions": response.get("ui_actions", []),
             "session": dict(response.get("session", {})),
             "audit": base_audit,
+            # F1: Expose canonical identity at response level so the client
+            # can observe who acted and under what subject state.
+            "identity": request_identity.to_audit_dict(),
+            # F2: Expose guard decision at response level for client observability.
+            "guard": guard_result.to_audit_dict(),
         }
 
         # M29: Attach cognitive_trace when the feature is enabled.
