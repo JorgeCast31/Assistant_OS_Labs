@@ -50,7 +50,6 @@ from ..mso.contracts import (
     MachineOperatorIntentResponse,
     MachineOperatorObservation,
     is_machine_operator_transition_allowed,
-    normalize_machine_operator_request,
     validate_machine_operator_response,
 )
 from ..mso.machine_operator_policy import enforce_machine_operator_request
@@ -306,8 +305,8 @@ def _build_adapter_context(
         execution_id=execution_id,
         trace_id=plan.get("trace_id", ""),
         policy_decision_ref=request["policy_context"]["policy_decision_ref"],
-        capability_name=_workflow_label(request),
-        capability_tier=_workflow_tier(request),
+        capability_name=request["capability_name"],
+        capability_tier=request["capability_tier"],
         policy_reason_code=decision.reason_code,
         policy_message=decision.message,
     )
@@ -344,10 +343,8 @@ def _build_domain_data(
         "execution_id": execution_id,
         "intent_id": request["intent_id"],
         "correlation_id": request["correlation_id"],
-        "capability_name": _workflow_label(request),
-        "capability_tier": _workflow_tier(request),
-        "workflow_step_count": len(request["workflow_steps"]),
-        "workflow_capabilities": [step["capability_name"] for step in request["workflow_steps"]],
+        "capability_name": request["capability_name"],
+        "capability_tier": request["capability_tier"],
         "contract_validation": {
             "ok": True,
             "reason_code": "valid_request",
@@ -380,10 +377,6 @@ def _build_domain_data(
         "session_persisted": metadata.get("session_persisted", False),
         "session_retained_after_terminal": metadata.get("session_retained_after_terminal", False),
         "cleanup_semantics": metadata.get("cleanup_semantics", ""),
-        "evidence_expected": metadata.get("evidence_expected", False),
-        "evidence_available": metadata.get("evidence_available", False),
-        "evidence_count": metadata.get("evidence_count", 0),
-        "evidence_semantics": metadata.get("evidence_semantics", ""),
         "machine_operator_response": asdict(response),
     }
 
@@ -436,20 +429,8 @@ def _adapter_failure_type(adapter_result: MachineOperatorAdapterResult) -> str:
 
 
 def _coerce_to_dict(payload: Any) -> dict[str, Any]:
-    request, error = normalize_machine_operator_request(payload)
-    if request is None:
-        return {}
-    return request
-
-
-def _workflow_label(request: dict[str, Any]) -> str:
-    capability_names = [step["capability_name"] for step in request["workflow_steps"]]
-    if len(capability_names) == 1:
-        return capability_names[0]
-    return "workflow:" + "->".join(capability_names)
-
-
-def _workflow_tier(request: dict[str, Any]) -> str:
-    if any(step["capability_tier"] == "interactive" for step in request["workflow_steps"]):
-        return "interactive"
-    return "read_only"
+    if is_dataclass(payload):
+        return asdict(payload)
+    if isinstance(payload, dict):
+        return dict(payload)
+    return {}
