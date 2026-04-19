@@ -134,6 +134,9 @@ INTENT_TEMPLATES: dict[tuple[str, str] | str, str] = {
     ("*", "add"):              "Agregando a {domain_name}: {summary}",
     ("*", "confirm"):          "¿Confirmas?\n{plan_summary}",
     ("*", "passthrough"):      "{raw_text}",
+    # F2: Identity guard — write operation blocked due to subject state
+    ("*", "suspended"):        "⚠ Operación bloqueada: tu sesión está en modo de sólo lectura. "
+                               "Las operaciones de escritura no están permitidas en este momento.",
     # M12/M13: generic action intents
     ("*", "cancelled"):        "Acción cancelada.",
     ("*", "execute_requested"):"Solicitud de ejecución recibida.",

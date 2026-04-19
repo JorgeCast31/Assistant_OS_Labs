@@ -60,6 +60,16 @@ class WorkspaceModel:
           input/         : 0o755  — readable + traversable; container does not write here
           output/        : 0o777  — container may write scratch data
           out/           : 0o777  — container writes governed artifact files here
+
+        Platform note (Windows):
+          Path.chmod() has no effect on Windows (Windows uses ACLs, not POSIX mode
+          bits).  The chmod() calls below are safe to call on Windows — they do not
+          raise — but they do not set any permissions.  The sandbox is primarily
+          designed for Linux Docker environments; on Windows the container runs
+          inside a WSL2/Hyper-V VM where the mounted workspace is governed by the
+          Docker daemon's path translation layer, not the host filesystem ACLs.
+          If you encounter permission errors on Docker-for-Windows, check Docker
+          Desktop's file sharing settings rather than these chmod calls.
         """
         self.input_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)

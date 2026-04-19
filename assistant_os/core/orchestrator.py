@@ -31,7 +31,7 @@ This guarantees that ALL execution goes through the orchestrator — no direct p
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
 import logging
 
 from ..contracts import (
@@ -459,6 +459,106 @@ def handle_request(
     text = req["text"]
 
     # ---------------------------------------------------------------------------
+    # F3: Identity Guard — consume guard_decision from CanonicalRequest.
+    # The decision was stamped upstream by build_guarded_request (identity_guard.py).
+    # handle_request NEVER calls identity_guard() itself — it only reads the
+    # already-computed decision.  When absent (legacy callers), skip enforcement.
+    # ---------------------------------------------------------------------------
+    _guard_decision = req.get("guard_decision")
+    if _guard_decision == "deny":
+        _log.warning(
+            "handle_request: guard DENY on context_id=%s principal=%s",
+            context_id, req.get("principal_id", "unknown"),
+        )
+        return make_domain_result(
+            ok=False,
+            result_type="denied",
+            domain="*",
+            message="Identity guard denied this request.",
+            error={
+                "type": "access_denied",
+                "message": (
+                    "Request blocked by identity guard. "
+                    f"Subject state: {req.get('subject_state', 'unknown')}."
+                ),
+            },
+        )
+
+    # ---------------------------------------------------------------------------
+    # F3: DEGRADED guard — block write operations before any domain logic.
+    # Read-only operations are permitted under DEGRADED (Quarantined state).
+    # ---------------------------------------------------------------------------
+    if _guard_decision == "degraded":
+        from ..identity_guard import is_write_operation as _is_write_op
+        meta_early = req.get("metadata", {})
+        _action_candidate = meta_early.get("action", "")
+        if _is_write_op(_action_candidate):
+            _log.info(
+                "handle_request: guard DEGRADED — blocking write action=%s principal=%s",
+                _action_candidate, req.get("principal_id", "unknown"),
+            )
+            return make_domain_result(
+                ok=False,
+                result_type="denied",
+                domain="*",
+                message="Write operation blocked: session is in read-only (quarantined) mode.",
+                error={
+                    "type": "write_blocked",
+                    "message": (
+                        f"Action '{_action_candidate}' is a write operation and is blocked "
+                        "while the subject is quarantined."
+                    ),
+                },
+            )
+
+    # ---------------------------------------------------------------------------
+    # S9: Capability Gate — after identity guard, before execution dispatch.
+    #
+    # Deterministic, fail-closed check: does the subject's lifecycle state
+    # permit the specific MO capability required for this action_type?
+    #
+    # This is orthogonal to the identity guard:
+    #   - Identity guard (above): (state, action_type) → ALLOW/DENY/DEGRADED
+    #   - Capability gate (here): (state, Capability)  → bool
+    # Both must pass. The gate is a second, independent layer.
+    #
+    # action_type and subject_state are stamped by build_guarded_request().
+    # When absent (legacy callers, NL requests without explicit action_type),
+    # required_capability returns None and the gate passes unconditionally.
+    # ---------------------------------------------------------------------------
+    from ..capabilities.capability_gate import (
+        evaluate_capability as _eval_cap,
+        required_capability as _req_cap,
+    )
+    _cap_action_type   = req.get("action_type", "")
+    _cap_subject_state = req.get("subject_state", "")
+    _required_cap      = _req_cap(_cap_action_type)
+    if _required_cap is not None and not _eval_cap(_cap_subject_state, _required_cap):
+        _log.warning(
+            "handle_request: capability DENIED action_type=%s capability=%s "
+            "subject_state=%s principal=%s",
+            _cap_action_type, _required_cap.value,
+            _cap_subject_state, req.get("principal_id", "unknown"),
+        )
+        return make_domain_result(
+            ok=False,
+            result_type="denied",
+            domain="*",
+            message=(
+                f"Capability '{_required_cap.value}' not permitted "
+                f"for subject state '{_cap_subject_state}'."
+            ),
+            error={
+                "type": "capability_denied",
+                "message": (
+                    f"Action '{_cap_action_type}' requires capability "
+                    f"'{_required_cap.value}', which is not granted "
+                    f"for subject state '{_cap_subject_state}'."
+                ),
+            },
+        )
+
+    # ---------------------------------------------------------------------------
     # Confirm path (Phase 3C): execute a previously stored plan.
     # Checked FIRST so confirm_plan_id takes priority over action/NL paths.
     # ---------------------------------------------------------------------------
@@ -511,7 +611,10 @@ def handle_request(
             execution_mode=execution_mode,
             advisory_trace=advisory_trace,
         )
-        governance_trace = asdict(governance)
+        # is_dataclass guard: in production, _evaluate_mso_governance always returns
+        # a GovernanceDecision dataclass.  The guard prevents asdict() from raising
+        # TypeError when tests inject non-dataclass objects via mocking.
+        governance_trace = asdict(governance) if is_dataclass(governance) else None
         execution_mode = governance.effective_execution_mode
         _log_governance_trace(governance_trace)
 
@@ -643,7 +746,7 @@ def handle_request(
         execution_mode=execution_mode,
         advisory_trace=advisory_trace,
     )
-    governance_trace = asdict(governance)
+    governance_trace = asdict(governance) if is_dataclass(governance) else None
     execution_mode = governance.effective_execution_mode
     _log_governance_trace(governance_trace)
 

@@ -440,7 +440,15 @@ def _emit_execution_event(
             "failed":    AuditEventType.EXECUTION_FAILED,
             "aborted":   AuditEventType.EXECUTION_ABORTED,
         }
-        event_type = _TYPE_MAP.get(suffix, f"execution_{suffix}")
+        # Backend infrastructure failures (TerminationReason.INTERNAL_ERROR) are
+        # semantically distinct from sandbox execution failures (TerminationReason.ERROR).
+        # Emit the dedicated EXECUTION_BACKEND_UNAVAILABLE event type so that
+        # audit consumers can distinguish unavailability from code-level failure
+        # without needing to inspect the termination_reason field on every event.
+        if suffix == "failed" and termination_reason == "internal_error":
+            event_type = AuditEventType.EXECUTION_BACKEND_UNAVAILABLE
+        else:
+            event_type = _TYPE_MAP.get(suffix, f"execution_{suffix}")
         audit_log.emit(ExecutionEvent(
             event_type=event_type,
             execution_id=execution_id,

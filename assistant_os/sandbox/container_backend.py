@@ -299,6 +299,15 @@ class ContainerBackend(ExecutionBackend):
         entry_point: str,
         env_file: str = "",
     ) -> list[str]:
+        # Platform note (Windows):
+        # workspace_path is a host absolute path (e.g. C:\Users\...).
+        # Docker Desktop on Windows translates Windows drive paths in -v bind mounts
+        # automatically (C:\foo → /c/foo inside the VM).  This relies on Docker
+        # Desktop's path-translation layer and is NOT a portable Docker Engine
+        # feature.  On bare Linux Docker Engine, workspace_path must be a POSIX path.
+        # If Docker Desktop is not available on Windows, bind mounts with Windows
+        # drive-letter paths will fail with a "invalid bind mount spec" error.
+        # The same applies to env_file paths below.
         cmd = [
             "docker", "run",
             "--rm",

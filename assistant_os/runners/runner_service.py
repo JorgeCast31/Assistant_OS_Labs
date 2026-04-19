@@ -168,7 +168,26 @@ class RunnerService:
         try:
             self._preflight(request)
             workspace: PreparedWorkspace = prepare_workspace(request)
-        except (PreflightError, PolicyViolationError, WorkspacePreparationError) as exc:
+        except PreflightError as exc:
+            # invalid_request — caller supplied a malformed or structurally invalid request.
+            logger.info(
+                "Runner execution %s rejected (invalid_request): %s",
+                request.execution_id, exc,
+            )
+            return self._fail(request, started_at, str(exc))
+        except PolicyViolationError as exc:
+            # policy_violation — request conflicts with a Runner enforcement policy.
+            logger.warning(
+                "Runner execution %s rejected (policy_violation): %s",
+                request.execution_id, exc,
+            )
+            return self._fail(request, started_at, str(exc))
+        except WorkspacePreparationError as exc:
+            # backend_unavailable — infrastructure failure during workspace setup.
+            logger.error(
+                "Runner execution %s failed (backend_unavailable): %s",
+                request.execution_id, exc,
+            )
             return self._fail(request, started_at, str(exc))
         except Exception as exc:
             logger.exception("Unexpected error during workspace preparation")
@@ -270,10 +289,23 @@ class RunnerService:
                         f"phase: SANDBOX_EXEC_DONE exit=0 duration={sandbox_exec.duration_ms}ms",
                     )
                 else:
-                    # Determine most informative error string.
-                    if sandbox_exec.timed_out:
+                    # Categorise the failure semantically so distinct states are not collapsed.
+                    meta_reason = (
+                        (sandbox_exec.metadata.termination_reason or "")
+                        if sandbox_exec.metadata is not None
+                        else ""
+                    )
+                    if meta_reason == "internal_error":
+                        # TerminationReason.INTERNAL_ERROR — backend infrastructure failure,
+                        # not a sandbox code fault.  Map to backend_unavailable category.
+                        apply_error = f"Sandbox backend unavailable: {sandbox_exec.error or 'unknown backend error'}"
+                    elif sandbox_exec.timed_out or meta_reason == "timeout":
                         apply_error = "Sandbox execution timed out"
+                    elif meta_reason in ("revoked", "manual"):
+                        apply_error = "Sandbox execution aborted"
                     elif sandbox_exec.error:
+                        # Error string set by backend (e.g. Docker not found) but not
+                        # an INTERNAL_ERROR termination — treat as execution_failed.
                         apply_error = f"Sandbox error: {sandbox_exec.error}"
                     else:
                         stderr_excerpt = (sandbox_exec.stderr or "")[:200]
@@ -448,9 +480,15 @@ class RunnerService:
             path = change.get("path", "")
             if not path or not path.strip():
                 raise PreflightError(f"changes[{i}]: 'path' must not be empty.")
-            if path.startswith("/") or path.startswith("\\"):
+            # Reject all absolute paths regardless of host OS.
+            # Path.is_absolute() catches Windows drive-letter paths (C:\...).
+            # The extra startswith("/") catches POSIX-style absolute paths on
+            # Windows, where Path("/etc/passwd").is_absolute() returns False
+            # because Windows does not treat a leading "/" as absolute.
+            # Change paths must ALWAYS be relative — both forms are invalid.
+            if Path(path).is_absolute() or path.startswith("/"):
                 raise PreflightError(
-                    f"changes[{i}]: path {path!r} must be relative (not absolute)."
+                    f"changes[{i}]: path {path!r} is absolute — only relative paths are allowed."
                 )
             if op == "file_replace" and change.get("content") is None:
                 raise PreflightError(

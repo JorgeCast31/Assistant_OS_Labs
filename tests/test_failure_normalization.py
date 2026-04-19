@@ -328,17 +328,25 @@ class TestCleanupOnFailure:
 
 
 # ===========================================================================
-# E — TestAuditOnFailure
+# E — TestAuditOnBackendUnavailable
+#
+# Backend crashes (TerminationReason.INTERNAL_ERROR) emit
+# EXECUTION_BACKEND_UNAVAILABLE, NOT EXECUTION_FAILED.  Semantics:
+#   EXECUTION_FAILED           → sandbox code failed (non-zero exit, error)
+#   EXECUTION_BACKEND_UNAVAILABLE → infrastructure failure (backend raised)
 # ===========================================================================
 
-class TestAuditOnFailure:
-    def test_execution_failed_event_emitted(self, tmp_path):
+class TestAuditOnBackendUnavailable:
+    def test_backend_unavailable_event_emitted_not_execution_failed(self, tmp_path):
+        """INTERNAL_ERROR emits EXECUTION_BACKEND_UNAVAILABLE, not EXECUTION_FAILED."""
         from assistant_os.sandbox.audit import AuditEventType
         audit, registry, revmgr = _make_control_plane()
         _run_with_crash(
             tmp_path, audit_log=audit, registry=registry, revmgr=revmgr,
         )
-        assert audit.count(AuditEventType.EXECUTION_FAILED) == 1
+        # Backend crash → EXECUTION_BACKEND_UNAVAILABLE, not EXECUTION_FAILED.
+        assert audit.count(AuditEventType.EXECUTION_BACKEND_UNAVAILABLE) == 1
+        assert audit.count(AuditEventType.EXECUTION_FAILED) == 0
 
     def test_execution_started_event_also_emitted(self, tmp_path):
         from assistant_os.sandbox.audit import AuditEventType
@@ -346,26 +354,27 @@ class TestAuditOnFailure:
         _run_with_crash(
             tmp_path, audit_log=audit, registry=registry, revmgr=revmgr,
         )
-        # execution_started is emitted before backend.execute(), so it still fires
+        # execution_started is emitted before backend.execute(), so it still fires.
         assert audit.count(AuditEventType.EXECUTION_STARTED) == 1
 
-    def test_failed_event_has_internal_error_reason(self, tmp_path):
+    def test_backend_unavailable_event_has_internal_error_reason(self, tmp_path):
+        """The event carries termination_reason='internal_error' for full traceability."""
         from assistant_os.sandbox.audit import AuditEventType
         audit, registry, revmgr = _make_control_plane()
         _run_with_crash(
             tmp_path, audit_log=audit, registry=registry, revmgr=revmgr,
         )
-        events = audit.events(AuditEventType.EXECUTION_FAILED)
+        events = audit.events(AuditEventType.EXECUTION_BACKEND_UNAVAILABLE)
         assert events
         assert events[0].termination_reason == "internal_error"
 
-    def test_failed_event_has_execution_id(self, tmp_path):
+    def test_backend_unavailable_event_has_execution_id(self, tmp_path):
         from assistant_os.sandbox.audit import AuditEventType
         audit, registry, revmgr = _make_control_plane()
         _run_with_crash(
             tmp_path, audit_log=audit, registry=registry, revmgr=revmgr,
         )
-        events = audit.events(AuditEventType.EXECUTION_FAILED)
+        events = audit.events(AuditEventType.EXECUTION_BACKEND_UNAVAILABLE)
         assert events[0].execution_id == "exec-fail-1"
 
     def test_no_secret_values_in_failure_events(self, tmp_path):
@@ -379,7 +388,7 @@ class TestAuditOnFailure:
             sensitive = {"password", "credential", "secret_value"}
             assert not sensitive.intersection({k.lower() for k in d})
 
-    def test_audit_store_receives_failure_event(self, tmp_path):
+    def test_audit_store_receives_backend_unavailable_event(self, tmp_path):
         from assistant_os.sandbox.audit import AuditEventType
         from assistant_os.sandbox.audit_store import AuditStore
         from assistant_os.sandbox.execution_registry import ExecutionRegistry
@@ -392,11 +401,15 @@ class TestAuditOnFailure:
         _run_with_crash(
             tmp_path, audit_log=store, registry=registry, revmgr=revmgr,
         )
-        assert store.count(AuditEventType.EXECUTION_FAILED) == 1
+        assert store.count(AuditEventType.EXECUTION_BACKEND_UNAVAILABLE) == 1
+        assert store.count(AuditEventType.EXECUTION_FAILED) == 0
         records = store.read_from_disk()
-        failed = [r for r in records if r["event_type"] == AuditEventType.EXECUTION_FAILED]
-        assert failed
-        assert failed[0]["termination_reason"] == "internal_error"
+        unavail = [
+            r for r in records
+            if r["event_type"] == AuditEventType.EXECUTION_BACKEND_UNAVAILABLE
+        ]
+        assert unavail
+        assert unavail[0]["termination_reason"] == "internal_error"
 
 
 # ===========================================================================
