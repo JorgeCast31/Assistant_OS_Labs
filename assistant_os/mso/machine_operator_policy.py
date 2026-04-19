@@ -4,6 +4,8 @@ The registry is authoritative for the sovereign lane:
 - N0 = read-only observation, no side effects
 - N1 = bounded navigation, still no side effects
 - N2 = deny-by-default placeholder for future expansion
+- Secrets are structurally represented but operationally prohibited for now.
+- Approval is local and deterministic; a loose token is not sufficient.
 
 The adapter translates; the MSO decides; OpenClaw executes; nobody crosses lanes.
 """
@@ -11,6 +13,7 @@ The adapter translates; the MSO decides; OpenClaw executes; nobody crosses lanes
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from .contracts import (
@@ -19,12 +22,16 @@ from .contracts import (
     CAPABILITY_BROWSER_SCREENSHOT,
     CAPABILITY_BROWSER_SNAPSHOT,
     MachineOperatorCapabilityPolicy,
+    machine_operator_request_kind,
     normalize_machine_operator_request,
+    normalize_machine_operator_approval,
+    parse_machine_operator_approval_expiry,
     validate_machine_operator_request,
 )
 
 
 MACHINE_OPERATOR_DOMAIN = "MACHINE_OPERATOR"
+MACHINE_OPERATOR_SECRET_POLICY_STANCE = "prohibited"
 
 _CAPABILITY_POLICIES: dict[str, MachineOperatorCapabilityPolicy] = {
     CAPABILITY_BROWSER_NAVIGATE: MachineOperatorCapabilityPolicy(
@@ -190,6 +197,54 @@ def _step_subject(steps: list[dict[str, Any]], step_index: int) -> str:
     return f"step {step_index} ({capability_name})"
 
 
+def _approval_scope_for_steps(steps: list[dict[str, Any]]) -> list[str]:
+    return [str(step["capability_name"]) for step in steps]
+
+
+def _validate_required_approval(
+    *,
+    approval: dict[str, Any] | None,
+    request_kind: str,
+    workflow_steps: list[dict[str, Any]],
+    now_utc: datetime,
+) -> tuple[bool, str, str]:
+    if approval is None:
+        return False, "missing_approval", "MACHINE_OPERATOR workflow requires a valid approval artifact."
+
+    if approval["approved_for"] != request_kind:
+        return (
+            False,
+            "approval_kind_mismatch",
+            (
+                "MACHINE_OPERATOR approval artifact approved_for mismatch: "
+                f"expected {request_kind}, got {approval['approved_for']}"
+            ),
+        )
+
+    expected_scope = _approval_scope_for_steps(workflow_steps)
+    if approval["capability_scope"] != expected_scope:
+        return (
+            False,
+            "approval_scope_mismatch",
+            (
+                "MACHINE_OPERATOR approval artifact capability_scope mismatch: "
+                f"expected {expected_scope}, got {approval['capability_scope']}"
+            ),
+        )
+
+    expires_at, error = parse_machine_operator_approval_expiry(approval["expires_at"])
+    if error:
+        return False, "invalid_approval", error
+    if expires_at is None or expires_at <= now_utc:
+        return (
+            False,
+            "approval_expired",
+            f"MACHINE_OPERATOR approval artifact expired at {approval['expires_at']}",
+        )
+
+    return True, "allowed", ""
+
+
 def list_machine_operator_capabilities() -> list[MachineOperatorCapabilityPolicy]:
     """Return the explicit MACHINE_OPERATOR capability registry."""
     return list(_CAPABILITY_POLICIES.values())
@@ -219,7 +274,11 @@ def is_machine_operator_capability_known(capability_name: str) -> bool:
     return capability_name in _CAPABILITY_POLICIES
 
 
-def enforce_machine_operator_request(payload: Any) -> MachineOperatorEnforcementDecision:
+def enforce_machine_operator_request(
+    payload: Any,
+    *,
+    now_utc: datetime | None = None,
+) -> MachineOperatorEnforcementDecision:
     """Validate a MACHINE_OPERATOR request against the static fail-closed policy matrix."""
 
     ok, error = validate_machine_operator_request(payload)
@@ -231,8 +290,17 @@ def enforce_machine_operator_request(payload: Any) -> MachineOperatorEnforcement
             policy=_DENY_BY_DEFAULT_POLICY,
         )
 
+    request_kind = machine_operator_request_kind(payload)
     request = _request_to_dict(payload)
     workflow_steps = request["workflow_steps"]
+    approval, approval_error = normalize_machine_operator_approval(request.get("approval"))
+    if approval_error:
+        return MachineOperatorEnforcementDecision(
+            allowed=False,
+            reason_code="invalid_approval",
+            message=approval_error,
+            policy=_DENY_BY_DEFAULT_POLICY,
+        )
     policies: list[MachineOperatorCapabilityPolicy] = []
     for step_index, workflow_step in enumerate(workflow_steps):
         capability_name = workflow_step["capability_name"]
@@ -288,13 +356,40 @@ def enforce_machine_operator_request(payload: Any) -> MachineOperatorEnforcement
             policy=workflow_policy,
         )
 
+    if workflow_policy.requires_secrets:
+        return MachineOperatorEnforcementDecision(
+            allowed=False,
+            reason_code="secret_execution_disabled",
+            message=(
+                "MACHINE_OPERATOR secret-backed execution is "
+                f"{MACHINE_OPERATOR_SECRET_POLICY_STANCE} in the current lane."
+            ),
+            policy=workflow_policy,
+        )
+
+    if policy_context.get("secret_refs"):
+        return MachineOperatorEnforcementDecision(
+            allowed=False,
+            reason_code="secrets_not_allowed",
+            message=(
+                "MACHINE_OPERATOR secret_refs are "
+                f"{MACHINE_OPERATOR_SECRET_POLICY_STANCE} for the current execution lane."
+            ),
+            policy=workflow_policy,
+        )
+
     if workflow_policy.approval_mode == "required":
-        approval_token = request.get("approval_token")
-        if not isinstance(approval_token, str) or not approval_token.strip():
+        approval_ok, approval_reason_code, approval_message = _validate_required_approval(
+            approval=approval,
+            request_kind=request_kind,
+            workflow_steps=workflow_steps,
+            now_utc=now_utc or datetime.now(timezone.utc),
+        )
+        if not approval_ok:
             return MachineOperatorEnforcementDecision(
                 allowed=False,
-                reason_code="missing_approval",
-                message="MACHINE_OPERATOR workflow requires approval.",
+                reason_code=approval_reason_code,
+                message=approval_message,
                 policy=workflow_policy,
             )
 
@@ -303,14 +398,6 @@ def enforce_machine_operator_request(payload: Any) -> MachineOperatorEnforcement
             allowed=False,
             reason_code="missing_allowlist_context",
             message="MACHINE_OPERATOR workflow requires allowlist context.",
-            policy=workflow_policy,
-        )
-
-    if workflow_policy.requires_secrets and not policy_context.get("secret_refs"):
-        return MachineOperatorEnforcementDecision(
-            allowed=False,
-            reason_code="missing_secret_context",
-            message="MACHINE_OPERATOR workflow requires secret context.",
             policy=workflow_policy,
         )
 

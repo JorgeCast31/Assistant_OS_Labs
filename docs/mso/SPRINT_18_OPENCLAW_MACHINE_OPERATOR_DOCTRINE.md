@@ -2,9 +2,12 @@
 
 ## Objective
 
-Freeze the insertion doctrine for OpenClaw without changing MSO behavior, HOST behavior, or introducing a live execution path.
+Freeze the insertion doctrine for OpenClaw without changing MSO behavior or
+HOST behavior.
 
-This sprint defines architecture and contracts only.
+This sprint originally defined architecture and contracts only. The current
+repository now includes bounded live Tier A execution behind the same doctrine;
+Linux-side trust verification and backend hardening remain out of scope here.
 
 ## Doctrine
 
@@ -83,11 +86,11 @@ Therefore:
 
 ## Out of scope in this sprint
 
-This sprint does **not** implement:
+This sprint note still does **not** imply:
 
-- real OpenClaw execution
-- gateway protocol calls
-- browser control
+- Linux-side auth validation
+- mTLS / PKI / backend attestation
+- secret-enabled MACHINE_OPERATOR execution
 - HOST integration changes
 - MSO redesign
 - a broader multi-agent roadmap

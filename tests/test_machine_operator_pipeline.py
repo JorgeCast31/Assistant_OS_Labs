@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import patch
 
@@ -25,6 +26,27 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         reset_machine_operator_backend_health()
         MACHINE_OPERATOR_AUDIT_LOG.clear()
 
+    def _approval(self, **overrides):
+        approval = {
+            "approval_id": "approval-003",
+            "approved_for": "single_step",
+            "capability_scope": ["browser.navigate"],
+            "expires_at": "2030-01-01T00:00:00+00:00",
+            "issued_by": "reviewer:test",
+            "reason": "Explicit bounded approval.",
+        }
+        approval.update(overrides)
+        return approval
+
+    def _workflow_approval(self, **overrides):
+        approval = self._approval(
+            approval_id="approval-workflow-003",
+            approved_for="workflow",
+            capability_scope=["browser.snapshot", "browser.read_visible_text"],
+        )
+        approval.update(overrides)
+        return approval
+
     def _request(self, **overrides):
         request = {
             "intent_id": "intent-003",
@@ -48,7 +70,7 @@ class TestMachineOperatorPipeline(unittest.TestCase):
                 "max_side_effects": 0,
             },
             "requested_side_effects": [],
-            "approval_token": None,
+            "approval": None,
         }
         for key, value in overrides.items():
             request[key] = value
@@ -102,7 +124,7 @@ class TestMachineOperatorPipeline(unittest.TestCase):
                 "max_side_effects": 0,
             },
             "requested_side_effects": [],
-            "approval_token": None,
+            "approval": None,
         }
         for key, value in overrides.items():
             request[key] = value
@@ -178,6 +200,49 @@ class TestMachineOperatorPipeline(unittest.TestCase):
                 "side_effects": 0,
             },
         )
+
+    def test_valid_interactive_approval_allows_execution(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        request = self._request(
+            capability_name="browser.navigate",
+            capability_tier="interactive",
+            approval=self._approval(),
+        )
+        request["policy_context"]["approval_mode"] = "required"
+        request["budget"]["max_steps"] = 3
+        request["budget"]["max_duration_ms"] = 15000
+        response_body = {
+            "status": "ok",
+            "final_url": "https://example.test/",
+            "observation": {
+                "summary": "Navigation completed.",
+                "detail": "Interactive navigation completed through the machine operator backend.",
+                "structured_data": {"page_title": "Example Domain"},
+            },
+            "evidence_refs": [],
+            "consumed_budget": {
+                "steps": 1,
+                "duration_ms": 150,
+                "output_bytes": 256,
+                "side_effects": 0,
+            },
+            "side_effects_declared": [],
+            "backend_execution_performed": True,
+            "machine_action_performed": True,
+        }
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(response_body),
+        ):
+            result = execute(self._plan(request), "ctx-machine-approval-valid")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"]["lane_outcome"], "success")
+        self.assertEqual(result["data"]["policy_validation"]["reason_code"], "allowed")
+        self.assertEqual(result["data"]["machine_operator_response"]["status"], "ok")
+        self.assertTrue(result["data"]["backend_execution_performed"])
         self.assertEqual(result["data"]["machine_operator_response"]["side_effects_declared"], [])
 
     def test_pipeline_calls_adapter_boundary(self):
@@ -550,10 +615,26 @@ class TestMachineOperatorPipeline(unittest.TestCase):
 
         post_mock.assert_not_called()
         self.assertFalse(result["ok"])
-        self.assertEqual(result["error"]["type"], "InvalidMachineOperatorRequest")
-        self.assertEqual(result["data"]["lane_outcome"], "invalid_request")
+        self.assertEqual(result["error"]["type"], "MachineOperatorPolicyViolation")
+        self.assertEqual(result["data"]["lane_outcome"], "policy_violation")
         self.assertFalse(result["data"]["backend_execution_attempted"])
-        self.assertNotIn("machine_operator_response", result["data"])
+        self.assertEqual(result["data"]["policy_validation"]["reason_code"], "missing_approval")
+        self.assertEqual(result["data"]["machine_operator_response"]["status"], "denied")
+
+    def test_secret_refs_are_rejected_without_execution(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        request = self._request()
+        request["policy_context"]["secret_refs"] = ["secret:test"]
+        with patch("assistant_os.mso.machine_operator_adapter.requests.post") as post_mock:
+            result = execute(self._plan(request), "ctx-machine-secret-refs")
+
+        post_mock.assert_not_called()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorPolicyViolation")
+        self.assertEqual(result["data"]["lane_outcome"], "policy_violation")
+        self.assertEqual(result["data"]["policy_validation"]["reason_code"], "secrets_not_allowed")
+        self.assertEqual(result["data"]["machine_operator_response"]["status"], "denied")
 
     def test_local_abort_maps_to_aborted_result(self):
         from assistant_os.mso.machine_operator_audit import (
@@ -698,13 +779,13 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["type"], "MachineOperatorPolicyViolation")
 
-    def test_approval_required_request_without_approval_is_rejected_as_invalid_request(self):
+    def test_approval_required_request_without_approval_is_rejected_fail_closed(self):
         from assistant_os.pipelines.machine_operator_pipeline import execute
 
         request = self._request(
             capability_name="browser.navigate",
             capability_tier="interactive",
-            approval_token=None,
+            approval=None,
         )
         request["policy_context"]["approval_mode"] = "required"
         request["budget"]["max_steps"] = 3
@@ -713,17 +794,17 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         result = execute(self._plan(request), "ctx-machine-4")
 
         self.assertFalse(result["ok"])
-        self.assertEqual(result["data"]["lane_outcome"], "invalid_request")
-        self.assertFalse(result["data"]["contract_validation"]["ok"])
-        self.assertIsNone(result["data"]["policy_validation"])
-        self.assertNotIn("machine_operator_response", result["data"])
+        self.assertEqual(result["data"]["lane_outcome"], "policy_violation")
+        self.assertTrue(result["data"]["contract_validation"]["ok"])
+        self.assertEqual(result["data"]["policy_validation"]["reason_code"], "missing_approval")
+        self.assertEqual(result["data"]["machine_operator_response"]["status"], "denied")
 
     def test_policy_context_mismatch_is_rejected_without_execution_leakage(self):
         from assistant_os.pipelines.machine_operator_pipeline import execute
 
         request = self._request()
         request["policy_context"]["approval_mode"] = "required"
-        request["approval_token"] = "approval-003"
+        request["approval"] = self._approval(capability_scope=["browser.snapshot"])
 
         result = execute(self._plan(request), "ctx-machine-5")
 
@@ -915,6 +996,78 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         self.assertNotIn("workflow_execution_id", result["data"])
         self.assertNotIn("workflow_execution_id", result["data"]["machine_operator_response"])
         self.assertNotIn("workflow_execution_id", result["data"]["machine_operator_response"]["step_results"][0])
+
+    def test_transport_private_fields_do_not_cross_domain_boundary(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        transport_token = "gateway-boundary-token"
+        response_body = {
+            "status": "ok",
+            "final_url": "https://example.test/",
+            "observation": {
+                "summary": "Snapshot captured.",
+                "detail": f"Boundary token {transport_token} should not leak.",
+                "structured_data": {
+                    "page_title": "Example Domain",
+                    "workflow_execution_id": "wf-002",
+                    "auth_token": transport_token,
+                    "transport_auth_mode": "header_token",
+                },
+            },
+            "metadata": {
+                "workflow_execution_id": "wf-002",
+                "auth_token": transport_token,
+                "transport_auth_mode": "header_token",
+            },
+            "evidence_refs": [
+                {
+                    "ref_id": "evidence-transport-boundary-001",
+                    "evidence_type": "artifact",
+                    "uri": "memory://snapshot/transport-boundary-001",
+                    "description": "Structured page snapshot",
+                    "media_type": "application/json",
+                }
+            ],
+            "consumed_budget": {
+                "steps": 1,
+                "duration_ms": 120,
+                "output_bytes": 128,
+                "side_effects": 0,
+            },
+            "side_effects_declared": [],
+            "backend_execution_performed": True,
+            "machine_action_performed": True,
+        }
+
+        with patch.multiple(
+            "assistant_os.mso.machine_operator_adapter.config",
+            OPENCLAW_GATEWAY_AUTH_MODE="header_token",
+            OPENCLAW_GATEWAY_AUTH_HEADER_NAME="X-OpenClaw-Token",
+            OPENCLAW_GATEWAY_AUTH_TOKEN_ENV_VAR="OPENCLAW_GATEWAY_AUTH_TOKEN",
+        ), patch.dict(
+            os.environ,
+            {"OPENCLAW_GATEWAY_AUTH_TOKEN": transport_token},
+            clear=False,
+        ), patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(response_body),
+        ):
+            result = execute(self._plan(), "ctx-machine-transport-boundary")
+
+        self.assertTrue(result["ok"])
+        self.assertNotIn("workflow_execution_id", result["data"])
+        self.assertNotIn("transport_auth_mode", result["data"])
+        self.assertNotIn("auth_token", result["data"])
+        structured_data = result["data"]["machine_operator_response"]["observation"]["structured_data"]
+        self.assertEqual(structured_data["page_title"], "Example Domain")
+        self.assertNotIn("workflow_execution_id", structured_data)
+        self.assertNotIn("transport_auth_mode", structured_data)
+        self.assertNotIn("auth_token", structured_data)
+        self.assertIn(
+            "[redacted]",
+            result["data"]["machine_operator_response"]["observation"]["detail"],
+        )
+        self.assertNotIn(transport_token, str(result["data"]))
 
     def test_multi_step_workflow_success_returns_aggregated_step_results(self):
         from assistant_os.pipelines.machine_operator_pipeline import execute

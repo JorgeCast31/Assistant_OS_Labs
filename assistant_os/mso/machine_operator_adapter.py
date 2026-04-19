@@ -4,12 +4,13 @@ Backend-agnostic adapter boundary for the MACHINE_OPERATOR lane.
 Sprint 5 introduces the first real execution path behind this boundary for the
 approved Tier A browser capabilities only. Backend transport remains sealed
 inside this module; the pipeline and sovereign contracts stay implementation-
-independent.
+independent. Secret-backed execution is intentionally disabled in this lane.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import posixpath
 import re
 import time
@@ -51,7 +52,7 @@ from .machine_operator_audit import (
     MachineOperatorAuditEventType,
     emit_machine_operator_event,
 )
-from .machine_operator_policy import enforce_machine_operator_request
+from .machine_operator_policy import enforce_machine_operator_request, get_machine_operator_policy
 
 _SUPPORTED_REAL_CAPABILITIES = frozenset(
     {
@@ -69,6 +70,35 @@ _BACKEND_STATE_DEGRADED = "DEGRADED"
 _BACKEND_STATE_UNAVAILABLE = "UNAVAILABLE"
 _BACKEND_UNAVAILABLE_FAILURE_THRESHOLD = 2
 _BACKEND_UNAVAILABLE_COOLDOWN_SECONDS = 30.0
+_GATEWAY_AUTH_MODE_DISABLED = "disabled"
+_GATEWAY_AUTH_MODE_HEADER_TOKEN = "header_token"
+_GATEWAY_AUTH_MODES = frozenset(
+    {
+        _GATEWAY_AUTH_MODE_DISABLED,
+        _GATEWAY_AUTH_MODE_HEADER_TOKEN,
+    }
+)
+_HTTP_HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9-]+$")
+_TRANSPORT_PRIVATE_FIELD_NAMES = frozenset(
+    {
+        "approval",
+        "approval_artifact",
+        "approval_id",
+        "auth_header",
+        "auth_headers",
+        "auth_token",
+        "authorization",
+        "gateway_execute_url",
+        "gateway_url",
+        "require_credentials",
+        "secret_refs",
+        "transport_auth_header_name",
+        "transport_auth_mode",
+        "transport_auth_token_env_var",
+        "workflow_execution_id",
+    }
+)
+_ALLOWED_BACKEND_METADATA_KEYS = frozenset()
 
 
 @dataclass(slots=True)
@@ -138,6 +168,18 @@ class _BackendHealthState:
     consecutive_failures: int = 0
     last_success_timestamp: float = 0.0
     last_failure_timestamp: float = 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class _GatewayTransportAuthConfig:
+    mode: str
+    header_name: str = ""
+    token_env_var: str = ""
+    token_value: str = ""
+
+
+class _TransportConfigurationError(ValueError):
+    """Adapter-private transport boundary configuration failure."""
 
 
 class MachineOperatorAdapter(Protocol):
@@ -780,6 +822,43 @@ def _execute_step_request_core(
         return result
 
     timeout_seconds = _compute_timeout_seconds(request_dict)
+    try:
+        gateway_request_kwargs = _build_gateway_request_kwargs(
+            request_dict=request_dict,
+            context=context,
+            timeout_seconds=timeout_seconds,
+            reuse_session=reuse_session,
+            close_session=close_session,
+            workflow_execution_id=workflow_execution_id,
+        )
+    except _TransportConfigurationError as exc:
+        detail = _redact_transport_sensitive_text(str(exc))
+        audit_event_ids.extend(
+            _emit_terminal_events(
+                request_dict,
+                context,
+                status=MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
+                detail=detail,
+                include_skipped=True,
+                include_aborted=True,
+            )
+        )
+        result = _build_nonexecuted_result(
+            status="aborted",
+            summary="MACHINE_OPERATOR transport boundary is not ready for authenticated dispatch.",
+            detail=detail,
+            metadata={
+                "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
+                "backend_status": "transport_auth_invalid",
+                "backend_execution_attempted": False,
+                "backend_execution_performed": False,
+                "machine_action_performed": False,
+                "adapter_status": "transport_auth_invalid",
+            },
+            audit_event_ids=audit_event_ids,
+        )
+        result.audit_event_ids = list(audit_event_ids)
+        return result
     audit_event_ids.append(
         emit_machine_operator_event(
             event_type=MachineOperatorAuditEventType.MO_STEP_STARTED,
@@ -801,14 +880,7 @@ def _execute_step_request_core(
 
     started = time.perf_counter()
     try:
-        gateway_response = _post_openclaw_request(
-            request_dict=request_dict,
-            context=context,
-            timeout_seconds=timeout_seconds,
-            reuse_session=reuse_session,
-            close_session=close_session,
-            workflow_execution_id=workflow_execution_id,
-        )
+        gateway_response = _post_openclaw_request(request_kwargs=gateway_request_kwargs)
     except Exception as exc:
         _record_backend_failure(health_state, preserve_unavailable=probe_allowed)
         elapsed_ms = int((time.perf_counter() - started) * 1000)
@@ -881,6 +953,9 @@ def _build_step_request(
     workflow_step: dict[str, Any],
     consumed_budget: MachineOperatorBudgetUsage,
 ) -> dict[str, Any]:
+    step_policy = get_machine_operator_policy(str(workflow_step["capability_name"]))
+    step_policy_context = dict(workflow_request["policy_context"])
+    step_policy_context["approval_mode"] = step_policy.approval_mode
     remaining_budget = {
         "max_steps": max(workflow_request["budget"]["max_steps"] - consumed_budget.steps, 0),
         "max_duration_ms": max(workflow_request["budget"]["max_duration_ms"] - consumed_budget.duration_ms, 0),
@@ -893,11 +968,34 @@ def _build_step_request(
         "capability_name": workflow_step["capability_name"],
         "capability_tier": workflow_step["capability_tier"],
         "arguments": dict(workflow_step["arguments"]),
-        "policy_context": dict(workflow_request["policy_context"]),
+        "policy_context": step_policy_context,
         "budget": remaining_budget,
         "requested_side_effects": list(workflow_request["requested_side_effects"]),
-        "approval_token": workflow_request.get("approval_token"),
+        "approval": _derive_step_approval(
+            workflow_request.get("approval"),
+            capability_name=str(workflow_step["capability_name"]),
+            approval_mode=step_policy.approval_mode,
+        ),
     }
+
+
+def _derive_step_approval(
+    approval: Any,
+    *,
+    capability_name: str,
+    approval_mode: str,
+) -> Any:
+    if approval_mode != "required" or approval is None:
+        return None
+    if not isinstance(approval, dict):
+        return approval
+
+    step_approval = dict(approval)
+    # Internal workflow steps are revalidated as single-step requests after the
+    # workflow approval has already been checked at the outer boundary.
+    step_approval["approved_for"] = "single_step"
+    step_approval["capability_scope"] = [capability_name]
+    return step_approval
 
 
 def _workflow_budget_available(
@@ -1068,7 +1166,9 @@ def _build_gateway_exception_result(
             ),
             audit_event_ids=[],
         )
-    detail = f"MACHINE_OPERATOR backend request failed: {exc}"
+    detail = _redact_transport_sensitive_text(
+        f"MACHINE_OPERATOR backend request failed: {exc}"
+    )
     return _build_nonexecuted_result(
         status="aborted",
         summary="MACHINE_OPERATOR backend is unavailable.",
@@ -1523,6 +1623,9 @@ def _translate_gateway_response(
     metadata_payload = body.get("metadata")
     if metadata_payload is not None and not isinstance(metadata_payload, dict):
         raise ValueError("MACHINE_OPERATOR backend metadata must be a dict when present.")
+    backend_metadata: dict[str, Any] = {}
+    if isinstance(metadata_payload, dict):
+        backend_metadata = _sanitize_backend_metadata(metadata_payload)
 
     metadata: dict[str, Any] = {
         "lane_outcome": lane_outcome,
@@ -1534,11 +1637,11 @@ def _translate_gateway_response(
         "timeout_seconds": timeout_seconds,
         "executed_capability": capability_name,
     }
-    if isinstance(metadata_payload, dict):
+    if backend_metadata:
         metadata.update(
             {
                 key: value
-                for key, value in metadata_payload.items()
+                for key, value in backend_metadata.items()
                 if key not in metadata
             }
         )
@@ -1572,6 +1675,22 @@ def _translate_gateway_response(
 
 def _post_openclaw_request(
     *,
+    request_kwargs: dict[str, Any],
+) -> dict[str, Any]:
+    if requests is None:
+        raise RuntimeError("requests dependency unavailable")
+
+    # No retry policy by design (deterministic execution model).
+    response = requests.post(**request_kwargs)
+    response.raise_for_status()
+    body = response.json()
+    if not isinstance(body, dict):
+        raise ValueError("MACHINE_OPERATOR backend returned non-JSON or non-dict content.")
+    return body
+
+
+def _build_gateway_request_kwargs(
+    *,
     request_dict: dict[str, Any],
     context: MachineOperatorAdapterContext,
     timeout_seconds: float,
@@ -1579,13 +1698,9 @@ def _post_openclaw_request(
     close_session: bool = True,
     workflow_execution_id: str = "",
 ) -> dict[str, Any]:
-    if requests is None:
-        raise RuntimeError("requests dependency unavailable")
-
-    # No retry policy by design (deterministic execution model).
-    response = requests.post(
-        _gateway_execute_url(),
-        json=_build_gateway_payload(
+    request_kwargs: dict[str, Any] = {
+        "url": _gateway_execute_url(),
+        "json": _build_gateway_payload(
             request_dict=request_dict,
             context=context,
             timeout_seconds=timeout_seconds,
@@ -1593,13 +1708,19 @@ def _post_openclaw_request(
             close_session=close_session,
             workflow_execution_id=workflow_execution_id,
         ),
-        timeout=timeout_seconds,
-    )
-    response.raise_for_status()
-    body = response.json()
-    if not isinstance(body, dict):
-        raise ValueError("MACHINE_OPERATOR backend returned non-JSON or non-dict content.")
-    return body
+        "timeout": timeout_seconds,
+    }
+    gateway_headers = _build_gateway_headers()
+    if gateway_headers:
+        request_kwargs["headers"] = gateway_headers
+    return request_kwargs
+
+
+def _build_gateway_headers() -> dict[str, str]:
+    auth_config = _resolve_gateway_transport_auth()
+    if auth_config.mode == _GATEWAY_AUTH_MODE_DISABLED:
+        return {}
+    return {auth_config.header_name: auth_config.token_value}
 
 
 def _build_gateway_payload(
@@ -1616,6 +1737,8 @@ def _build_gateway_payload(
         "reuse_session": reuse_session,
         "persist_profile": False,
         "allow_side_effects": False,
+        # Secret-backed execution is operationally disabled for the current
+        # MACHINE_OPERATOR lane; the backend must not expect credentials.
         "require_credentials": False,
         "timeout_seconds": timeout_seconds,
     }
@@ -1641,8 +1764,79 @@ def _build_gateway_payload(
             "constraints": list(request_dict["policy_context"]["constraints"]),
             "approval_mode": request_dict["policy_context"]["approval_mode"],
         },
+        # Approval artifacts, secret_refs, and governance-only fields remain on
+        # the Windows side of the adapter boundary.
         "execution": execution_payload,
     }
+
+
+def _resolve_gateway_transport_auth() -> _GatewayTransportAuthConfig:
+    mode = config.OPENCLAW_GATEWAY_AUTH_MODE.strip().lower() or _GATEWAY_AUTH_MODE_DISABLED
+    if mode not in _GATEWAY_AUTH_MODES:
+        raise _TransportConfigurationError(
+            "OPENCLAW_GATEWAY_AUTH_MODE must be one of: disabled, header_token."
+        )
+    if mode == _GATEWAY_AUTH_MODE_DISABLED:
+        return _GatewayTransportAuthConfig(mode=mode)
+
+    header_name = config.OPENCLAW_GATEWAY_AUTH_HEADER_NAME.strip()
+    if not header_name or _HTTP_HEADER_NAME_RE.fullmatch(header_name) is None:
+        raise _TransportConfigurationError(
+            "OPENCLAW_GATEWAY_AUTH_HEADER_NAME must be a non-empty HTTP header name when "
+            "OPENCLAW_GATEWAY_AUTH_MODE=header_token."
+        )
+    token_env_var = config.OPENCLAW_GATEWAY_AUTH_TOKEN_ENV_VAR.strip()
+    if not token_env_var:
+        raise _TransportConfigurationError(
+            "OPENCLAW_GATEWAY_AUTH_TOKEN_ENV_VAR must be set when "
+            "OPENCLAW_GATEWAY_AUTH_MODE=header_token."
+        )
+    token_value = os.environ.get(token_env_var, "")
+    if not isinstance(token_value, str) or not token_value.strip():
+        raise _TransportConfigurationError(
+            "MACHINE_OPERATOR transport auth requires a non-empty token in env var "
+            f"{token_env_var}."
+        )
+    return _GatewayTransportAuthConfig(
+        mode=mode,
+        header_name=header_name,
+        token_env_var=token_env_var,
+        token_value=token_value.strip(),
+    )
+
+
+def _sanitize_boundary_structured_data(payload: dict[str, Any]) -> dict[str, Any]:
+    sanitized: dict[str, Any] = {}
+    for key, value in payload.items():
+        if not isinstance(key, str):
+            continue
+        normalized_key = key.strip()
+        if not normalized_key:
+            continue
+        if normalized_key.lower() in _TRANSPORT_PRIVATE_FIELD_NAMES:
+            continue
+        sanitized[normalized_key] = value
+    return sanitized
+
+
+def _sanitize_backend_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    sanitized_metadata: dict[str, Any] = {}
+    for key, value in _sanitize_boundary_structured_data(payload).items():
+        if key.lower() in _ALLOWED_BACKEND_METADATA_KEYS:
+            sanitized_metadata[key] = value
+    return sanitized_metadata
+
+
+def _redact_transport_sensitive_text(value: str) -> str:
+    if not isinstance(value, str) or not value:
+        return ""
+    redacted = value
+    token_env_var = config.OPENCLAW_GATEWAY_AUTH_TOKEN_ENV_VAR.strip()
+    if token_env_var:
+        token_value = os.environ.get(token_env_var, "")
+        if isinstance(token_value, str) and token_value:
+            redacted = redacted.replace(token_value, "[redacted]")
+    return redacted
 
 
 def _build_observation(payload: Any) -> MachineOperatorObservation:
@@ -1657,13 +1851,14 @@ def _build_observation(payload: Any) -> MachineOperatorObservation:
     structured_data = payload.get("structured_data", {})
     if not isinstance(structured_data, dict):
         raise ValueError("MACHINE_OPERATOR backend observation.structured_data must be a dict.")
+    structured_data = _sanitize_boundary_structured_data(structured_data)
     try:
         json.dumps(structured_data)
     except TypeError as exc:
         raise ValueError(f"MACHINE_OPERATOR backend observation.structured_data is not JSON-like: {exc}") from exc
     return MachineOperatorObservation(
-        summary=summary.strip(),
-        detail=detail,
+        summary=_redact_transport_sensitive_text(summary.strip()),
+        detail=_redact_transport_sensitive_text(detail),
         structured_data=structured_data,
     )
 
