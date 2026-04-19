@@ -37,6 +37,51 @@ class TestMachineOperatorPolicy(unittest.TestCase):
             setattr(request, key, value)
         return request
 
+    def _workflow_request(self, **overrides):
+        from assistant_os.mso.contracts import (
+            MachineOperatorBudget,
+            MachineOperatorPolicyContext,
+            MachineOperatorWorkflowRequest,
+            MachineOperatorWorkflowStep,
+        )
+
+        request = MachineOperatorWorkflowRequest(
+            intent_id="intent-workflow-002",
+            correlation_id="corr-workflow-002",
+            workflow_steps=[
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.snapshot",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test"},
+                ),
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.read_visible_text",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test"},
+                ),
+            ],
+            policy_context=MachineOperatorPolicyContext(
+                policy_decision_ref="policy-workflow-002",
+                governance_ref="gov-workflow-002",
+                execution_mode="auto",
+                approval_mode="none",
+                constraints=["bounded_scope"],
+                allowlist_refs=["allowlist:web-safe"],
+                secret_refs=[],
+            ),
+            budget=MachineOperatorBudget(
+                max_steps=2,
+                max_duration_ms=16000,
+                max_output_bytes=8192,
+                max_side_effects=0,
+            ),
+            requested_side_effects=[],
+            approval_token=None,
+        )
+        for key, value in overrides.items():
+            setattr(request, key, value)
+        return request
+
     def test_known_capability_accepted(self):
         from assistant_os.mso.machine_operator_policy import enforce_machine_operator_request
 
@@ -161,6 +206,173 @@ class TestMachineOperatorPolicy(unittest.TestCase):
 
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.reason_code, "budget_exceeded")
+
+    def test_workflow_with_known_capabilities_is_accepted(self):
+        from assistant_os.mso.machine_operator_policy import enforce_machine_operator_request
+
+        decision = enforce_machine_operator_request(self._workflow_request())
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason_code, "allowed")
+        self.assertEqual(decision.policy.capability_name, "workflow:browser.snapshot->browser.read_visible_text")
+        self.assertEqual(decision.policy.policy_level, "N0")
+
+    def test_single_step_workflow_uses_plain_capability_label(self):
+        from assistant_os.mso.contracts import MachineOperatorWorkflowStep
+        from assistant_os.mso.machine_operator_policy import enforce_machine_operator_request
+
+        request = self._workflow_request(
+            workflow_steps=[
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.snapshot",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test"},
+                )
+            ],
+            budget=self._workflow_request().budget.__class__(
+                max_steps=1,
+                max_duration_ms=8000,
+                max_output_bytes=4096,
+                max_side_effects=0,
+            ),
+        )
+
+        decision = enforce_machine_operator_request(request)
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason_code, "allowed")
+        self.assertEqual(decision.policy.capability_name, "browser.snapshot")
+        self.assertEqual(decision.policy.capability_tier, "read_only")
+        self.assertEqual(decision.policy.approval_mode, "none")
+        self.assertEqual(decision.policy.max_steps, 2)
+        self.assertEqual(decision.policy.max_duration_ms, 8000)
+
+    def test_workflow_with_mixed_invalid_tier_is_rejected(self):
+        from assistant_os.mso.contracts import MachineOperatorWorkflowStep
+        from assistant_os.mso.machine_operator_policy import enforce_machine_operator_request
+
+        request = self._workflow_request(
+            workflow_steps=[
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.snapshot",
+                    capability_tier="interactive",
+                    arguments={"url": "https://example.test"},
+                )
+            ]
+        )
+
+        decision = enforce_machine_operator_request(request)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason_code, "invalid_tier")
+
+    def test_workflow_with_interactive_step_requires_approval(self):
+        from assistant_os.mso.contracts import MachineOperatorWorkflowStep
+        from assistant_os.mso.machine_operator_policy import enforce_machine_operator_request
+
+        request = self._workflow_request(
+            workflow_steps=[
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.navigate",
+                    capability_tier="interactive",
+                    arguments={"url": "https://example.test"},
+                ),
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.snapshot",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test"},
+                ),
+            ],
+            budget=self._workflow_request().budget.__class__(
+                max_steps=2,
+                max_duration_ms=23000,
+                max_output_bytes=8192,
+                max_side_effects=0,
+            ),
+        )
+
+        decision = enforce_machine_operator_request(request)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason_code, "approval_mode_mismatch")
+
+    def test_mixed_workflow_tiers_aggregate_deterministically_when_approved(self):
+        from assistant_os.mso.contracts import MachineOperatorWorkflowStep
+        from assistant_os.mso.machine_operator_policy import enforce_machine_operator_request
+
+        request = self._workflow_request(
+            workflow_steps=[
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.navigate",
+                    capability_tier="interactive",
+                    arguments={"url": "https://example.test"},
+                ),
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.snapshot",
+                    capability_tier="read_only",
+                    arguments={"url": "https://example.test"},
+                ),
+            ],
+            policy_context=self._workflow_request().policy_context.__class__(
+                policy_decision_ref="policy-workflow-002",
+                governance_ref="gov-workflow-002",
+                execution_mode="auto",
+                approval_mode="required",
+                constraints=["bounded_scope"],
+                allowlist_refs=["allowlist:web-safe"],
+                secret_refs=[],
+            ),
+            budget=self._workflow_request().budget.__class__(
+                max_steps=5,
+                max_duration_ms=23000,
+                max_output_bytes=8192,
+                max_side_effects=0,
+            ),
+            approval_token="approval-workflow-002",
+        )
+
+        decision = enforce_machine_operator_request(request)
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.reason_code, "allowed")
+        self.assertEqual(decision.policy.capability_name, "workflow:browser.navigate->browser.snapshot")
+        self.assertEqual(decision.policy.capability_tier, "interactive")
+        self.assertEqual(decision.policy.policy_level, "N1")
+        self.assertEqual(decision.policy.approval_mode, "required")
+        self.assertTrue(decision.policy.requires_allowlist)
+        self.assertFalse(decision.policy.requires_secrets)
+        self.assertEqual(decision.policy.max_steps, 5)
+        self.assertEqual(decision.policy.max_duration_ms, 23000)
+
+    def test_workflow_budget_exceeding_aggregate_policy_is_rejected(self):
+        from assistant_os.mso.machine_operator_policy import enforce_machine_operator_request
+
+        request = self._workflow_request()
+        request.budget.max_duration_ms = 20000
+
+        decision = enforce_machine_operator_request(request)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason_code, "budget_exceeded")
+
+    def test_workflow_unknown_capability_is_invalid_request(self):
+        from assistant_os.mso.contracts import MachineOperatorWorkflowStep
+        from assistant_os.mso.machine_operator_policy import enforce_machine_operator_request
+
+        request = self._workflow_request(
+            workflow_steps=[
+                MachineOperatorWorkflowStep(
+                    capability_name="browser.click",
+                    capability_tier="interactive",
+                    arguments={"selector": "#submit"},
+                )
+            ]
+        )
+
+        decision = enforce_machine_operator_request(request)
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason_code, "invalid_request")
 
 
 if __name__ == "__main__":

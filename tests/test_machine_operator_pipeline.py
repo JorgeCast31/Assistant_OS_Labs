@@ -70,6 +70,44 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         plan.update(overrides)
         return plan
 
+    def _workflow_request(self, **overrides):
+        request = {
+            "intent_id": "intent-workflow-003",
+            "correlation_id": "corr-workflow-003",
+            "workflow_steps": [
+                {
+                    "capability_name": "browser.snapshot",
+                    "capability_tier": "read_only",
+                    "arguments": {"url": "https://example.test"},
+                },
+                {
+                    "capability_name": "browser.read_visible_text",
+                    "capability_tier": "read_only",
+                    "arguments": {"url": "https://example.test"},
+                },
+            ],
+            "policy_context": {
+                "policy_decision_ref": "policy-workflow-003",
+                "governance_ref": "gov-workflow-003",
+                "execution_mode": "auto",
+                "approval_mode": "none",
+                "constraints": ["bounded_scope"],
+                "allowlist_refs": ["allowlist:web-safe"],
+                "secret_refs": [],
+            },
+            "budget": {
+                "max_steps": 2,
+                "max_duration_ms": 16000,
+                "max_output_bytes": 8192,
+                "max_side_effects": 0,
+            },
+            "requested_side_effects": [],
+            "approval_token": None,
+        }
+        for key, value in overrides.items():
+            request[key] = value
+        return request
+
     def test_valid_request_returns_real_execution_domain_result(self):
         from assistant_os.contracts import RESULT_TYPE_MACHINE_OPERATOR_ACTION
         from assistant_os.pipelines.machine_operator_pipeline import execute
@@ -812,6 +850,549 @@ class TestMachineOperatorPipeline(unittest.TestCase):
 
         self.assertEqual(action_domain(ACTION_HOST_LIST_DIRECTORY), "HOST")
         self.assertIs(get_pipeline("HOST"), host_pipeline.execute)
+
+    def test_single_step_workflow_preserves_workflow_shape_without_leaking_internal_ids(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        request = self._workflow_request(
+            workflow_steps=[
+                {
+                    "capability_name": "browser.snapshot",
+                    "capability_tier": "read_only",
+                    "arguments": {"url": "https://example.test"},
+                }
+            ],
+            budget={
+                "max_steps": 1,
+                "max_duration_ms": 8000,
+                "max_output_bytes": 4096,
+                "max_side_effects": 0,
+            },
+        )
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(
+                {
+                    "status": "ok",
+                    "final_url": "https://example.test/",
+                    "observation": {
+                        "summary": "Snapshot captured.",
+                        "detail": "Single-step workflow completed successfully.",
+                        "structured_data": {"page_title": "Example Domain"},
+                    },
+                    "evidence_refs": [
+                        {
+                            "ref_id": "workflow-single-evidence-001",
+                            "evidence_type": "artifact",
+                            "uri": "memory://workflow/single-snapshot-001",
+                            "description": "Single-step workflow snapshot",
+                            "media_type": "application/json",
+                        }
+                    ],
+                    "consumed_budget": {
+                        "steps": 1,
+                        "duration_ms": 120,
+                        "output_bytes": 512,
+                        "side_effects": 0,
+                    },
+                    "side_effects_declared": [],
+                    "backend_execution_performed": True,
+                    "machine_action_performed": True,
+                }
+            ),
+        ):
+            result = execute(self._plan(request), "ctx-machine-workflow-single")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"]["request_kind"], "workflow")
+        self.assertEqual(result["data"]["capability_name"], "browser.snapshot")
+        self.assertEqual(result["data"]["workflow_step_count"], 1)
+        self.assertEqual(result["data"]["workflow_capabilities"], ["browser.snapshot"])
+        self.assertEqual(len(result["data"]["step_results"]), 1)
+        self.assertEqual(result["data"]["step_results"][0]["step_index"], 0)
+        self.assertFalse(result["data"]["session_reused"])
+        self.assertNotIn("workflow_execution_id", result["data"])
+        self.assertNotIn("workflow_execution_id", result["data"]["machine_operator_response"])
+        self.assertNotIn("workflow_execution_id", result["data"]["machine_operator_response"]["step_results"][0])
+
+    def test_multi_step_workflow_success_returns_aggregated_step_results(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=[
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Snapshot captured.",
+                            "detail": "First workflow step succeeded.",
+                            "structured_data": {"page_title": "Example Domain"},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "workflow-evidence-001",
+                                "evidence_type": "artifact",
+                                "uri": "memory://workflow/snapshot-001",
+                                "description": "Workflow snapshot",
+                                "media_type": "application/json",
+                            }
+                        ],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 120,
+                            "output_bytes": 512,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Visible text captured.",
+                            "detail": "Second workflow step succeeded.",
+                            "structured_data": {"visible_text": "Example Domain", "is_truncated": False},
+                        },
+                        "evidence_refs": [],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 80,
+                            "output_bytes": 64,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+            ],
+        ):
+            result = execute(self._plan(self._workflow_request()), "ctx-machine-workflow-success")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"]["request_kind"], "workflow")
+        self.assertEqual(result["data"]["workflow_step_count"], 2)
+        self.assertEqual(
+            result["data"]["workflow_capabilities"],
+            ["browser.snapshot", "browser.read_visible_text"],
+        )
+        self.assertEqual(len(result["data"]["step_results"]), 2)
+        self.assertEqual(result["data"]["step_results"][0]["status"], "ok")
+        self.assertEqual(result["data"]["step_results"][1]["status"], "ok")
+        self.assertEqual(result["data"]["machine_operator_response"]["status"], "ok")
+        self.assertEqual(
+            len(result["data"]["machine_operator_response"]["step_results"]),
+            2,
+        )
+
+    def test_multi_step_workflow_partial_stops_after_first_failed_step(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=[
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Snapshot captured.",
+                            "detail": "First workflow step succeeded.",
+                            "structured_data": {"page_title": "Example Domain"},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "workflow-evidence-001",
+                                "evidence_type": "artifact",
+                                "uri": "memory://workflow/snapshot-001",
+                                "description": "Workflow snapshot",
+                                "media_type": "application/json",
+                            }
+                        ],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 120,
+                            "output_bytes": 512,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+                _FakeResponse(
+                    {
+                        "status": "failed",
+                        "observation": {
+                            "summary": "Visible text capture failed.",
+                            "detail": "Second workflow step failed.",
+                            "structured_data": {},
+                        },
+                        "evidence_refs": [],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 40,
+                            "output_bytes": 0,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": False,
+                        "machine_action_performed": False,
+                    }
+                ),
+            ],
+        ):
+            result = execute(self._plan(self._workflow_request()), "ctx-machine-workflow-partial")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorExecutionPartial")
+        self.assertEqual(result["data"]["lane_outcome"], "execution_partial")
+        self.assertEqual(result["data"]["machine_operator_response"]["status"], "partial")
+        self.assertEqual(len(result["data"]["step_results"]), 2)
+        self.assertEqual(result["data"]["step_results"][0]["status"], "ok")
+        self.assertEqual(result["data"]["step_results"][1]["status"], "failed")
+
+    def test_backend_unavailable_mid_workflow_surfaces_partial(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=[
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Snapshot captured.",
+                            "detail": "First workflow step succeeded.",
+                            "structured_data": {"page_title": "Example Domain"},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "workflow-evidence-001",
+                                "evidence_type": "artifact",
+                                "uri": "memory://workflow/snapshot-unavailable-001",
+                                "description": "Workflow snapshot",
+                                "media_type": "application/json",
+                            }
+                        ],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 120,
+                            "output_bytes": 512,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+                requests.ConnectionError("backend offline"),
+            ],
+        ):
+            result = execute(self._plan(self._workflow_request()), "ctx-machine-workflow-unavailable")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorExecutionPartial")
+        self.assertEqual(result["data"]["lane_outcome"], "execution_partial")
+        self.assertEqual(result["data"]["backend_status"], "unavailable")
+        self.assertEqual(result["data"]["backend_error_type"], "ConnectionError")
+        self.assertEqual(len(result["data"]["step_results"]), 2)
+        self.assertEqual(result["data"]["step_results"][0]["status"], "ok")
+        self.assertEqual(result["data"]["step_results"][1]["status"], "aborted")
+        self.assertEqual(result["data"]["step_results"][1]["lane_outcome"], "backend_unavailable")
+
+    def test_multi_step_workflow_aborts_on_first_step_failure(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=[
+                _FakeResponse(
+                    {
+                        "status": "failed",
+                        "observation": {
+                            "summary": "Snapshot failed.",
+                            "detail": "First workflow step failed.",
+                            "structured_data": {},
+                        },
+                        "evidence_refs": [],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 40,
+                            "output_bytes": 0,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": False,
+                        "machine_action_performed": False,
+                    }
+                )
+            ],
+        ):
+            result = execute(self._plan(self._workflow_request()), "ctx-machine-workflow-abort")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorExecutionAborted")
+        self.assertEqual(result["data"]["machine_operator_response"]["status"], "aborted")
+        self.assertEqual(len(result["data"]["step_results"]), 1)
+        self.assertEqual(result["data"]["step_results"][0]["status"], "failed")
+
+    def test_multi_step_workflow_budget_overflow_aborts_before_next_step(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=[
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Snapshot captured.",
+                            "detail": "First workflow step exhausted the step budget.",
+                            "structured_data": {"page_title": "Example Domain"},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "workflow-evidence-001",
+                                "evidence_type": "artifact",
+                                "uri": "memory://workflow/snapshot-001",
+                                "description": "Workflow snapshot",
+                                "media_type": "application/json",
+                            }
+                        ],
+                        "consumed_budget": {
+                            "steps": 2,
+                            "duration_ms": 120,
+                            "output_bytes": 512,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                )
+            ],
+        ) as post_mock:
+            result = execute(self._plan(self._workflow_request()), "ctx-machine-workflow-budget")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorExecutionAborted")
+        self.assertEqual(result["data"]["backend_status"], "budget_exhausted")
+        self.assertEqual(len(result["data"]["step_results"]), 1)
+        self.assertEqual(post_mock.call_count, 1)
+
+    def test_multi_step_workflow_duplicate_evidence_across_steps_fails_closed(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        request = self._workflow_request(
+            workflow_steps=[
+                {
+                    "capability_name": "browser.snapshot",
+                    "capability_tier": "read_only",
+                    "arguments": {"url": "https://example.test"},
+                },
+                {
+                    "capability_name": "browser.screenshot",
+                    "capability_tier": "read_only",
+                    "arguments": {"url": "https://example.test"},
+                },
+            ]
+        )
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=[
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Snapshot captured.",
+                            "detail": "First workflow step succeeded.",
+                            "structured_data": {"page_title": "Example Domain"},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "duplicate-evidence-001",
+                                "evidence_type": "artifact",
+                                "uri": "memory://workflow/snapshot-001",
+                                "description": "Workflow snapshot",
+                                "media_type": "application/json",
+                            }
+                        ],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 120,
+                            "output_bytes": 512,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Screenshot captured.",
+                            "detail": "Second workflow step duplicated evidence.",
+                            "structured_data": {"image_count": 1},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "duplicate-evidence-001",
+                                "evidence_type": "artifact",
+                                "uri": "memory://workflow/screenshot-001",
+                                "description": "Workflow screenshot",
+                                "media_type": "image/png",
+                            }
+                        ],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 90,
+                            "output_bytes": 256,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+            ],
+        ):
+            result = execute(self._plan(request), "ctx-machine-workflow-duplicate")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorExecutionFailed")
+        self.assertEqual(result["data"]["backend_status"], "invalid_workflow_result")
+        self.assertEqual(len(result["data"]["step_results"]), 2)
+        self.assertEqual(result["data"]["step_results"][1]["status"], "failed")
+
+    def test_multi_step_workflow_duplicate_evidence_uri_across_steps_fails_closed(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        request = self._workflow_request(
+            workflow_steps=[
+                {
+                    "capability_name": "browser.snapshot",
+                    "capability_tier": "read_only",
+                    "arguments": {"url": "https://example.test"},
+                },
+                {
+                    "capability_name": "browser.screenshot",
+                    "capability_tier": "read_only",
+                    "arguments": {"url": "https://example.test"},
+                },
+            ]
+        )
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=[
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Snapshot captured.",
+                            "detail": "First workflow step succeeded.",
+                            "structured_data": {"page_title": "Example Domain"},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "duplicate-uri-evidence-001",
+                                "evidence_type": "artifact",
+                                "uri": "memory://workflow/shared-artifact",
+                                "description": "Workflow snapshot",
+                                "media_type": "application/json",
+                            }
+                        ],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 120,
+                            "output_bytes": 512,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Screenshot captured.",
+                            "detail": "Second workflow step duplicated evidence URI.",
+                            "structured_data": {"image_count": 1},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "duplicate-uri-evidence-002",
+                                "evidence_type": "artifact",
+                                "uri": "memory://workflow/shared-artifact",
+                                "description": "Workflow screenshot",
+                                "media_type": "image/png",
+                            }
+                        ],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 90,
+                            "output_bytes": 256,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+            ],
+        ):
+            result = execute(self._plan(request), "ctx-machine-workflow-duplicate-uri")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorExecutionFailed")
+        self.assertEqual(result["data"]["backend_status"], "invalid_workflow_result")
+        self.assertEqual(len(result["data"]["step_results"]), 2)
+        self.assertEqual(result["data"]["step_results"][1]["status"], "failed")
+
+    def test_workflow_policy_rejection_surfaces_canonical_stub_response(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        request = self._workflow_request(
+            workflow_steps=[
+                {
+                    "capability_name": "browser.navigate",
+                    "capability_tier": "interactive",
+                    "arguments": {"url": "https://example.test"},
+                },
+                {
+                    "capability_name": "browser.snapshot",
+                    "capability_tier": "read_only",
+                    "arguments": {"url": "https://example.test"},
+                },
+            ]
+        )
+
+        result = execute(self._plan(request), "ctx-machine-workflow-policy")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorPolicyViolation")
+        self.assertEqual(result["data"]["request_kind"], "workflow")
+        self.assertEqual(result["data"]["machine_operator_response"]["status"], "aborted")
+        self.assertEqual(result["data"]["machine_operator_response"]["step_results"], [])
 
 
 if __name__ == "__main__":
