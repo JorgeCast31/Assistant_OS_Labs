@@ -1,6 +1,7 @@
 """Typed contracts for the local LLM/MSO seam."""
 
 from dataclasses import asdict, dataclass, field, is_dataclass
+from datetime import datetime, timezone
 from typing import Any, Literal, Optional, TypeAlias, TypedDict
 
 
@@ -313,6 +314,7 @@ _MACHINE_OPERATOR_STATUS_VALUES = {"ok", "partial", "failed", "aborted", "denied
 _MACHINE_OPERATOR_CAPABILITY_TIER_VALUES = {"read_only", "interactive", "mutating"}
 _MACHINE_OPERATOR_APPROVAL_MODE_VALUES = {"none", "required"}
 _MACHINE_OPERATOR_POLICY_LEVEL_VALUES = {"N0", "N1", "N2"}
+_MACHINE_OPERATOR_REQUEST_KIND_VALUES = {"single_step", "workflow"}
 _MACHINE_OPERATOR_LEGACY_REQUEST_FIELDS = {
     "intent_id",
     "correlation_id",
@@ -322,7 +324,7 @@ _MACHINE_OPERATOR_LEGACY_REQUEST_FIELDS = {
     "policy_context",
     "budget",
     "requested_side_effects",
-    "approval_token",
+    "approval",
 }
 _MACHINE_OPERATOR_WORKFLOW_REQUEST_FIELDS = {
     "intent_id",
@@ -331,7 +333,7 @@ _MACHINE_OPERATOR_WORKFLOW_REQUEST_FIELDS = {
     "policy_context",
     "budget",
     "requested_side_effects",
-    "approval_token",
+    "approval",
 }
 _MACHINE_OPERATOR_WORKFLOW_STEP_FIELDS = {
     "capability_name",
@@ -401,6 +403,14 @@ _MACHINE_OPERATOR_SIDE_EFFECT_FIELDS = {
     "description",
     "target_ref",
 }
+_MACHINE_OPERATOR_APPROVAL_REQUIRED_FIELDS = {
+    "approval_id",
+    "approved_for",
+    "capability_scope",
+    "expires_at",
+    "issued_by",
+}
+_MACHINE_OPERATOR_APPROVAL_OPTIONAL_FIELDS = {"reason"}
 
 
 def is_machine_operator_lane_outcome(value: str) -> bool:
@@ -469,6 +479,18 @@ class MachineOperatorPolicyContext:
 
 
 @dataclass(slots=True)
+class MachineOperatorApprovalArtifact:
+    """Deterministic local approval artifact for guarded MACHINE_OPERATOR execution."""
+
+    approval_id: str
+    approved_for: MachineOperatorRequestKind
+    capability_scope: list[str]
+    expires_at: str
+    issued_by: str
+    reason: str = ""
+
+
+@dataclass(slots=True)
 class MachineOperatorCapabilityPolicy:
     """Static, backend-agnostic policy entry for one MACHINE_OPERATOR capability."""
 
@@ -506,7 +528,7 @@ class MachineOperatorIntentRequest:
     policy_context: MachineOperatorPolicyContext
     budget: MachineOperatorBudget
     requested_side_effects: list[str] = field(default_factory=list)
-    approval_token: Optional[str] = None
+    approval: Optional[MachineOperatorApprovalArtifact] = None
 
 
 @dataclass(slots=True)
@@ -528,7 +550,7 @@ class MachineOperatorWorkflowRequest:
     policy_context: MachineOperatorPolicyContext
     budget: MachineOperatorBudget
     requested_side_effects: list[str] = field(default_factory=list)
-    approval_token: Optional[str] = None
+    approval: Optional[MachineOperatorApprovalArtifact] = None
 
 
 @dataclass(slots=True)
@@ -605,6 +627,24 @@ def _validate_exact_fields(
     return ""
 
 
+def _validate_structured_fields(
+    payload: dict[str, Any],
+    *,
+    required_fields: set[str],
+    optional_fields: set[str],
+    contract_name: str,
+) -> str:
+    missing_fields = sorted(field_name for field_name in required_fields if field_name not in payload)
+    if missing_fields:
+        return f"{contract_name} is missing required fields: {missing_fields}"
+
+    allowed_fields = required_fields | optional_fields
+    unknown_fields = sorted(field_name for field_name in payload if field_name not in allowed_fields)
+    if unknown_fields:
+        return f"{contract_name} contains unknown fields: {unknown_fields}"
+    return ""
+
+
 def _validate_non_empty_str(payload: dict[str, Any], field_name: str, contract_name: str) -> str:
     value = payload.get(field_name)
     if not isinstance(value, str) or not value.strip():
@@ -663,6 +703,105 @@ def _validate_json_object(payload: Any, *, field_name: str, contract_name: str) 
 def _validate_string_list(payload: Any, *, field_name: str, contract_name: str) -> str:
     if not isinstance(payload, list) or any(not isinstance(item, str) or not item.strip() for item in payload):
         return f"{contract_name} field '{field_name}' must be a list[str]"
+    return ""
+
+
+def parse_machine_operator_approval_expiry(value: str) -> tuple[datetime | None, str]:
+    if not isinstance(value, str) or not value.strip():
+        return None, "MachineOperatorApprovalArtifact field 'expires_at' must be a non-empty string"
+
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        return None, (
+            "MachineOperatorApprovalArtifact field 'expires_at' must be an ISO-8601 timestamp: "
+            f"{exc}"
+        )
+
+    if parsed.tzinfo is None:
+        return None, "MachineOperatorApprovalArtifact field 'expires_at' must include a timezone offset"
+    return parsed.astimezone(timezone.utc), ""
+
+
+def _validate_approval_dict(approval: Any) -> str:
+    if not isinstance(approval, dict):
+        return "MachineOperatorApprovalArtifact must be a dict"
+
+    error = _validate_structured_fields(
+        approval,
+        required_fields=_MACHINE_OPERATOR_APPROVAL_REQUIRED_FIELDS,
+        optional_fields=_MACHINE_OPERATOR_APPROVAL_OPTIONAL_FIELDS,
+        contract_name="MachineOperatorApprovalArtifact",
+    )
+    if error:
+        return error
+
+    for field_name in ("approval_id", "expires_at", "issued_by"):
+        error = _validate_non_empty_str(approval, field_name, "MachineOperatorApprovalArtifact")
+        if error:
+            return error
+
+    approved_for = approval.get("approved_for")
+    if approved_for not in _MACHINE_OPERATOR_REQUEST_KIND_VALUES:
+        return (
+            "MachineOperatorApprovalArtifact field 'approved_for' must be one of "
+            f"{sorted(_MACHINE_OPERATOR_REQUEST_KIND_VALUES)}"
+        )
+
+    error = _validate_string_list(
+        approval.get("capability_scope"),
+        field_name="capability_scope",
+        contract_name="MachineOperatorApprovalArtifact",
+    )
+    if error:
+        return error
+    if not approval["capability_scope"]:
+        return "MachineOperatorApprovalArtifact field 'capability_scope' must be a non-empty list[str]"
+
+    if "reason" in approval:
+        error = _validate_str(approval, "reason", "MachineOperatorApprovalArtifact")
+        if error:
+            return error
+
+    _, error = parse_machine_operator_approval_expiry(str(approval["expires_at"]))
+    if error:
+        return error
+    return ""
+
+
+def normalize_machine_operator_approval(payload: Any) -> tuple[dict[str, Any] | None, str]:
+    if payload is None:
+        return None, ""
+
+    approval, error = _as_contract_dict(payload, contract_name="MachineOperatorApprovalArtifact")
+    if approval is None:
+        return None, error
+
+    error = _validate_approval_dict(approval)
+    if error:
+        return None, error
+
+    return (
+        {
+            "approval_id": str(approval["approval_id"]).strip(),
+            "approved_for": str(approval["approved_for"]),
+            "capability_scope": [str(item).strip() for item in approval["capability_scope"]],
+            "expires_at": str(approval["expires_at"]).strip(),
+            "issued_by": str(approval["issued_by"]).strip(),
+            "reason": str(approval.get("reason", "")).strip(),
+        },
+        "",
+    )
+
+
+def _validate_optional_approval(payload: Any, *, contract_name: str) -> str:
+    _, error = normalize_machine_operator_approval(payload)
+    if error:
+        return f"{contract_name} field 'approval' is invalid: {error}"
     return ""
 
 
@@ -832,8 +971,14 @@ def normalize_machine_operator_request(payload: Any) -> tuple[dict[str, Any] | N
     if request is None:
         return None, error
 
+    approval, error = normalize_machine_operator_approval(request.get("approval"))
+    if error:
+        return None, error
+
     if "workflow_steps" in request:
-        return dict(request), ""
+        normalized_request = dict(request)
+        normalized_request["approval"] = approval
+        return normalized_request, ""
 
     legacy_error = _validate_exact_fields(
         request,
@@ -873,7 +1018,7 @@ def normalize_machine_operator_request(payload: Any) -> tuple[dict[str, Any] | N
             "policy_context": dict(policy_context),
             "budget": dict(budget),
             "requested_side_effects": list(requested_side_effects),
-            "approval_token": request.get("approval_token"),
+            "approval": approval,
         },
         "",
     )
@@ -944,20 +1089,12 @@ def _validate_single_step_request(request: dict[str, Any]) -> tuple[bool, str]:
     if error:
         return False, error
 
-    approval_mode = request["policy_context"]["approval_mode"]
-    approval_token = request.get("approval_token")
-    if approval_mode == "required":
-        if not isinstance(approval_token, str) or not approval_token.strip():
-            return False, (
-                "MachineOperatorIntentRequest field 'approval_token' is required when "
-                "policy_context.approval_mode == 'required'"
-            )
-    elif approval_token is not None:
-        if not isinstance(approval_token, str) or not approval_token.strip():
-            return False, (
-                "MachineOperatorIntentRequest field 'approval_token' must be a non-empty "
-                "string when present"
-            )
+    error = _validate_optional_approval(
+        request.get("approval"),
+        contract_name="MachineOperatorIntentRequest",
+    )
+    if error:
+        return False, error
 
     error = _validate_string_list(
         request.get("requested_side_effects"),
@@ -1056,20 +1193,12 @@ def _validate_workflow_request(request: dict[str, Any]) -> tuple[bool, str]:
     if error:
         return False, error
 
-    approval_mode = request["policy_context"]["approval_mode"]
-    approval_token = request.get("approval_token")
-    if approval_mode == "required":
-        if not isinstance(approval_token, str) or not approval_token.strip():
-            return False, (
-                "MachineOperatorWorkflowRequest field 'approval_token' is required when "
-                "policy_context.approval_mode == 'required'"
-            )
-    elif approval_token is not None:
-        if not isinstance(approval_token, str) or not approval_token.strip():
-            return False, (
-                "MachineOperatorWorkflowRequest field 'approval_token' must be a non-empty "
-                "string when present"
-            )
+    error = _validate_optional_approval(
+        request.get("approval"),
+        contract_name="MachineOperatorWorkflowRequest",
+    )
+    if error:
+        return False, error
 
     error = _validate_string_list(
         request.get("requested_side_effects"),

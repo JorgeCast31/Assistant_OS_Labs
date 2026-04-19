@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import Mock, patch
 
@@ -25,6 +26,27 @@ class TestMachineOperatorAdapter(unittest.TestCase):
         reset_machine_operator_backend_health()
         MACHINE_OPERATOR_AUDIT_LOG.clear()
 
+    def _approval(self, **overrides):
+        approval = {
+            "approval_id": "approval-adapter-001",
+            "approved_for": "single_step",
+            "capability_scope": ["browser.navigate"],
+            "expires_at": "2030-01-01T00:00:00+00:00",
+            "issued_by": "reviewer:test",
+            "reason": "Explicit bounded approval.",
+        }
+        approval.update(overrides)
+        return approval
+
+    def _workflow_approval(self, **overrides):
+        approval = self._approval(
+            approval_id="approval-workflow-adapter-001",
+            approved_for="workflow",
+            capability_scope=["browser.snapshot", "browser.read_visible_text"],
+        )
+        approval.update(overrides)
+        return approval
+
     def _request(self, **overrides):
         request = {
             "intent_id": "intent-adapter-001",
@@ -48,7 +70,7 @@ class TestMachineOperatorAdapter(unittest.TestCase):
                 "max_side_effects": 0,
             },
             "requested_side_effects": [],
-            "approval_token": None,
+            "approval": None,
         }
         for key, value in overrides.items():
             request[key] = value
@@ -100,7 +122,7 @@ class TestMachineOperatorAdapter(unittest.TestCase):
                 "max_side_effects": 0,
             },
             "requested_side_effects": [],
-            "approval_token": None,
+            "approval": None,
         }
         for key, value in overrides.items():
             request[key] = value
@@ -188,11 +210,14 @@ class TestMachineOperatorAdapter(unittest.TestCase):
             OpenClawGatewayMachineOperatorAdapter,
         )
         self.assertTrue(post_mock.called)
+        payload = post_mock.call_args.kwargs["json"]
         self.assertEqual(result.status, "ok")
+        self.assertNotIn("headers", post_mock.call_args.kwargs)
         self.assertTrue(result.metadata["backend_execution_attempted"])
         self.assertTrue(result.metadata["backend_execution_performed"])
         self.assertTrue(result.metadata["machine_action_performed"])
         self.assertEqual(result.metadata["lane_outcome"], "success")
+        self.assertFalse(payload["execution"]["require_credentials"])
         self.assertEqual(result.observation.summary, "Snapshot captured.")
         self.assertEqual(result.consumed_budget.steps, 1)
         self.assertEqual(result.evidence_refs[0].uri, "memory://snapshot/001")
@@ -217,6 +242,187 @@ class TestMachineOperatorAdapter(unittest.TestCase):
                 MachineOperatorAuditEventType.MO_EPHEMERAL_SCOPE_CLOSED,
             ],
         )
+
+    def test_header_token_auth_attaches_configured_header(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        response_body = {
+            "status": "ok",
+            "final_url": "https://example.test/",
+            "observation": {
+                "summary": "Snapshot captured.",
+                "detail": "Page snapshot collected through the machine operator backend.",
+                "structured_data": {"page_title": "Example Domain"},
+            },
+            "evidence_refs": [
+                {
+                    "ref_id": "evidence-auth-header-001",
+                    "evidence_type": "artifact",
+                    "uri": "memory://snapshot/auth-header-001",
+                    "description": "Structured page snapshot",
+                    "media_type": "application/json",
+                }
+            ],
+            "consumed_budget": {
+                "steps": 1,
+                "duration_ms": 120,
+                "output_bytes": 128,
+                "side_effects": 0,
+            },
+            "side_effects_declared": [],
+            "backend_execution_performed": True,
+            "machine_action_performed": True,
+        }
+
+        with patch.multiple(
+            "assistant_os.mso.machine_operator_adapter.config",
+            OPENCLAW_GATEWAY_AUTH_MODE="header_token",
+            OPENCLAW_GATEWAY_AUTH_HEADER_NAME="X-OpenClaw-Token",
+            OPENCLAW_GATEWAY_AUTH_TOKEN_ENV_VAR="OPENCLAW_GATEWAY_AUTH_TOKEN",
+        ), patch.dict(
+            os.environ,
+            {"OPENCLAW_GATEWAY_AUTH_TOKEN": "gateway-boundary-token"},
+            clear=False,
+        ), patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(response_body),
+        ) as post_mock:
+            result = OpenClawGatewayMachineOperatorAdapter().execute(
+                self._request(),
+                self._context(),
+            )
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(
+            post_mock.call_args.kwargs["headers"],
+            {"X-OpenClaw-Token": "gateway-boundary-token"},
+        )
+
+    def test_header_token_auth_missing_token_fails_closed_before_dispatch(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+        from assistant_os.mso.machine_operator_audit import MACHINE_OPERATOR_AUDIT_LOG
+
+        with patch.multiple(
+            "assistant_os.mso.machine_operator_adapter.config",
+            OPENCLAW_GATEWAY_AUTH_MODE="header_token",
+            OPENCLAW_GATEWAY_AUTH_HEADER_NAME="X-OpenClaw-Token",
+            OPENCLAW_GATEWAY_AUTH_TOKEN_ENV_VAR="OPENCLAW_GATEWAY_AUTH_TOKEN",
+        ), patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("OPENCLAW_GATEWAY_AUTH_TOKEN", None)
+            with patch("assistant_os.mso.machine_operator_adapter.requests.post") as post_mock:
+                result = OpenClawGatewayMachineOperatorAdapter().execute(
+                    self._request(),
+                    self._context(),
+                )
+
+        post_mock.assert_not_called()
+        self.assertEqual(result.status, "aborted")
+        self.assertEqual(result.metadata["lane_outcome"], "execution_aborted")
+        self.assertEqual(result.metadata["backend_status"], "transport_auth_invalid")
+        self.assertEqual(result.metadata["adapter_status"], "transport_auth_invalid")
+        self.assertFalse(result.metadata["backend_execution_attempted"])
+        self.assertIn("OPENCLAW_GATEWAY_AUTH_TOKEN", result.observation.detail)
+        audit_details = " ".join(event.detail for event in MACHINE_OPERATOR_AUDIT_LOG.events())
+        self.assertNotIn("gateway-boundary-token", audit_details)
+
+    def test_header_token_auth_missing_header_name_fails_closed_before_dispatch(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        with patch.multiple(
+            "assistant_os.mso.machine_operator_adapter.config",
+            OPENCLAW_GATEWAY_AUTH_MODE="header_token",
+            OPENCLAW_GATEWAY_AUTH_HEADER_NAME="",
+            OPENCLAW_GATEWAY_AUTH_TOKEN_ENV_VAR="OPENCLAW_GATEWAY_AUTH_TOKEN",
+        ), patch.dict(
+            os.environ,
+            {"OPENCLAW_GATEWAY_AUTH_TOKEN": "gateway-boundary-token"},
+            clear=False,
+        ), patch("assistant_os.mso.machine_operator_adapter.requests.post") as post_mock:
+            result = OpenClawGatewayMachineOperatorAdapter().execute(
+                self._request(),
+                self._context(),
+            )
+
+        post_mock.assert_not_called()
+        self.assertEqual(result.status, "aborted")
+        self.assertEqual(result.metadata["lane_outcome"], "execution_aborted")
+        self.assertEqual(result.metadata["backend_status"], "transport_auth_invalid")
+        self.assertIn("OPENCLAW_GATEWAY_AUTH_HEADER_NAME", result.observation.detail)
+
+    def test_transport_private_fields_and_token_do_not_leak_from_backend(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+        from assistant_os.mso.machine_operator_audit import MACHINE_OPERATOR_AUDIT_LOG
+
+        transport_token = "gateway-boundary-token"
+        response_body = {
+            "status": "ok",
+            "final_url": "https://example.test/",
+            "observation": {
+                "summary": "Snapshot captured.",
+                "detail": f"Internal token echo {transport_token} should be redacted.",
+                "structured_data": {
+                    "page_title": "Example Domain",
+                    "workflow_execution_id": "wf-001",
+                    "auth_token": transport_token,
+                    "transport_auth_mode": "header_token",
+                },
+            },
+            "metadata": {
+                "workflow_execution_id": "wf-001",
+                "auth_token": transport_token,
+                "transport_auth_mode": "header_token",
+            },
+            "evidence_refs": [
+                {
+                    "ref_id": "evidence-redaction-001",
+                    "evidence_type": "artifact",
+                    "uri": "memory://snapshot/redaction-001",
+                    "description": "Structured page snapshot",
+                    "media_type": "application/json",
+                }
+            ],
+            "consumed_budget": {
+                "steps": 1,
+                "duration_ms": 120,
+                "output_bytes": 128,
+                "side_effects": 0,
+            },
+            "side_effects_declared": [],
+            "backend_execution_performed": True,
+            "machine_action_performed": True,
+        }
+
+        with patch.multiple(
+            "assistant_os.mso.machine_operator_adapter.config",
+            OPENCLAW_GATEWAY_AUTH_MODE="header_token",
+            OPENCLAW_GATEWAY_AUTH_HEADER_NAME="X-OpenClaw-Token",
+            OPENCLAW_GATEWAY_AUTH_TOKEN_ENV_VAR="OPENCLAW_GATEWAY_AUTH_TOKEN",
+        ), patch.dict(
+            os.environ,
+            {"OPENCLAW_GATEWAY_AUTH_TOKEN": transport_token},
+            clear=False,
+        ), patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(response_body),
+        ):
+            result = OpenClawGatewayMachineOperatorAdapter().execute(
+                self._request(),
+                self._context(),
+            )
+
+        audit_details = " ".join(event.detail for event in MACHINE_OPERATOR_AUDIT_LOG.events())
+        self.assertEqual(result.status, "ok")
+        self.assertNotIn("workflow_execution_id", result.metadata)
+        self.assertNotIn("transport_auth_mode", result.metadata)
+        self.assertNotIn("auth_token", result.metadata)
+        self.assertEqual(result.observation.structured_data["page_title"], "Example Domain")
+        self.assertNotIn("workflow_execution_id", result.observation.structured_data)
+        self.assertNotIn("transport_auth_mode", result.observation.structured_data)
+        self.assertNotIn("auth_token", result.observation.structured_data)
+        self.assertIn("[redacted]", result.observation.detail)
+        self.assertNotIn(transport_token, result.observation.detail)
+        self.assertNotIn(transport_token, str(result.metadata))
+        self.assertNotIn(transport_token, audit_details)
 
     def test_runtime_allowlist_violation_blocks_transport(self):
         from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
@@ -485,8 +691,8 @@ class TestMachineOperatorAdapter(unittest.TestCase):
 
         event_types = [event.event_type for event in MACHINE_OPERATOR_AUDIT_LOG.events()]
         post_mock.assert_not_called()
-        self.assertEqual(result.status, "failed")
-        self.assertEqual(result.metadata["lane_outcome"], "invalid_request")
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.metadata["lane_outcome"], "policy_violation")
         self.assertEqual(result.metadata["backend_status"], "not_executed")
         self.assertFalse(result.metadata["backend_execution_attempted"])
         self.assertEqual(
@@ -498,6 +704,22 @@ class TestMachineOperatorAdapter(unittest.TestCase):
                 MachineOperatorAuditEventType.MO_EPHEMERAL_SCOPE_CLOSED,
             ],
         )
+
+    def test_secret_refs_rejection_blocks_transport(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        request = self._request()
+        request["policy_context"]["secret_refs"] = ["secret:test"]
+        post_mock = Mock()
+
+        with patch("assistant_os.mso.machine_operator_adapter.requests.post", post_mock):
+            result = OpenClawGatewayMachineOperatorAdapter().execute(request, self._context())
+
+        post_mock.assert_not_called()
+        self.assertEqual(result.status, "denied")
+        self.assertEqual(result.metadata["lane_outcome"], "policy_violation")
+        self.assertEqual(result.metadata["adapter_status"], "rejected_by_policy")
+        self.assertFalse(result.metadata["backend_execution_attempted"])
 
     def test_local_abort_stops_before_backend_dispatch(self):
         from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
@@ -898,6 +1120,120 @@ class TestMachineOperatorAdapter(unittest.TestCase):
             second_payload["execution"]["workflow_execution_id"],
             "exec-workflow-adapter-001:workflow",
         )
+        self.assertNotIn("close_session", first_payload["execution"])
+        self.assertTrue(second_payload["execution"]["close_session"])
+
+    def test_interactive_workflow_derives_step_local_approval_and_policy_context(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        request = self._workflow_request(
+            workflow_steps=[
+                {
+                    "capability_name": "browser.navigate",
+                    "capability_tier": "interactive",
+                    "arguments": {"url": "https://example.test"},
+                },
+                {
+                    "capability_name": "browser.snapshot",
+                    "capability_tier": "read_only",
+                    "arguments": {"url": "https://example.test"},
+                },
+            ],
+            policy_context={
+                "policy_decision_ref": "policy-workflow-adapter-001",
+                "governance_ref": "gov-workflow-adapter-001",
+                "execution_mode": "auto",
+                "approval_mode": "required",
+                "constraints": ["bounded_scope"],
+                "allowlist_refs": ["allowlist:web-safe"],
+                "secret_refs": [],
+            },
+            budget={
+                "max_steps": 5,
+                "max_duration_ms": 23000,
+                "max_output_bytes": 4096,
+                "max_side_effects": 0,
+            },
+            approval=self._workflow_approval(
+                capability_scope=["browser.navigate", "browser.snapshot"]
+            ),
+        )
+        context = self._workflow_context(
+            capability_name="workflow:browser.navigate->browser.snapshot",
+            capability_tier="interactive",
+            policy_message="MACHINE_OPERATOR workflow allowed: browser.navigate -> browser.snapshot",
+        )
+        response_bodies = [
+            _FakeResponse(
+                {
+                    "status": "ok",
+                    "final_url": "https://example.test/",
+                    "observation": {
+                        "summary": "Navigation completed.",
+                        "detail": "Interactive navigation succeeded.",
+                        "structured_data": {"page_title": "Example Domain"},
+                    },
+                    "evidence_refs": [],
+                    "consumed_budget": {
+                        "steps": 1,
+                        "duration_ms": 120,
+                        "output_bytes": 64,
+                        "side_effects": 0,
+                    },
+                    "side_effects_declared": [],
+                    "backend_execution_performed": True,
+                    "machine_action_performed": True,
+                }
+            ),
+            _FakeResponse(
+                {
+                    "status": "ok",
+                    "final_url": "https://example.test/",
+                    "observation": {
+                        "summary": "Snapshot captured.",
+                        "detail": "Read-only follow-up succeeded.",
+                        "structured_data": {"page_title": "Example Domain"},
+                    },
+                    "evidence_refs": [
+                        {
+                            "ref_id": "workflow-interactive-evidence-001",
+                            "evidence_type": "artifact",
+                            "uri": "memory://workflow/interactive-snapshot-001",
+                            "description": "Workflow snapshot",
+                            "media_type": "application/json",
+                        }
+                    ],
+                    "consumed_budget": {
+                        "steps": 1,
+                        "duration_ms": 80,
+                        "output_bytes": 128,
+                        "side_effects": 0,
+                    },
+                    "side_effects_declared": [],
+                    "backend_execution_performed": True,
+                    "machine_action_performed": True,
+                }
+            ),
+        ]
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=response_bodies,
+        ) as post_mock:
+            result = OpenClawGatewayMachineOperatorAdapter().execute(request, context)
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(post_mock.call_count, 2)
+        first_payload = post_mock.call_args_list[0].kwargs["json"]
+        second_payload = post_mock.call_args_list[1].kwargs["json"]
+        self.assertEqual(first_payload["policy"]["approval_mode"], "required")
+        self.assertEqual(first_payload["capability_name"], "browser.navigate")
+        self.assertEqual(first_payload["execution"]["workflow_execution_id"], "exec-workflow-adapter-001:workflow")
+        self.assertFalse(first_payload["execution"]["reuse_session"])
+        self.assertEqual(second_payload["policy"]["approval_mode"], "none")
+        self.assertEqual(second_payload["capability_name"], "browser.snapshot")
+        self.assertEqual(second_payload["execution"]["workflow_execution_id"], "exec-workflow-adapter-001:workflow")
+        self.assertTrue(second_payload["execution"]["reuse_session"])
         self.assertNotIn("close_session", first_payload["execution"])
         self.assertTrue(second_payload["execution"]["close_session"])
 

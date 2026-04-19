@@ -2,6 +2,21 @@ import unittest
 
 
 class TestMachineOperatorContracts(unittest.TestCase):
+    def _approval(self, **overrides):
+        from assistant_os.mso.contracts import MachineOperatorApprovalArtifact
+
+        approval = MachineOperatorApprovalArtifact(
+            approval_id="approval-001",
+            approved_for="single_step",
+            capability_scope=["browser.inspect_dom"],
+            expires_at="2030-01-01T00:00:00+00:00",
+            issued_by="reviewer:test",
+            reason="Explicit bounded approval.",
+        )
+        for key, value in overrides.items():
+            setattr(approval, key, value)
+        return approval
+
     def _request(self, **overrides):
         from assistant_os.mso.contracts import (
             MachineOperatorBudget,
@@ -28,7 +43,7 @@ class TestMachineOperatorContracts(unittest.TestCase):
                 max_output_bytes=65536,
                 max_side_effects=1,
             ),
-            approval_token="approval-001",
+            approval=self._approval(),
         )
         for key, value in overrides.items():
             setattr(request, key, value)
@@ -112,7 +127,7 @@ class TestMachineOperatorContracts(unittest.TestCase):
                 max_side_effects=0,
             ),
             requested_side_effects=[],
-            approval_token=None,
+            approval=None,
         )
         for key, value in overrides.items():
             setattr(request, key, value)
@@ -126,14 +141,14 @@ class TestMachineOperatorContracts(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(error, "")
 
-    def test_validate_machine_operator_request_requires_approval_token_when_policy_demands_it(self):
+    def test_validate_machine_operator_request_rejects_malformed_approval_artifact(self):
         from assistant_os.mso.contracts import validate_machine_operator_request
 
-        request = self._request(approval_token=None)
+        request = self._request(approval=self._approval(expires_at="not-a-timestamp"))
         ok, error = validate_machine_operator_request(request)
 
         self.assertFalse(ok)
-        self.assertIn("approval_token", error)
+        self.assertIn("approval", error)
 
     def test_validate_machine_operator_request_rejects_invalid_capability_tier(self):
         from assistant_os.mso.contracts import validate_machine_operator_request
@@ -160,7 +175,7 @@ class TestMachineOperatorContracts(unittest.TestCase):
                 "max_side_effects": 0,
             },
             "requested_side_effects": [],
-            "approval_token": None,
+            "approval": None,
         }
 
         ok, error = validate_machine_operator_request(payload)
@@ -269,7 +284,7 @@ class TestMachineOperatorContracts(unittest.TestCase):
                 "max_output_bytes": 0,
                 "max_side_effects": 0,
             },
-            "approval_token": None,
+            "approval": None,
         }
 
         ok, error = validate_machine_operator_request(payload)
@@ -302,7 +317,7 @@ class TestMachineOperatorContracts(unittest.TestCase):
                 "max_side_effects": 0,
             },
             "requested_side_effects": [],
-            "approval_token": None,
+            "approval": None,
             "unexpected": True,
         }
 

@@ -167,9 +167,9 @@ def _validate_env() -> None:
 
 _validate_env()
 
-# Debug: mostrar solo primeros 6 caracteres del token
+# Utility: mostrar solo primeros 6 caracteres del token
 def get_notion_token_preview() -> str:
-    """Retorna los primeros 6 caracteres del token para debug."""
+    """Retorna los primeros 6 caracteres del token para inspección local."""
     return NOTION_TOKEN[:6] + "..." if NOTION_TOKEN else "(no definido)"
 
 # Expected property names in WORK database
@@ -193,7 +193,7 @@ NOTION_WORK_ACTIVE_STATUSES: list[str] = ["NEXT", "SCHEDULED", "WAITING", "INBOX
 # CodeOps Configuration
 # ---------------------------------------------------------------------------
 # Allowlist of repositories that CodeOps can operate on.
-# Empty list = allow all repos (TODO: lock down in production)
+# Empty list = allow all repos until a narrower policy is configured.
 # Format: ["owner/repo", "owner/repo2"]
 CODEOPS_ALLOWED_REPOS: list[str] = os.environ.get(
     "CODEOPS_ALLOWED_REPOS", ""
@@ -259,6 +259,7 @@ RUNNER_BASE_IMAGE: str = os.environ.get("RUNNER_BASE_IMAGE", "python:3.11-slim")
 HOST_EXECUTOR: str = os.environ.get("HOST_EXECUTOR", "native").strip().lower() or "native"
 
 # Local OpenClaw gateway endpoint for MACHINE_OPERATOR Tier A execution.
+# Current lane scope: bounded, non-credentialed browser execution only.
 # Accepts ws(s) or http(s) URLs; the adapter translates ws(s) to the matching
 # http(s) execute endpoint and keeps transport details inside the MO lane.
 OPENCLAW_GATEWAY_URL: str = os.environ.get(
@@ -270,6 +271,26 @@ OPENCLAW_GATEWAY_URL: str = os.environ.get(
 OPENCLAW_TIMEOUT_SECONDS: float = float(
     os.environ.get("OPENCLAW_TIMEOUT_SECONDS", "5.0")
 )
+
+# Future transport-auth hook for the Windows -> Ubuntu/OpenClaw boundary.
+# Supported modes:
+#   "disabled"     (default) — send no transport auth header.
+#   "header_token"           — send one configured header whose value is loaded
+#                              at runtime from the env var named below.
+# This is only a repo-side preparation seam. Linux-side verification, mTLS,
+# signatures, and secret-enabled execution remain out of scope here.
+OPENCLAW_GATEWAY_AUTH_MODE: str = (
+    os.environ.get("OPENCLAW_GATEWAY_AUTH_MODE", "disabled").strip().lower()
+    or "disabled"
+)
+OPENCLAW_GATEWAY_AUTH_HEADER_NAME: str = os.environ.get(
+    "OPENCLAW_GATEWAY_AUTH_HEADER_NAME",
+    "X-OpenClaw-Token",
+).strip()
+OPENCLAW_GATEWAY_AUTH_TOKEN_ENV_VAR: str = os.environ.get(
+    "OPENCLAW_GATEWAY_AUTH_TOKEN_ENV_VAR",
+    "OPENCLAW_GATEWAY_AUTH_TOKEN",
+).strip()
 
 
 def is_command_allowed(cmd: list[str]) -> bool:
