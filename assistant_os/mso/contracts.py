@@ -254,12 +254,27 @@ MachineOperatorTransitionState = Literal[
     "execution_failed",
     "success",
 ]
+MachineOperatorRequestKind = Literal["single_step", "workflow"]
 MachineOperatorScalar: TypeAlias = None | bool | int | float | str
 MachineOperatorValue: TypeAlias = (
     MachineOperatorScalar
     | list["MachineOperatorValue"]
     | dict[str, "MachineOperatorValue"]
 )
+
+CAPABILITY_BROWSER_NAVIGATE = "browser.navigate"
+CAPABILITY_BROWSER_SNAPSHOT = "browser.snapshot"
+CAPABILITY_BROWSER_SCREENSHOT = "browser.screenshot"
+CAPABILITY_BROWSER_READ_VISIBLE_TEXT = "browser.read_visible_text"
+MACHINE_OPERATOR_ALLOWED_CAPABILITIES: frozenset[str] = frozenset(
+    {
+        CAPABILITY_BROWSER_NAVIGATE,
+        CAPABILITY_BROWSER_SNAPSHOT,
+        CAPABILITY_BROWSER_SCREENSHOT,
+        CAPABILITY_BROWSER_READ_VISIBLE_TEXT,
+    }
+)
+MACHINE_OPERATOR_MAX_WORKFLOW_STEPS = 5
 
 MACHINE_OPERATOR_STATE_REQUESTED = "requested"
 MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST = "invalid_request"
@@ -280,7 +295,10 @@ MACHINE_OPERATOR_CANONICAL_OUTCOMES: frozenset[MachineOperatorLaneOutcome] = fro
         MACHINE_OPERATOR_OUTCOME_SUCCESS,
     }
 )
-MACHINE_OPERATOR_ALLOWED_STATE_TRANSITIONS: dict[MachineOperatorTransitionState, frozenset[MachineOperatorTransitionState]] = {
+MACHINE_OPERATOR_ALLOWED_STATE_TRANSITIONS: dict[
+    MachineOperatorTransitionState,
+    frozenset[MachineOperatorTransitionState],
+] = {
     MACHINE_OPERATOR_STATE_REQUESTED: frozenset(MACHINE_OPERATOR_CANONICAL_OUTCOMES),
     MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST: frozenset(),
     MACHINE_OPERATOR_OUTCOME_POLICY_VIOLATION: frozenset(),
@@ -295,7 +313,7 @@ _MACHINE_OPERATOR_STATUS_VALUES = {"ok", "partial", "failed", "aborted", "denied
 _MACHINE_OPERATOR_CAPABILITY_TIER_VALUES = {"read_only", "interactive", "mutating"}
 _MACHINE_OPERATOR_APPROVAL_MODE_VALUES = {"none", "required"}
 _MACHINE_OPERATOR_POLICY_LEVEL_VALUES = {"N0", "N1", "N2"}
-_MACHINE_OPERATOR_REQUEST_FIELDS = {
+_MACHINE_OPERATOR_LEGACY_REQUEST_FIELDS = {
     "intent_id",
     "correlation_id",
     "capability_name",
@@ -305,6 +323,20 @@ _MACHINE_OPERATOR_REQUEST_FIELDS = {
     "budget",
     "requested_side_effects",
     "approval_token",
+}
+_MACHINE_OPERATOR_WORKFLOW_REQUEST_FIELDS = {
+    "intent_id",
+    "correlation_id",
+    "workflow_steps",
+    "policy_context",
+    "budget",
+    "requested_side_effects",
+    "approval_token",
+}
+_MACHINE_OPERATOR_WORKFLOW_STEP_FIELDS = {
+    "capability_name",
+    "capability_tier",
+    "arguments",
 }
 _MACHINE_OPERATOR_POLICY_CONTEXT_FIELDS = {
     "policy_decision_ref",
@@ -325,6 +357,23 @@ _MACHINE_OPERATOR_RESPONSE_FIELDS = {
     "intent_id",
     "correlation_id",
     "status",
+    "observation",
+    "evidence_refs",
+    "consumed_budget",
+    "side_effects_declared",
+    "audit_event_ids",
+}
+_MACHINE_OPERATOR_WORKFLOW_RESPONSE_FIELDS = _MACHINE_OPERATOR_RESPONSE_FIELDS | {"step_results"}
+_MACHINE_OPERATOR_WORKFLOW_STEP_RESULT_FIELDS = {
+    "step_index",
+    "capability_name",
+    "capability_tier",
+    "status",
+    "lane_outcome",
+    "backend_status",
+    "backend_execution_attempted",
+    "backend_execution_performed",
+    "machine_action_performed",
     "observation",
     "evidence_refs",
     "consumed_budget",
@@ -461,6 +510,28 @@ class MachineOperatorIntentRequest:
 
 
 @dataclass(slots=True)
+class MachineOperatorWorkflowStep:
+    """One deterministic step inside a bounded MACHINE_OPERATOR workflow."""
+
+    capability_name: str
+    capability_tier: MachineOperatorCapabilityTier
+    arguments: dict[str, MachineOperatorValue]
+
+
+@dataclass(slots=True)
+class MachineOperatorWorkflowRequest:
+    """Workflow extension for MACHINE_OPERATOR without replacing single-step requests."""
+
+    intent_id: str
+    correlation_id: str
+    workflow_steps: list[MachineOperatorWorkflowStep]
+    policy_context: MachineOperatorPolicyContext
+    budget: MachineOperatorBudget
+    requested_side_effects: list[str] = field(default_factory=list)
+    approval_token: Optional[str] = None
+
+
+@dataclass(slots=True)
 class MachineOperatorIntentResponse:
     """Typed executor response returned from the MACHINE_OPERATOR lane."""
 
@@ -472,6 +543,41 @@ class MachineOperatorIntentResponse:
     consumed_budget: MachineOperatorBudgetUsage
     side_effects_declared: list[MachineOperatorSideEffectDeclaration]
     audit_event_ids: list[str]
+
+
+@dataclass(slots=True)
+class MachineOperatorWorkflowStepResult:
+    """Canonical outcome for one workflow step."""
+
+    step_index: int
+    capability_name: str
+    capability_tier: MachineOperatorCapabilityTier
+    status: MachineOperatorStatus
+    lane_outcome: MachineOperatorLaneOutcome
+    backend_status: str
+    backend_execution_attempted: bool
+    backend_execution_performed: bool
+    machine_action_performed: bool
+    observation: MachineOperatorObservation
+    evidence_refs: list[MachineOperatorEvidenceRef]
+    consumed_budget: MachineOperatorBudgetUsage
+    side_effects_declared: list[MachineOperatorSideEffectDeclaration]
+    audit_event_ids: list[str]
+
+
+@dataclass(slots=True)
+class MachineOperatorWorkflowResponse:
+    """Workflow response contract with explicit step-level outcomes."""
+
+    intent_id: str
+    correlation_id: str
+    status: MachineOperatorStatus
+    observation: MachineOperatorObservation
+    evidence_refs: list[MachineOperatorEvidenceRef]
+    consumed_budget: MachineOperatorBudgetUsage
+    side_effects_declared: list[MachineOperatorSideEffectDeclaration]
+    audit_event_ids: list[str]
+    step_results: list[MachineOperatorWorkflowStepResult]
 
 
 def _as_contract_dict(payload: Any, *, contract_name: str) -> tuple[dict[str, Any] | None, str]:
@@ -520,6 +626,13 @@ def _validate_non_negative_int(payload: dict[str, Any], field_name: str, contrac
     return ""
 
 
+def _validate_bool(payload: dict[str, Any], field_name: str, contract_name: str) -> str:
+    value = payload.get(field_name)
+    if not isinstance(value, bool):
+        return f"{contract_name} field '{field_name}' must be a bool"
+    return ""
+
+
 def _is_machine_operator_value(value: Any) -> bool:
     if value is None or isinstance(value, (str, int, float, bool)):
         return True
@@ -553,16 +666,255 @@ def _validate_string_list(payload: Any, *, field_name: str, contract_name: str) 
     return ""
 
 
-def validate_machine_operator_request(payload: Any) -> tuple[bool, str]:
-    """Validate the implementation-independent MACHINE_OPERATOR request contract."""
-
-    request, error = _as_contract_dict(payload, contract_name="MachineOperatorIntentRequest")
-    if request is None:
-        return False, error
+def _validate_policy_context_dict(policy_context: Any, *, contract_name: str) -> str:
+    if not isinstance(policy_context, dict):
+        return f"{contract_name} field 'policy_context' must be a dict"
 
     error = _validate_exact_fields(
+        policy_context,
+        field_names=_MACHINE_OPERATOR_POLICY_CONTEXT_FIELDS,
+        contract_name="MachineOperatorPolicyContext",
+    )
+    if error:
+        return error
+
+    error = _validate_non_empty_str(policy_context, "policy_decision_ref", "MachineOperatorPolicyContext")
+    if error:
+        return error
+
+    for field_name in ("governance_ref", "execution_mode"):
+        error = _validate_str(policy_context, field_name, "MachineOperatorPolicyContext")
+        if error:
+            return error
+
+    approval_mode = policy_context.get("approval_mode")
+    if approval_mode not in _MACHINE_OPERATOR_APPROVAL_MODE_VALUES:
+        return (
+            "MachineOperatorPolicyContext field 'approval_mode' must be one of "
+            f"{sorted(_MACHINE_OPERATOR_APPROVAL_MODE_VALUES)}"
+        )
+
+    for field_name in ("constraints", "allowlist_refs", "secret_refs"):
+        error = _validate_string_list(
+            policy_context.get(field_name),
+            field_name=field_name,
+            contract_name="MachineOperatorPolicyContext",
+        )
+        if error:
+            return error
+    return ""
+
+
+def _validate_budget_dict(budget: Any, *, contract_name: str) -> str:
+    if not isinstance(budget, dict):
+        return f"{contract_name} field 'budget' must be a dict"
+
+    error = _validate_exact_fields(
+        budget,
+        field_names=_MACHINE_OPERATOR_BUDGET_FIELDS,
+        contract_name="MachineOperatorBudget",
+    )
+    if error:
+        return error
+
+    for field_name in ("max_steps", "max_duration_ms", "max_output_bytes", "max_side_effects"):
+        error = _validate_non_negative_int(budget, field_name, "MachineOperatorBudget")
+        if error:
+            return error
+
+    if budget["max_steps"] <= 0:
+        return "MachineOperatorBudget field 'max_steps' must be greater than zero"
+    if budget["max_duration_ms"] <= 0:
+        return "MachineOperatorBudget field 'max_duration_ms' must be greater than zero"
+    return ""
+
+
+def _validate_observation_dict(observation: Any, *, contract_name: str) -> str:
+    if not isinstance(observation, dict):
+        return f"{contract_name} field 'observation' must be a dict"
+
+    error = _validate_exact_fields(
+        observation,
+        field_names=_MACHINE_OPERATOR_OBSERVATION_FIELDS,
+        contract_name="MachineOperatorObservation",
+    )
+    if error:
+        return error
+
+    error = _validate_non_empty_str(observation, "summary", "MachineOperatorObservation")
+    if error:
+        return error
+
+    error = _validate_str(observation, "detail", "MachineOperatorObservation")
+    if error:
+        return error
+
+    return _validate_json_object(
+        observation.get("structured_data"),
+        field_name="structured_data",
+        contract_name="MachineOperatorObservation",
+    )
+
+
+def _validate_evidence_refs(evidence_refs: Any, *, contract_name: str) -> str:
+    if not isinstance(evidence_refs, list):
+        return f"{contract_name} field 'evidence_refs' must be a list"
+    for evidence in evidence_refs:
+        if not isinstance(evidence, dict):
+            return "MachineOperatorEvidenceRef entries must be dicts"
+        error = _validate_exact_fields(
+            evidence,
+            field_names=_MACHINE_OPERATOR_EVIDENCE_FIELDS,
+            contract_name="MachineOperatorEvidenceRef",
+        )
+        if error:
+            return error
+        for field_name in ("ref_id", "evidence_type", "uri"):
+            error = _validate_non_empty_str(evidence, field_name, "MachineOperatorEvidenceRef")
+            if error:
+                return error
+        for field_name in ("description", "media_type", "digest"):
+            error = _validate_str(evidence, field_name, "MachineOperatorEvidenceRef")
+            if error:
+                return error
+    return ""
+
+
+def _validate_consumed_budget(consumed_budget: Any, *, contract_name: str) -> str:
+    if not isinstance(consumed_budget, dict):
+        return f"{contract_name} field 'consumed_budget' must be a dict"
+    error = _validate_exact_fields(
+        consumed_budget,
+        field_names=_MACHINE_OPERATOR_BUDGET_USAGE_FIELDS,
+        contract_name="MachineOperatorBudgetUsage",
+    )
+    if error:
+        return error
+    for field_name in ("steps", "duration_ms", "output_bytes", "side_effects"):
+        error = _validate_non_negative_int(consumed_budget, field_name, "MachineOperatorBudgetUsage")
+        if error:
+            return error
+    return ""
+
+
+def _validate_side_effects(side_effects: Any, *, contract_name: str) -> str:
+    if not isinstance(side_effects, list):
+        return f"{contract_name} field 'side_effects_declared' must be a list"
+    for side_effect in side_effects:
+        if not isinstance(side_effect, dict):
+            return "MachineOperatorSideEffectDeclaration entries must be dicts"
+        error = _validate_exact_fields(
+            side_effect,
+            field_names=_MACHINE_OPERATOR_SIDE_EFFECT_FIELDS,
+            contract_name="MachineOperatorSideEffectDeclaration",
+        )
+        if error:
+            return error
+        for field_name in ("effect_type", "target_domain", "description"):
+            error = _validate_non_empty_str(side_effect, field_name, "MachineOperatorSideEffectDeclaration")
+            if error:
+                return error
+        error = _validate_str(side_effect, "target_ref", "MachineOperatorSideEffectDeclaration")
+        if error:
+            return error
+    return ""
+
+
+def machine_operator_request_kind(payload: Any) -> MachineOperatorRequestKind:
+    request, _ = _as_contract_dict(payload, contract_name="MachineOperatorIntentRequest")
+    if isinstance(request, dict) and "workflow_steps" in request:
+        return "workflow"
+    return "single_step"
+
+
+def normalize_machine_operator_request(payload: Any) -> tuple[dict[str, Any] | None, str]:
+    request, error = _as_contract_dict(payload, contract_name="MachineOperatorIntentRequest")
+    if request is None:
+        return None, error
+
+    if "workflow_steps" in request:
+        return dict(request), ""
+
+    legacy_error = _validate_exact_fields(
         request,
-        field_names=_MACHINE_OPERATOR_REQUEST_FIELDS,
+        field_names=_MACHINE_OPERATOR_LEGACY_REQUEST_FIELDS,
+        contract_name="MachineOperatorIntentRequest",
+    )
+    if legacy_error:
+        return None, legacy_error
+
+    arguments = request.get("arguments")
+    if not isinstance(arguments, dict):
+        return None, "MachineOperatorIntentRequest field 'arguments' must be a dict[str, MachineOperatorValue]"
+
+    policy_context = request.get("policy_context")
+    if not isinstance(policy_context, dict):
+        return None, "MachineOperatorIntentRequest field 'policy_context' must be a dict"
+
+    budget = request.get("budget")
+    if not isinstance(budget, dict):
+        return None, "MachineOperatorIntentRequest field 'budget' must be a dict"
+
+    requested_side_effects = request.get("requested_side_effects")
+    if not isinstance(requested_side_effects, list):
+        return None, "MachineOperatorIntentRequest field 'requested_side_effects' must be a list[str]"
+
+    return (
+        {
+            "intent_id": request["intent_id"],
+            "correlation_id": request["correlation_id"],
+            "workflow_steps": [
+                {
+                    "capability_name": request["capability_name"],
+                    "capability_tier": request["capability_tier"],
+                    "arguments": dict(arguments),
+                }
+            ],
+            "policy_context": dict(policy_context),
+            "budget": dict(budget),
+            "requested_side_effects": list(requested_side_effects),
+            "approval_token": request.get("approval_token"),
+        },
+        "",
+    )
+
+
+def machine_operator_request_capabilities(payload: Any) -> list[str]:
+    request, error = normalize_machine_operator_request(payload)
+    if request is None:
+        raise ValueError(error)
+    return [str(step["capability_name"]) for step in request["workflow_steps"]]
+
+
+def machine_operator_request_step_count(payload: Any) -> int:
+    return len(machine_operator_request_capabilities(payload))
+
+
+def machine_operator_request_capability_name(payload: Any) -> str:
+    capabilities = machine_operator_request_capabilities(payload)
+    if machine_operator_request_kind(payload) == "single_step":
+        return capabilities[0]
+    if len(capabilities) == 1:
+        return capabilities[0]
+    return "workflow:" + "->".join(capabilities)
+
+
+def machine_operator_request_capability_tier(payload: Any) -> MachineOperatorCapabilityTier:
+    request, error = normalize_machine_operator_request(payload)
+    if request is None:
+        raise ValueError(error)
+    tiers = {str(step["capability_tier"]) for step in request["workflow_steps"]}
+    if "mutating" in tiers:
+        return "mutating"
+    if "interactive" in tiers:
+        return "interactive"
+    return "read_only"
+
+
+def _validate_single_step_request(request: dict[str, Any]) -> tuple[bool, str]:
+    error = _validate_exact_fields(
+        request,
+        field_names=_MACHINE_OPERATOR_LEGACY_REQUEST_FIELDS,
         contract_name="MachineOperatorIntentRequest",
     )
     if error:
@@ -580,67 +932,19 @@ def validate_machine_operator_request(payload: Any) -> tuple[bool, str]:
             f"{sorted(_MACHINE_OPERATOR_CAPABILITY_TIER_VALUES)}"
         )
 
-    arguments = request.get("arguments")
     error = _validate_json_object(
-        arguments,
+        request.get("arguments"),
         field_name="arguments",
         contract_name="MachineOperatorIntentRequest",
     )
     if error:
         return False, error
 
-    policy_context = request.get("policy_context")
-    if not isinstance(policy_context, dict):
-        return False, "MachineOperatorIntentRequest field 'policy_context' must be a dict"
-
-    error = _validate_exact_fields(
-        policy_context,
-        field_names=_MACHINE_OPERATOR_POLICY_CONTEXT_FIELDS,
-        contract_name="MachineOperatorPolicyContext",
-    )
+    error = _validate_policy_context_dict(request.get("policy_context"), contract_name="MachineOperatorIntentRequest")
     if error:
         return False, error
 
-    error = _validate_non_empty_str(policy_context, "policy_decision_ref", "MachineOperatorPolicyContext")
-    if error:
-        return False, error
-
-    for field_name in ("governance_ref", "execution_mode"):
-        error = _validate_str(policy_context, field_name, "MachineOperatorPolicyContext")
-        if error:
-            return False, error
-
-    approval_mode = policy_context.get("approval_mode")
-    if approval_mode not in _MACHINE_OPERATOR_APPROVAL_MODE_VALUES:
-        return False, (
-            "MachineOperatorPolicyContext field 'approval_mode' must be one of "
-            f"{sorted(_MACHINE_OPERATOR_APPROVAL_MODE_VALUES)}"
-        )
-
-    error = _validate_string_list(
-        policy_context.get("constraints"),
-        field_name="constraints",
-        contract_name="MachineOperatorPolicyContext",
-    )
-    if error:
-        return False, error
-
-    error = _validate_string_list(
-        policy_context.get("allowlist_refs"),
-        field_name="allowlist_refs",
-        contract_name="MachineOperatorPolicyContext",
-    )
-    if error:
-        return False, error
-
-    error = _validate_string_list(
-        policy_context.get("secret_refs"),
-        field_name="secret_refs",
-        contract_name="MachineOperatorPolicyContext",
-    )
-    if error:
-        return False, error
-
+    approval_mode = request["policy_context"]["approval_mode"]
     approval_token = request.get("approval_token")
     if approval_mode == "required":
         if not isinstance(approval_token, str) or not approval_token.strip():
@@ -662,166 +966,337 @@ def validate_machine_operator_request(payload: Any) -> tuple[bool, str]:
     )
     if error:
         return False, error
-    requested_side_effects = request["requested_side_effects"]
 
-    budget = request.get("budget")
-    if not isinstance(budget, dict):
-        return False, "MachineOperatorIntentRequest field 'budget' must be a dict"
-
-    error = _validate_exact_fields(
-        budget,
-        field_names=_MACHINE_OPERATOR_BUDGET_FIELDS,
-        contract_name="MachineOperatorBudget",
-    )
+    error = _validate_budget_dict(request.get("budget"), contract_name="MachineOperatorIntentRequest")
     if error:
         return False, error
 
-    for field_name in ("max_steps", "max_duration_ms", "max_output_bytes", "max_side_effects"):
-        error = _validate_non_negative_int(budget, field_name, "MachineOperatorBudget")
-        if error:
-            return False, error
-
-    if budget["max_steps"] <= 0:
-        return False, "MachineOperatorBudget field 'max_steps' must be greater than zero"
-    if budget["max_duration_ms"] <= 0:
-        return False, "MachineOperatorBudget field 'max_duration_ms' must be greater than zero"
-    if len(requested_side_effects) > budget["max_side_effects"]:
+    if len(request["requested_side_effects"]) > request["budget"]["max_side_effects"]:
         return False, (
             "MachineOperatorIntentRequest requested_side_effects cannot exceed "
             "MachineOperatorBudget.max_side_effects"
         )
-
     return True, ""
 
 
-def validate_machine_operator_response(payload: Any) -> tuple[bool, str]:
-    """Validate the implementation-independent MACHINE_OPERATOR response contract."""
-
-    response, error = _as_contract_dict(payload, contract_name="MachineOperatorIntentResponse")
-    if response is None:
-        return False, error
+def _validate_workflow_step(
+    workflow_step: Any,
+    *,
+    step_index: int,
+) -> tuple[bool, str]:
+    if not isinstance(workflow_step, dict):
+        return False, f"MachineOperatorWorkflowStep at index {step_index} must be a dict"
 
     error = _validate_exact_fields(
-        response,
-        field_names=_MACHINE_OPERATOR_RESPONSE_FIELDS,
-        contract_name="MachineOperatorIntentResponse",
+        workflow_step,
+        field_names=_MACHINE_OPERATOR_WORKFLOW_STEP_FIELDS,
+        contract_name="MachineOperatorWorkflowStep",
+    )
+    if error:
+        return False, error
+
+    error = _validate_non_empty_str(workflow_step, "capability_name", "MachineOperatorWorkflowStep")
+    if error:
+        return False, error
+
+    if workflow_step["capability_name"] not in MACHINE_OPERATOR_ALLOWED_CAPABILITIES:
+        return False, (
+            "MachineOperatorWorkflowStep field 'capability_name' must be one of "
+            f"{sorted(MACHINE_OPERATOR_ALLOWED_CAPABILITIES)}"
+        )
+
+    capability_tier = workflow_step.get("capability_tier")
+    if capability_tier not in _MACHINE_OPERATOR_CAPABILITY_TIER_VALUES:
+        return False, (
+            "MachineOperatorWorkflowStep field 'capability_tier' must be one of "
+            f"{sorted(_MACHINE_OPERATOR_CAPABILITY_TIER_VALUES)}"
+        )
+
+    error = _validate_json_object(
+        workflow_step.get("arguments"),
+        field_name="arguments",
+        contract_name="MachineOperatorWorkflowStep",
+    )
+    if error:
+        return False, error
+    return True, ""
+
+
+def _validate_workflow_request(request: dict[str, Any]) -> tuple[bool, str]:
+    error = _validate_exact_fields(
+        request,
+        field_names=_MACHINE_OPERATOR_WORKFLOW_REQUEST_FIELDS,
+        contract_name="MachineOperatorWorkflowRequest",
     )
     if error:
         return False, error
 
     for field_name in ("intent_id", "correlation_id"):
-        error = _validate_non_empty_str(response, field_name, "MachineOperatorIntentResponse")
+        error = _validate_non_empty_str(request, field_name, "MachineOperatorWorkflowRequest")
+        if error:
+            return False, error
+
+    workflow_steps = request.get("workflow_steps")
+    if not isinstance(workflow_steps, list) or not workflow_steps:
+        return False, "MachineOperatorWorkflowRequest field 'workflow_steps' must be a non-empty list"
+    if len(workflow_steps) > MACHINE_OPERATOR_MAX_WORKFLOW_STEPS:
+        return False, (
+            "MachineOperatorWorkflowRequest field 'workflow_steps' exceeds the explicit workflow limit "
+            f"of {MACHINE_OPERATOR_MAX_WORKFLOW_STEPS}"
+        )
+    for step_index, workflow_step in enumerate(workflow_steps):
+        ok, error = _validate_workflow_step(workflow_step, step_index=step_index)
+        if not ok:
+            return False, error
+
+    error = _validate_policy_context_dict(
+        request.get("policy_context"),
+        contract_name="MachineOperatorWorkflowRequest",
+    )
+    if error:
+        return False, error
+
+    approval_mode = request["policy_context"]["approval_mode"]
+    approval_token = request.get("approval_token")
+    if approval_mode == "required":
+        if not isinstance(approval_token, str) or not approval_token.strip():
+            return False, (
+                "MachineOperatorWorkflowRequest field 'approval_token' is required when "
+                "policy_context.approval_mode == 'required'"
+            )
+    elif approval_token is not None:
+        if not isinstance(approval_token, str) or not approval_token.strip():
+            return False, (
+                "MachineOperatorWorkflowRequest field 'approval_token' must be a non-empty "
+                "string when present"
+            )
+
+    error = _validate_string_list(
+        request.get("requested_side_effects"),
+        field_name="requested_side_effects",
+        contract_name="MachineOperatorWorkflowRequest",
+    )
+    if error:
+        return False, error
+
+    error = _validate_budget_dict(request.get("budget"), contract_name="MachineOperatorWorkflowRequest")
+    if error:
+        return False, error
+
+    if len(workflow_steps) > request["budget"]["max_steps"]:
+        return False, (
+            "MachineOperatorWorkflowRequest workflow_steps cannot exceed "
+            "MachineOperatorBudget.max_steps"
+        )
+    if len(request["requested_side_effects"]) > request["budget"]["max_side_effects"]:
+        return False, (
+            "MachineOperatorWorkflowRequest requested_side_effects cannot exceed "
+            "MachineOperatorBudget.max_side_effects"
+        )
+    return True, ""
+
+
+def validate_machine_operator_request(payload: Any) -> tuple[bool, str]:
+    """Validate single-step or workflow MACHINE_OPERATOR requests."""
+
+    request, error = _as_contract_dict(payload, contract_name="MachineOperatorIntentRequest")
+    if request is None:
+        return False, error
+    if "workflow_steps" in request:
+        return _validate_workflow_request(request)
+    return _validate_single_step_request(request)
+
+
+def _validate_response_common(
+    response: dict[str, Any],
+    *,
+    contract_name: str,
+    field_names: set[str],
+) -> tuple[bool, str]:
+    error = _validate_exact_fields(
+        response,
+        field_names=field_names,
+        contract_name=contract_name,
+    )
+    if error:
+        return False, error
+
+    for field_name in ("intent_id", "correlation_id"):
+        error = _validate_non_empty_str(response, field_name, contract_name)
         if error:
             return False, error
 
     status = response.get("status")
     if status not in _MACHINE_OPERATOR_STATUS_VALUES:
         return False, (
-            "MachineOperatorIntentResponse field 'status' must be one of "
+            f"{contract_name} field 'status' must be one of "
             f"{sorted(_MACHINE_OPERATOR_STATUS_VALUES)}"
         )
 
-    observation = response.get("observation")
-    if not isinstance(observation, dict):
-        return False, "MachineOperatorIntentResponse field 'observation' must be a dict"
-
-    error = _validate_exact_fields(
-        observation,
-        field_names=_MACHINE_OPERATOR_OBSERVATION_FIELDS,
-        contract_name="MachineOperatorObservation",
-    )
+    error = _validate_observation_dict(response.get("observation"), contract_name=contract_name)
     if error:
         return False, error
 
-    error = _validate_non_empty_str(observation, "summary", "MachineOperatorObservation")
+    error = _validate_evidence_refs(response.get("evidence_refs"), contract_name=contract_name)
     if error:
         return False, error
 
-    error = _validate_str(observation, "detail", "MachineOperatorObservation")
+    error = _validate_consumed_budget(response.get("consumed_budget"), contract_name=contract_name)
     if error:
         return False, error
 
-    error = _validate_json_object(
-        observation.get("structured_data"),
-        field_name="structured_data",
-        contract_name="MachineOperatorObservation",
-    )
+    error = _validate_side_effects(response.get("side_effects_declared"), contract_name=contract_name)
     if error:
         return False, error
 
-    evidence_refs = response.get("evidence_refs")
-    if not isinstance(evidence_refs, list):
-        return False, "MachineOperatorIntentResponse field 'evidence_refs' must be a list"
-    for evidence in evidence_refs:
-        if not isinstance(evidence, dict):
-            return False, "MachineOperatorEvidenceRef entries must be dicts"
-        error = _validate_exact_fields(
-            evidence,
-            field_names=_MACHINE_OPERATOR_EVIDENCE_FIELDS,
-            contract_name="MachineOperatorEvidenceRef",
-        )
-        if error:
-            return False, error
-        for field_name in ("ref_id", "evidence_type", "uri"):
-            error = _validate_non_empty_str(evidence, field_name, "MachineOperatorEvidenceRef")
-            if error:
-                return False, error
-        for field_name in ("description", "media_type", "digest"):
-            error = _validate_str(evidence, field_name, "MachineOperatorEvidenceRef")
-            if error:
-                return False, error
-
-    consumed_budget = response.get("consumed_budget")
-    if not isinstance(consumed_budget, dict):
-        return False, "MachineOperatorIntentResponse field 'consumed_budget' must be a dict"
-    error = _validate_exact_fields(
-        consumed_budget,
-        field_names=_MACHINE_OPERATOR_BUDGET_USAGE_FIELDS,
-        contract_name="MachineOperatorBudgetUsage",
-    )
-    if error:
-        return False, error
-    for field_name in ("steps", "duration_ms", "output_bytes", "side_effects"):
-        error = _validate_non_negative_int(consumed_budget, field_name, "MachineOperatorBudgetUsage")
-        if error:
-            return False, error
-
-    side_effects = response.get("side_effects_declared")
-    if not isinstance(side_effects, list):
-        return False, "MachineOperatorIntentResponse field 'side_effects_declared' must be a list"
-    for side_effect in side_effects:
-        if not isinstance(side_effect, dict):
-            return False, "MachineOperatorSideEffectDeclaration entries must be dicts"
-        error = _validate_exact_fields(
-            side_effect,
-            field_names=_MACHINE_OPERATOR_SIDE_EFFECT_FIELDS,
-            contract_name="MachineOperatorSideEffectDeclaration",
-        )
-        if error:
-            return False, error
-        for field_name in ("effect_type", "target_domain", "description"):
-            error = _validate_non_empty_str(side_effect, field_name, "MachineOperatorSideEffectDeclaration")
-            if error:
-                return False, error
-        error = _validate_str(side_effect, "target_ref", "MachineOperatorSideEffectDeclaration")
-        if error:
-            return False, error
-
-    audit_event_ids = response.get("audit_event_ids")
     error = _validate_string_list(
-        audit_event_ids,
+        response.get("audit_event_ids"),
         field_name="audit_event_ids",
-        contract_name="MachineOperatorIntentResponse",
+        contract_name=contract_name,
     )
     if error:
         return False, error
 
+    consumed_budget = response["consumed_budget"]
+    side_effects = response["side_effects_declared"]
     if consumed_budget["side_effects"] < len(side_effects):
         return False, (
             "MachineOperatorBudgetUsage field 'side_effects' cannot be less than the number "
             "of declared side effects"
         )
+    return True, ""
 
+
+def _validate_workflow_step_result(step_result: Any, *, expected_index: int) -> tuple[bool, str]:
+    if not isinstance(step_result, dict):
+        return False, "MachineOperatorWorkflowStepResult entries must be dicts"
+
+    error = _validate_exact_fields(
+        step_result,
+        field_names=_MACHINE_OPERATOR_WORKFLOW_STEP_RESULT_FIELDS,
+        contract_name="MachineOperatorWorkflowStepResult",
+    )
+    if error:
+        return False, error
+
+    error = _validate_non_negative_int(step_result, "step_index", "MachineOperatorWorkflowStepResult")
+    if error:
+        return False, error
+    if step_result["step_index"] != expected_index:
+        return False, "MachineOperatorWorkflowStepResult step_index values must be contiguous from zero"
+
+    error = _validate_non_empty_str(step_result, "capability_name", "MachineOperatorWorkflowStepResult")
+    if error:
+        return False, error
+    if step_result["capability_name"] not in MACHINE_OPERATOR_ALLOWED_CAPABILITIES:
+        return False, (
+            "MachineOperatorWorkflowStepResult field 'capability_name' must be one of "
+            f"{sorted(MACHINE_OPERATOR_ALLOWED_CAPABILITIES)}"
+        )
+
+    capability_tier = step_result.get("capability_tier")
+    if capability_tier not in _MACHINE_OPERATOR_CAPABILITY_TIER_VALUES:
+        return False, (
+            "MachineOperatorWorkflowStepResult field 'capability_tier' must be one of "
+            f"{sorted(_MACHINE_OPERATOR_CAPABILITY_TIER_VALUES)}"
+        )
+
+    status = step_result.get("status")
+    if status not in _MACHINE_OPERATOR_STATUS_VALUES:
+        return False, (
+            "MachineOperatorWorkflowStepResult field 'status' must be one of "
+            f"{sorted(_MACHINE_OPERATOR_STATUS_VALUES)}"
+        )
+
+    if not is_machine_operator_lane_outcome(str(step_result.get("lane_outcome", ""))):
+        return False, "MachineOperatorWorkflowStepResult field 'lane_outcome' must be canonical"
+
+    error = _validate_non_empty_str(step_result, "backend_status", "MachineOperatorWorkflowStepResult")
+    if error:
+        return False, error
+
+    for field_name in (
+        "backend_execution_attempted",
+        "backend_execution_performed",
+        "machine_action_performed",
+    ):
+        error = _validate_bool(step_result, field_name, "MachineOperatorWorkflowStepResult")
+        if error:
+            return False, error
+
+    error = _validate_observation_dict(
+        step_result.get("observation"),
+        contract_name="MachineOperatorWorkflowStepResult",
+    )
+    if error:
+        return False, error
+
+    error = _validate_evidence_refs(
+        step_result.get("evidence_refs"),
+        contract_name="MachineOperatorWorkflowStepResult",
+    )
+    if error:
+        return False, error
+
+    error = _validate_consumed_budget(
+        step_result.get("consumed_budget"),
+        contract_name="MachineOperatorWorkflowStepResult",
+    )
+    if error:
+        return False, error
+
+    error = _validate_side_effects(
+        step_result.get("side_effects_declared"),
+        contract_name="MachineOperatorWorkflowStepResult",
+    )
+    if error:
+        return False, error
+
+    error = _validate_string_list(
+        step_result.get("audit_event_ids"),
+        field_name="audit_event_ids",
+        contract_name="MachineOperatorWorkflowStepResult",
+    )
+    if error:
+        return False, error
+    return True, ""
+
+
+def validate_machine_operator_response(payload: Any) -> tuple[bool, str]:
+    """Validate single-step or workflow MACHINE_OPERATOR responses."""
+
+    response, error = _as_contract_dict(payload, contract_name="MachineOperatorIntentResponse")
+    if response is None:
+        return False, error
+
+    if "step_results" not in response:
+        return _validate_response_common(
+            response,
+            contract_name="MachineOperatorIntentResponse",
+            field_names=_MACHINE_OPERATOR_RESPONSE_FIELDS,
+        )
+
+    ok, error = _validate_response_common(
+        response,
+        contract_name="MachineOperatorWorkflowResponse",
+        field_names=_MACHINE_OPERATOR_WORKFLOW_RESPONSE_FIELDS,
+    )
+    if not ok:
+        return False, error
+
+    step_results = response.get("step_results")
+    if not isinstance(step_results, list):
+        return False, "MachineOperatorWorkflowResponse field 'step_results' must be a list"
+    if len(step_results) > MACHINE_OPERATOR_MAX_WORKFLOW_STEPS:
+        return False, (
+            "MachineOperatorWorkflowResponse field 'step_results' exceeds the explicit workflow limit "
+            f"of {MACHINE_OPERATOR_MAX_WORKFLOW_STEPS}"
+        )
+
+    for expected_index, step_result in enumerate(step_results):
+        ok, error = _validate_workflow_step_result(step_result, expected_index=expected_index)
+        if not ok:
+            return False, error
     return True, ""
 
 
