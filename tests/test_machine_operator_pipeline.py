@@ -125,6 +125,10 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         self.assertFalse(result["data"]["session_reused"])
         self.assertFalse(result["data"]["session_persisted"])
         self.assertFalse(result["data"]["session_retained_after_terminal"])
+        self.assertTrue(result["data"]["evidence_expected"])
+        self.assertTrue(result["data"]["evidence_available"])
+        self.assertEqual(result["data"]["evidence_count"], 1)
+        self.assertEqual(result["data"]["evidence_semantics"], "evidence_present")
         self.assertEqual(
             result["data"]["machine_operator_response"]["observation"]["structured_data"]["cleanup_semantics"],
             "no_reusable_session_retained",
@@ -260,6 +264,7 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         self.assertEqual(result["data"]["machine_operator_response"]["evidence_refs"], [])
         self.assertEqual(result["data"]["machine_operator_response"]["side_effects_declared"], [])
         self.assertEqual(result["data"]["session_mode"], "ephemeral")
+        self.assertEqual(result["data"]["evidence_semantics"], "failure_before_evidence")
         self.assertEqual(
             result["data"]["machine_operator_response"]["observation"]["structured_data"]["evidence_count"],
             0,
@@ -469,6 +474,7 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["type"], "MachineOperatorExecutionPartial")
         self.assertEqual(result["data"]["lane_outcome"], "execution_partial")
+        self.assertEqual(result["data"]["evidence_semantics"], "partial_evidence")
         self.assertIn(MachineOperatorAuditEventType.MO_STEP_PARTIAL, event_types)
         self.assertNotIn(MachineOperatorAuditEventType.MO_STEP_COMPLETED, event_types)
         self.assertIn(MachineOperatorAuditEventType.MO_EPHEMERAL_SCOPE_CLOSED, event_types)
@@ -488,6 +494,7 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         self.assertFalse(result["data"]["backend_execution_attempted"])
         self.assertFalse(result["data"]["backend_execution_performed"])
         self.assertFalse(result["data"]["machine_action_performed"])
+        self.assertEqual(result["data"]["evidence_semantics"], "no_evidence_expected")
         self.assertEqual(result["data"]["machine_operator_response"]["evidence_refs"], [])
         self.assertEqual(result["data"]["machine_operator_response"]["side_effects_declared"], [])
         self.assertEqual(
@@ -529,6 +536,7 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         self.assertEqual(result["data"]["lane_outcome"], "execution_aborted")
         self.assertEqual(result["data"]["machine_operator_response"]["status"], "aborted")
         self.assertFalse(result["data"]["backend_execution_attempted"])
+        self.assertEqual(result["data"]["evidence_semantics"], "aborted_before_evidence")
         self.assertIn(MachineOperatorAuditEventType.MO_ABORTED, event_types)
         self.assertNotIn(MachineOperatorAuditEventType.MO_STEP_COMPLETED, event_types)
         self.assertIn(MachineOperatorAuditEventType.MO_EPHEMERAL_SCOPE_CLOSED, event_types)
@@ -550,6 +558,7 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         self.assertTrue(result["data"]["backend_execution_attempted"])
         self.assertFalse(result["data"]["backend_execution_performed"])
         self.assertEqual(result["data"]["session_mode"], "ephemeral")
+        self.assertEqual(result["data"]["evidence_semantics"], "aborted_before_evidence")
 
     def test_invalid_budget_fails_before_execution(self):
         from assistant_os.pipelines.machine_operator_pipeline import execute
@@ -723,6 +732,92 @@ class TestMachineOperatorPipeline(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(result["error"]["type"], "MachineOperatorExecutionFailed")
         self.assertEqual(result["data"]["backend_status"], "invalid_backend_response")
+
+    def test_duplicate_evidence_uri_fails_closed_in_pipeline(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        response_body = {
+            "status": "ok",
+            "final_url": "https://example.test/",
+            "observation": {
+                "summary": "Snapshot captured.",
+                "detail": "Duplicate evidence URI should fail.",
+                "structured_data": {"page_title": "Example"},
+            },
+            "evidence_refs": [
+                {
+                    "ref_id": "evidence-001",
+                    "evidence_type": "artifact",
+                    "uri": "memory://snapshot/001",
+                },
+                {
+                    "ref_id": "evidence-002",
+                    "evidence_type": "artifact",
+                    "uri": "memory://snapshot/001",
+                },
+            ],
+            "consumed_budget": {
+                "steps": 1,
+                "duration_ms": 120,
+                "output_bytes": 128,
+                "side_effects": 0,
+            },
+            "side_effects_declared": [],
+        }
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(response_body),
+        ):
+            result = execute(self._plan(), "ctx-machine-duplicate-evidence-uri")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["type"], "MachineOperatorExecutionFailed")
+        self.assertEqual(result["data"]["backend_status"], "invalid_backend_response")
+
+    def test_navigate_success_surfaces_no_evidence_expected(self):
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+
+        request = self._request(
+            capability_name="browser.navigate",
+            capability_tier="interactive",
+            arguments={"url": "https://example.test/"},
+            approval_token="approval-001",
+        )
+        request.policy_context.approval_mode = "required"
+        request.budget.max_steps = 3
+        request.budget.max_duration_ms = 15000
+        response_body = {
+            "status": "ok",
+            "final_url": "https://example.test/",
+            "observation": {
+                "summary": "Navigation completed.",
+                "detail": "Reached the allowlisted destination.",
+                "structured_data": {"http_status": 200},
+            },
+            "evidence_refs": [],
+            "consumed_budget": {
+                "steps": 1,
+                "duration_ms": 80,
+                "output_bytes": 64,
+                "side_effects": 0,
+            },
+            "side_effects_declared": [],
+            "backend_execution_performed": True,
+            "machine_action_performed": True,
+        }
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(response_body),
+        ):
+            result = execute(self._plan(request), "ctx-machine-navigate-no-evidence")
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(result["data"]["evidence_expected"])
+        self.assertFalse(result["data"]["evidence_available"])
+        self.assertEqual(result["data"]["evidence_count"], 0)
+        self.assertEqual(result["data"]["evidence_semantics"], "no_evidence_expected")
 
     def test_success_path_does_not_retain_session_state_between_requests(self):
         from assistant_os.pipelines.machine_operator_pipeline import execute

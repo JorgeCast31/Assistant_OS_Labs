@@ -626,13 +626,33 @@ def _finalize_terminal_result(
     if not is_machine_operator_transition_allowed(MACHINE_OPERATOR_STATE_REQUESTED, lane_outcome):
         raise ValueError(f"Unsupported MACHINE_OPERATOR lane_outcome: {lane_outcome}")
 
+    evidence_expected = _evidence_expected(
+        capability_name=request_dict["capability_name"],
+        status=result.status,
+        evidence_refs=result.evidence_refs,
+    )
+    evidence_semantics = _evidence_semantics(
+        capability_name=request_dict["capability_name"],
+        status=result.status,
+        evidence_refs=result.evidence_refs,
+    )
     result.metadata.update(_ephemeral_session_metadata())
+    result.metadata.update(
+        {
+            "evidence_expected": evidence_expected,
+            "evidence_available": bool(result.evidence_refs),
+            "evidence_count": len(result.evidence_refs),
+            "evidence_semantics": evidence_semantics,
+        }
+    )
     structured_data = dict(result.observation.structured_data)
     structured_data.update(_ephemeral_session_structured_data())
     structured_data.update(
         {
+            "evidence_expected": evidence_expected,
             "evidence_available": bool(result.evidence_refs),
             "evidence_count": len(result.evidence_refs),
+            "evidence_semantics": evidence_semantics,
         }
     )
     result.observation = MachineOperatorObservation(
@@ -677,6 +697,42 @@ def _ephemeral_session_structured_data() -> dict[str, Any]:
         "session_retained_after_terminal": False,
         "cleanup_semantics": "no_reusable_session_retained",
     }
+
+
+def _evidence_expected(
+    *,
+    capability_name: str,
+    status: str,
+    evidence_refs: list[MachineOperatorEvidenceRef],
+) -> bool:
+    if evidence_refs:
+        return True
+    if status in {"failed", "aborted", "denied"}:
+        return False
+    return capability_name in {CAPABILITY_BROWSER_SNAPSHOT, CAPABILITY_BROWSER_SCREENSHOT}
+
+
+def _evidence_semantics(
+    *,
+    capability_name: str,
+    status: str,
+    evidence_refs: list[MachineOperatorEvidenceRef],
+) -> str:
+    if evidence_refs:
+        if status == "partial":
+            return "partial_evidence"
+        return "evidence_present"
+    if status == "aborted":
+        return "aborted_before_evidence"
+    if status == "failed":
+        return "failure_before_evidence"
+    if status in {"ok", "denied", "partial"} and not _evidence_expected(
+        capability_name=capability_name,
+        status=status,
+        evidence_refs=evidence_refs,
+    ):
+        return "no_evidence_expected"
+    return "no_evidence_expected"
 
 
 def _validate_context_consistency(

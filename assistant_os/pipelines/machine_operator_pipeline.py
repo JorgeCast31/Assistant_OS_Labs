@@ -369,6 +369,10 @@ def _build_domain_data(
         "session_persisted": metadata.get("session_persisted", False),
         "session_retained_after_terminal": metadata.get("session_retained_after_terminal", False),
         "cleanup_semantics": metadata.get("cleanup_semantics", ""),
+        "evidence_expected": metadata.get("evidence_expected", False),
+        "evidence_available": metadata.get("evidence_available", False),
+        "evidence_count": metadata.get("evidence_count", 0),
+        "evidence_semantics": metadata.get("evidence_semantics", ""),
         "machine_operator_response": asdict(response),
     }
 
