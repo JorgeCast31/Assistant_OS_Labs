@@ -49,7 +49,13 @@ from ..mso.contracts import (
     MachineOperatorBudgetUsage,
     MachineOperatorIntentResponse,
     MachineOperatorObservation,
+    MachineOperatorWorkflowResponse,
     is_machine_operator_transition_allowed,
+    machine_operator_request_capabilities,
+    machine_operator_request_capability_name,
+    machine_operator_request_capability_tier,
+    machine_operator_request_kind,
+    machine_operator_request_step_count,
     validate_machine_operator_response,
 )
 from ..mso.machine_operator_policy import enforce_machine_operator_request
@@ -158,10 +164,15 @@ def _dispatch(plan: dict, context_id: str) -> DomainResult:
         )
 
     if not decision.allowed:
+        is_workflow_request = machine_operator_request_kind(request) == "workflow"
         response = _build_stub_response(
             request=request,
-            status="denied",
-            summary="MACHINE_OPERATOR request denied by policy.",
+            status="aborted" if is_workflow_request else "denied",
+            summary=(
+                "MACHINE_OPERATOR workflow aborted by policy before execution."
+                if is_workflow_request
+                else "MACHINE_OPERATOR request denied by policy."
+            ),
             detail=decision.message,
             lane_outcome=MACHINE_OPERATOR_OUTCOME_POLICY_VIOLATION,
         )
@@ -241,8 +252,8 @@ def _build_stub_response(
     summary: str,
     detail: str,
     lane_outcome: str,
-) -> MachineOperatorIntentResponse:
-    response = MachineOperatorIntentResponse(
+) -> MachineOperatorIntentResponse | MachineOperatorWorkflowResponse:
+    response_kwargs = dict(
         intent_id=request["intent_id"],
         correlation_id=request["correlation_id"],
         status=status,
@@ -266,6 +277,13 @@ def _build_stub_response(
         side_effects_declared=[],
         audit_event_ids=[],
     )
+    if machine_operator_request_kind(request) == "workflow":
+        response = MachineOperatorWorkflowResponse(
+            **response_kwargs,
+            step_results=[],
+        )
+    else:
+        response = MachineOperatorIntentResponse(**response_kwargs)
     ok, error = validate_machine_operator_response(response)
     if not ok:
         raise ValueError(f"Invalid MachineOperatorIntentResponse stub: {error}")
@@ -276,8 +294,8 @@ def _build_response_from_adapter_result(
     *,
     request: dict[str, Any],
     adapter_result: MachineOperatorAdapterResult,
-) -> MachineOperatorIntentResponse:
-    response = MachineOperatorIntentResponse(
+) -> MachineOperatorIntentResponse | MachineOperatorWorkflowResponse:
+    response_kwargs = dict(
         intent_id=request["intent_id"],
         correlation_id=request["correlation_id"],
         status=adapter_result.status,
@@ -287,6 +305,13 @@ def _build_response_from_adapter_result(
         side_effects_declared=adapter_result.side_effects_declared,
         audit_event_ids=list(adapter_result.audit_event_ids),
     )
+    if machine_operator_request_kind(request) == "workflow":
+        response = MachineOperatorWorkflowResponse(
+            **response_kwargs,
+            step_results=list(adapter_result.metadata.get("step_results", [])),
+        )
+    else:
+        response = MachineOperatorIntentResponse(**response_kwargs)
     ok, error = validate_machine_operator_response(response)
     if not ok:
         raise ValueError(f"Invalid MachineOperatorIntentResponse from adapter: {error}")
@@ -305,8 +330,8 @@ def _build_adapter_context(
         execution_id=execution_id,
         trace_id=plan.get("trace_id", ""),
         policy_decision_ref=request["policy_context"]["policy_decision_ref"],
-        capability_name=request["capability_name"],
-        capability_tier=request["capability_tier"],
+        capability_name=machine_operator_request_capability_name(request),
+        capability_tier=machine_operator_request_capability_tier(request),
         policy_reason_code=decision.reason_code,
         policy_message=decision.message,
     )
@@ -318,7 +343,7 @@ def _build_domain_data(
     execution_id: str,
     request: dict[str, Any],
     decision,
-    response: MachineOperatorIntentResponse,
+    response: MachineOperatorIntentResponse | MachineOperatorWorkflowResponse,
     lane_outcome: str,
     adapter_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -335,7 +360,10 @@ def _build_domain_data(
         "backend_error_type": "",
         "circuit_state": "closed",
     }
-    return {
+    request_kind = machine_operator_request_kind(request)
+    capability_name = machine_operator_request_capability_name(request)
+    capability_tier = machine_operator_request_capability_tier(request)
+    domain_data = {
         "type": RESULT_TYPE_MACHINE_OPERATOR_ACTION,
         "action": action,
         "lane": "MACHINE_OPERATOR",
@@ -343,8 +371,8 @@ def _build_domain_data(
         "execution_id": execution_id,
         "intent_id": request["intent_id"],
         "correlation_id": request["correlation_id"],
-        "capability_name": request["capability_name"],
-        "capability_tier": request["capability_tier"],
+        "capability_name": capability_name,
+        "capability_tier": capability_tier,
         "contract_validation": {
             "ok": True,
             "reason_code": "valid_request",
@@ -378,7 +406,17 @@ def _build_domain_data(
         "session_retained_after_terminal": metadata.get("session_retained_after_terminal", False),
         "cleanup_semantics": metadata.get("cleanup_semantics", ""),
         "machine_operator_response": asdict(response),
+        "request_kind": request_kind,
     }
+    if request_kind == "workflow":
+        domain_data.update(
+            {
+                "workflow_step_count": machine_operator_request_step_count(request),
+                "workflow_capabilities": machine_operator_request_capabilities(request),
+                "step_results": list(metadata.get("step_results", [])),
+            }
+        )
+    return domain_data
 
 
 def _get_machine_operator_adapter() -> MachineOperatorAdapter:

@@ -68,6 +68,61 @@ class TestMachineOperatorAdapter(unittest.TestCase):
             policy_message="MACHINE_OPERATOR capability allowed: browser.snapshot",
         )
 
+    def _workflow_request(self, **overrides):
+        request = {
+            "intent_id": "intent-workflow-adapter-001",
+            "correlation_id": "corr-workflow-adapter-001",
+            "workflow_steps": [
+                {
+                    "capability_name": "browser.snapshot",
+                    "capability_tier": "read_only",
+                    "arguments": {"url": "https://example.test"},
+                },
+                {
+                    "capability_name": "browser.read_visible_text",
+                    "capability_tier": "read_only",
+                    "arguments": {"url": "https://example.test"},
+                },
+            ],
+            "policy_context": {
+                "policy_decision_ref": "policy-workflow-adapter-001",
+                "governance_ref": "gov-workflow-adapter-001",
+                "execution_mode": "auto",
+                "approval_mode": "none",
+                "constraints": ["bounded_scope"],
+                "allowlist_refs": ["allowlist:web-safe"],
+                "secret_refs": [],
+            },
+            "budget": {
+                "max_steps": 2,
+                "max_duration_ms": 16000,
+                "max_output_bytes": 4096,
+                "max_side_effects": 0,
+            },
+            "requested_side_effects": [],
+            "approval_token": None,
+        }
+        for key, value in overrides.items():
+            request[key] = value
+        return request
+
+    def _workflow_context(self, **overrides):
+        from assistant_os.mso.machine_operator_adapter import MachineOperatorAdapterContext
+
+        context = MachineOperatorAdapterContext(
+            plan_id="plan-workflow-adapter-001",
+            execution_id="exec-workflow-adapter-001",
+            trace_id="trace-workflow-adapter-001",
+            policy_decision_ref="policy-workflow-adapter-001",
+            capability_name="workflow:browser.snapshot->browser.read_visible_text",
+            capability_tier="read_only",
+            policy_reason_code="allowed",
+            policy_message="MACHINE_OPERATOR workflow allowed: browser.snapshot -> browser.read_visible_text",
+        )
+        for key, value in overrides.items():
+            setattr(context, key, value)
+        return context
+
     def test_stub_adapter_remains_available(self):
         from assistant_os.mso.machine_operator_adapter import StubMachineOperatorAdapter
 
@@ -681,6 +736,671 @@ class TestMachineOperatorAdapter(unittest.TestCase):
             adapter.execute(self._request(), self._context())
 
         self.assertEqual(post_mock.call_count, 1)
+
+    def test_single_step_workflow_executes_with_workflow_shape(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        request = self._workflow_request(
+            workflow_steps=[
+                {
+                    "capability_name": "browser.snapshot",
+                    "capability_tier": "read_only",
+                    "arguments": {"url": "https://example.test"},
+                }
+            ],
+            budget={
+                "max_steps": 1,
+                "max_duration_ms": 8000,
+                "max_output_bytes": 4096,
+                "max_side_effects": 0,
+            },
+        )
+        context = self._workflow_context(
+            capability_name="browser.snapshot",
+            policy_message="MACHINE_OPERATOR capability allowed: browser.snapshot",
+        )
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            return_value=_FakeResponse(
+                {
+                    "status": "ok",
+                    "final_url": "https://example.test/",
+                    "observation": {
+                        "summary": "Snapshot captured.",
+                        "detail": "Single-step workflow completed successfully.",
+                        "structured_data": {"page_title": "Example Domain"},
+                    },
+                    "evidence_refs": [
+                        {
+                            "ref_id": "workflow-single-evidence-001",
+                            "evidence_type": "artifact",
+                            "uri": "memory://workflow/single-snapshot-001",
+                            "description": "Single-step workflow snapshot",
+                            "media_type": "application/json",
+                        }
+                    ],
+                    "consumed_budget": {
+                        "steps": 1,
+                        "duration_ms": 120,
+                        "output_bytes": 512,
+                        "side_effects": 0,
+                    },
+                    "side_effects_declared": [],
+                    "backend_execution_performed": True,
+                    "machine_action_performed": True,
+                }
+            ),
+        ) as post_mock:
+            result = OpenClawGatewayMachineOperatorAdapter().execute(request, context)
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.metadata["lane_outcome"], "success")
+        self.assertEqual(result.metadata["workflow_step_count"], 1)
+        self.assertEqual(result.metadata["workflow_capabilities"], ["browser.snapshot"])
+        self.assertEqual(len(result.metadata["step_results"]), 1)
+        self.assertEqual(result.metadata["step_results"][0]["step_index"], 0)
+        self.assertFalse(result.metadata["session_reused"])
+        payload = post_mock.call_args.kwargs["json"]
+        self.assertFalse(payload["execution"]["reuse_session"])
+        self.assertEqual(
+            payload["execution"]["workflow_execution_id"],
+            "exec-workflow-adapter-001:workflow",
+        )
+        self.assertTrue(payload["execution"]["close_session"])
+
+    def test_multi_step_workflow_success_reuses_internal_session(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        response_bodies = [
+            _FakeResponse(
+                {
+                    "status": "ok",
+                    "final_url": "https://example.test/",
+                    "observation": {
+                        "summary": "Snapshot captured.",
+                        "detail": "Step one completed successfully.",
+                        "structured_data": {"page_title": "Example Domain"},
+                    },
+                    "evidence_refs": [
+                        {
+                            "ref_id": "workflow-evidence-001",
+                            "evidence_type": "artifact",
+                            "uri": "memory://workflow/snapshot-001",
+                            "description": "Workflow snapshot",
+                            "media_type": "application/json",
+                        }
+                    ],
+                    "consumed_budget": {
+                        "steps": 1,
+                        "duration_ms": 120,
+                        "output_bytes": 512,
+                        "side_effects": 0,
+                    },
+                    "side_effects_declared": [],
+                    "backend_execution_performed": True,
+                    "machine_action_performed": True,
+                }
+            ),
+            _FakeResponse(
+                {
+                    "status": "ok",
+                    "final_url": "https://example.test/",
+                    "observation": {
+                        "summary": "Visible text captured.",
+                        "detail": "Step two completed successfully.",
+                        "structured_data": {"visible_text": "Example Domain", "is_truncated": False},
+                    },
+                    "evidence_refs": [],
+                    "consumed_budget": {
+                        "steps": 1,
+                        "duration_ms": 80,
+                        "output_bytes": 64,
+                        "side_effects": 0,
+                    },
+                    "side_effects_declared": [],
+                    "backend_execution_performed": True,
+                    "machine_action_performed": True,
+                }
+            ),
+        ]
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=response_bodies,
+        ) as post_mock:
+            result = OpenClawGatewayMachineOperatorAdapter().execute(
+                self._workflow_request(),
+                self._workflow_context(),
+            )
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.metadata["lane_outcome"], "success")
+        self.assertEqual(result.metadata["workflow_step_count"], 2)
+        self.assertEqual(
+            result.metadata["workflow_capabilities"],
+            ["browser.snapshot", "browser.read_visible_text"],
+        )
+        self.assertEqual(len(result.metadata["step_results"]), 2)
+        self.assertEqual(result.metadata["step_results"][0]["status"], "ok")
+        self.assertEqual(result.metadata["step_results"][1]["status"], "ok")
+        self.assertFalse(result.metadata["session_reused"])
+        self.assertEqual(post_mock.call_count, 2)
+        first_payload = post_mock.call_args_list[0].kwargs["json"]
+        second_payload = post_mock.call_args_list[1].kwargs["json"]
+        self.assertFalse(first_payload["execution"]["reuse_session"])
+        self.assertTrue(second_payload["execution"]["reuse_session"])
+        self.assertEqual(
+            first_payload["execution"]["workflow_execution_id"],
+            "exec-workflow-adapter-001:workflow",
+        )
+        self.assertEqual(
+            second_payload["execution"]["workflow_execution_id"],
+            "exec-workflow-adapter-001:workflow",
+        )
+        self.assertNotIn("close_session", first_payload["execution"])
+        self.assertTrue(second_payload["execution"]["close_session"])
+
+    def test_first_step_invalid_request_aborts_workflow(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        request = self._workflow_request(
+            workflow_steps=[
+                {
+                    "capability_name": "browser.snapshot",
+                    "capability_tier": "read_only",
+                    "arguments": {"url": "https://user@example.test"},
+                }
+            ],
+            budget={
+                "max_steps": 1,
+                "max_duration_ms": 8000,
+                "max_output_bytes": 4096,
+                "max_side_effects": 0,
+            },
+        )
+        context = self._workflow_context(
+            capability_name="browser.snapshot",
+            policy_message="MACHINE_OPERATOR capability allowed: browser.snapshot",
+        )
+
+        with patch("assistant_os.mso.machine_operator_adapter.requests.post") as post_mock:
+            result = OpenClawGatewayMachineOperatorAdapter().execute(request, context)
+
+        post_mock.assert_not_called()
+        self.assertEqual(result.status, "aborted")
+        self.assertEqual(result.metadata["lane_outcome"], "invalid_request")
+        self.assertEqual(result.metadata["backend_status"], "invalid_arguments")
+        self.assertEqual(len(result.metadata["step_results"]), 1)
+        self.assertEqual(result.metadata["step_results"][0]["status"], "failed")
+        self.assertEqual(result.metadata["step_results"][0]["lane_outcome"], "invalid_request")
+
+    def test_multi_step_workflow_partial_when_later_step_fails(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=[
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Snapshot captured.",
+                            "detail": "First step succeeded.",
+                            "structured_data": {"page_title": "Example Domain"},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "workflow-evidence-001",
+                                "evidence_type": "artifact",
+                                "uri": "memory://workflow/snapshot-001",
+                                "description": "Workflow snapshot",
+                                "media_type": "application/json",
+                            }
+                        ],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 120,
+                            "output_bytes": 512,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+                _FakeResponse(
+                    {
+                        "status": "failed",
+                        "observation": {
+                            "summary": "Visible text capture failed.",
+                            "detail": "Backend failed on step two.",
+                            "structured_data": {},
+                        },
+                        "evidence_refs": [],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 40,
+                            "output_bytes": 0,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": False,
+                        "machine_action_performed": False,
+                    }
+                ),
+            ],
+        ):
+            result = OpenClawGatewayMachineOperatorAdapter().execute(
+                self._workflow_request(),
+                self._workflow_context(),
+            )
+
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.metadata["lane_outcome"], "execution_partial")
+        self.assertEqual(len(result.metadata["step_results"]), 2)
+        self.assertEqual(result.metadata["step_results"][0]["status"], "ok")
+        self.assertEqual(result.metadata["step_results"][1]["status"], "failed")
+        self.assertEqual(len(result.evidence_refs), 1)
+        self.assertEqual(result.consumed_budget.steps, 2)
+
+    def test_multi_step_workflow_aborts_on_first_step_failure(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        post_mock = Mock(
+            side_effect=[
+                _FakeResponse(
+                    {
+                        "status": "failed",
+                        "observation": {
+                            "summary": "Snapshot failed.",
+                            "detail": "First step failed before workflow progress.",
+                            "structured_data": {},
+                        },
+                        "evidence_refs": [],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 40,
+                            "output_bytes": 0,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": False,
+                        "machine_action_performed": False,
+                    }
+                )
+            ]
+        )
+
+        with patch("assistant_os.mso.machine_operator_adapter.requests.post", post_mock):
+            result = OpenClawGatewayMachineOperatorAdapter().execute(
+                self._workflow_request(),
+                self._workflow_context(),
+            )
+
+        self.assertEqual(result.status, "aborted")
+        self.assertEqual(result.metadata["lane_outcome"], "execution_aborted")
+        self.assertEqual(len(result.metadata["step_results"]), 1)
+        self.assertEqual(result.metadata["step_results"][0]["status"], "failed")
+        self.assertEqual(post_mock.call_count, 1)
+
+    def test_multi_step_workflow_aborts_when_budget_is_exhausted_mid_sequence(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=[
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Snapshot captured.",
+                            "detail": "First step used the full step budget.",
+                            "structured_data": {"page_title": "Example Domain"},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "workflow-evidence-001",
+                                "evidence_type": "artifact",
+                                "uri": "memory://workflow/snapshot-001",
+                                "description": "Workflow snapshot",
+                                "media_type": "application/json",
+                            }
+                        ],
+                        "consumed_budget": {
+                            "steps": 2,
+                            "duration_ms": 120,
+                            "output_bytes": 512,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                )
+            ],
+        ) as post_mock:
+            result = OpenClawGatewayMachineOperatorAdapter().execute(
+                self._workflow_request(),
+                self._workflow_context(),
+            )
+
+        self.assertEqual(result.status, "aborted")
+        self.assertEqual(result.metadata["lane_outcome"], "execution_aborted")
+        self.assertEqual(result.metadata["backend_status"], "budget_exhausted")
+        self.assertEqual(len(result.metadata["step_results"]), 1)
+        self.assertEqual(post_mock.call_count, 1)
+
+    def test_multi_step_workflow_succeeds_at_exact_budget_boundary(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        request = self._workflow_request(
+            budget={
+                "max_steps": 2,
+                "max_duration_ms": 200,
+                "max_output_bytes": 4096,
+                "max_side_effects": 0,
+            }
+        )
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=[
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Snapshot captured.",
+                            "detail": "First step used part of the workflow budget.",
+                            "structured_data": {"page_title": "Example Domain"},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "workflow-evidence-001",
+                                "evidence_type": "artifact",
+                                "uri": "memory://workflow/snapshot-budget-001",
+                                "description": "Workflow snapshot",
+                                "media_type": "application/json",
+                            }
+                        ],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 80,
+                            "output_bytes": 512,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Visible text captured.",
+                            "detail": "Second step used the remaining workflow budget exactly.",
+                            "structured_data": {"visible_text": "Example Domain", "is_truncated": False},
+                        },
+                        "evidence_refs": [],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 120,
+                            "output_bytes": 64,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+            ],
+        ):
+            result = OpenClawGatewayMachineOperatorAdapter().execute(
+                request,
+                self._workflow_context(),
+            )
+
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.consumed_budget.steps, 2)
+        self.assertEqual(result.consumed_budget.duration_ms, 200)
+
+    def test_multi_step_workflow_duplicate_evidence_across_steps_fails_closed(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        request = self._workflow_request(
+            workflow_steps=[
+                {
+                    "capability_name": "browser.snapshot",
+                    "capability_tier": "read_only",
+                    "arguments": {"url": "https://example.test"},
+                },
+                {
+                    "capability_name": "browser.screenshot",
+                    "capability_tier": "read_only",
+                    "arguments": {"url": "https://example.test"},
+                },
+            ]
+        )
+        context = self._workflow_context()
+        context.capability_name = "workflow:browser.snapshot->browser.screenshot"
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=[
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Snapshot captured.",
+                            "detail": "First step succeeded.",
+                            "structured_data": {"page_title": "Example Domain"},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "duplicate-evidence-001",
+                                "evidence_type": "artifact",
+                                "uri": "memory://workflow/snapshot-001",
+                                "description": "Workflow snapshot",
+                                "media_type": "application/json",
+                            }
+                        ],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 120,
+                            "output_bytes": 512,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Screenshot captured.",
+                            "detail": "Second step returned duplicate evidence.",
+                            "structured_data": {"image_count": 1},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "duplicate-evidence-001",
+                                "evidence_type": "artifact",
+                                "uri": "memory://workflow/screenshot-001",
+                                "description": "Workflow screenshot",
+                                "media_type": "image/png",
+                            }
+                        ],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 90,
+                            "output_bytes": 256,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+            ],
+        ):
+            result = OpenClawGatewayMachineOperatorAdapter().execute(request, context)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.metadata["lane_outcome"], "execution_failed")
+        self.assertEqual(result.metadata["backend_status"], "invalid_workflow_result")
+        self.assertEqual(len(result.metadata["step_results"]), 2)
+        self.assertEqual(result.metadata["step_results"][1]["status"], "failed")
+
+    def test_multi_step_workflow_duplicate_evidence_uri_across_steps_fails_closed(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        request = self._workflow_request(
+            workflow_steps=[
+                {
+                    "capability_name": "browser.snapshot",
+                    "capability_tier": "read_only",
+                    "arguments": {"url": "https://example.test"},
+                },
+                {
+                    "capability_name": "browser.screenshot",
+                    "capability_tier": "read_only",
+                    "arguments": {"url": "https://example.test"},
+                },
+            ]
+        )
+        context = self._workflow_context(capability_name="workflow:browser.snapshot->browser.screenshot")
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=[
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Snapshot captured.",
+                            "detail": "First step succeeded.",
+                            "structured_data": {"page_title": "Example Domain"},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "duplicate-uri-evidence-001",
+                                "evidence_type": "artifact",
+                                "uri": "memory://workflow/shared-artifact",
+                                "description": "Workflow snapshot",
+                                "media_type": "application/json",
+                            }
+                        ],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 120,
+                            "output_bytes": 512,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Screenshot captured.",
+                            "detail": "Second step returned duplicate evidence URI.",
+                            "structured_data": {"image_count": 1},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "duplicate-uri-evidence-002",
+                                "evidence_type": "artifact",
+                                "uri": "memory://workflow/shared-artifact",
+                                "description": "Workflow screenshot",
+                                "media_type": "image/png",
+                            }
+                        ],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 90,
+                            "output_bytes": 256,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+            ],
+        ):
+            result = OpenClawGatewayMachineOperatorAdapter().execute(request, context)
+
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.metadata["lane_outcome"], "execution_failed")
+        self.assertEqual(result.metadata["backend_status"], "invalid_workflow_result")
+        self.assertEqual(len(result.metadata["step_results"]), 2)
+        self.assertEqual(result.metadata["step_results"][1]["status"], "failed")
+
+    def test_backend_unavailable_mid_workflow_surfaces_partial(self):
+        from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter
+
+        with patch(
+            "assistant_os.mso.machine_operator_adapter.requests.post",
+            side_effect=[
+                _FakeResponse(
+                    {
+                        "status": "ok",
+                        "final_url": "https://example.test/",
+                        "observation": {
+                            "summary": "Snapshot captured.",
+                            "detail": "First step succeeded.",
+                            "structured_data": {"page_title": "Example Domain"},
+                        },
+                        "evidence_refs": [
+                            {
+                                "ref_id": "workflow-evidence-001",
+                                "evidence_type": "artifact",
+                                "uri": "memory://workflow/snapshot-unavailable-001",
+                                "description": "Workflow snapshot",
+                                "media_type": "application/json",
+                            }
+                        ],
+                        "consumed_budget": {
+                            "steps": 1,
+                            "duration_ms": 120,
+                            "output_bytes": 512,
+                            "side_effects": 0,
+                        },
+                        "side_effects_declared": [],
+                        "backend_execution_performed": True,
+                        "machine_action_performed": True,
+                    }
+                ),
+                requests.ConnectionError("backend offline"),
+            ],
+        ):
+            result = OpenClawGatewayMachineOperatorAdapter().execute(
+                self._workflow_request(),
+                self._workflow_context(),
+            )
+
+        self.assertEqual(result.status, "partial")
+        self.assertEqual(result.metadata["lane_outcome"], "execution_partial")
+        self.assertEqual(result.metadata["backend_status"], "unavailable")
+        self.assertEqual(result.metadata["backend_error_type"], "ConnectionError")
+        self.assertEqual(len(result.metadata["step_results"]), 2)
+        self.assertEqual(result.metadata["step_results"][0]["status"], "ok")
+        self.assertEqual(result.metadata["step_results"][1]["status"], "aborted")
+        self.assertEqual(result.metadata["step_results"][1]["lane_outcome"], "backend_unavailable")
 
     def test_partial_uses_partial_audit_event(self):
         from assistant_os.mso.machine_operator_adapter import OpenClawGatewayMachineOperatorAdapter

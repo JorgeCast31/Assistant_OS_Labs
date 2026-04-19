@@ -24,6 +24,10 @@ except ImportError:  # pragma: no cover - dependency guard
 
 from .. import config
 from .contracts import (
+    CAPABILITY_BROWSER_NAVIGATE,
+    CAPABILITY_BROWSER_READ_VISIBLE_TEXT,
+    CAPABILITY_BROWSER_SCREENSHOT,
+    CAPABILITY_BROWSER_SNAPSHOT,
     MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
     MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
     MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
@@ -37,18 +41,17 @@ from .contracts import (
     MachineOperatorObservation,
     MachineOperatorSideEffectDeclaration,
     is_machine_operator_transition_allowed,
+    machine_operator_request_capabilities,
+    machine_operator_request_capability_name,
+    machine_operator_request_capability_tier,
+    machine_operator_request_kind,
+    normalize_machine_operator_request,
 )
 from .machine_operator_audit import (
     MachineOperatorAuditEventType,
     emit_machine_operator_event,
 )
-from .machine_operator_policy import (
-    CAPABILITY_BROWSER_NAVIGATE,
-    CAPABILITY_BROWSER_READ_VISIBLE_TEXT,
-    CAPABILITY_BROWSER_SCREENSHOT,
-    CAPABILITY_BROWSER_SNAPSHOT,
-    enforce_machine_operator_request,
-)
+from .machine_operator_policy import enforce_machine_operator_request
 
 _SUPPORTED_REAL_CAPABILITIES = frozenset(
     {
@@ -171,7 +174,7 @@ class StubMachineOperatorAdapter:
                     trace_id=context.trace_id,
                     intent_id=request_dict["intent_id"],
                     correlation_id=request_dict["correlation_id"],
-                    capability_name=request_dict["capability_name"],
+                    capability_name=_request_capability_name(request_dict),
                     status="backend_unavailable",
                     detail="No MACHINE_OPERATOR backend is configured.",
                 ),
@@ -182,7 +185,7 @@ class StubMachineOperatorAdapter:
                     trace_id=context.trace_id,
                     intent_id=request_dict["intent_id"],
                     correlation_id=request_dict["correlation_id"],
-                    capability_name=request_dict["capability_name"],
+                    capability_name=_request_capability_name(request_dict),
                     status="skipped",
                     detail="Execution was intentionally skipped; no machine action occurred.",
                 ),
@@ -193,7 +196,7 @@ class StubMachineOperatorAdapter:
                     trace_id=context.trace_id,
                     intent_id=request_dict["intent_id"],
                     correlation_id=request_dict["correlation_id"],
-                    capability_name=request_dict["capability_name"],
+                    capability_name=_request_capability_name(request_dict),
                     status="aborted",
                     detail="Request aborted because no backend execution path exists.",
                 ),
@@ -290,6 +293,17 @@ class OpenClawGatewayMachineOperatorAdapter:
                 context=context,
                 audit_event_ids=audit_event_ids,
             )
+        if machine_operator_request_kind(request_dict) == "workflow":
+            normalized_request, error = normalize_machine_operator_request(request_dict)
+            if normalized_request is None:
+                raise ValueError(error)
+            return _execute_workflow(
+                workflow_request=normalized_request,
+                request_dict=request_dict,
+                context=context,
+                audit_event_ids=audit_event_ids,
+                health_state=self._backend_health,
+            )
         return _execute_request(
             request_dict=request_dict,
             context=context,
@@ -314,6 +328,20 @@ def reset_machine_operator_backend_health() -> None:
         DEFAULT_MACHINE_OPERATOR_ADAPTER.reset_backend_health()
 
 
+def _request_capability_name(request_dict: dict[str, Any]) -> str:
+    try:
+        return machine_operator_request_capability_name(request_dict)
+    except Exception:
+        return str(request_dict.get("capability_name", ""))
+
+
+def _request_capability_tier(request_dict: dict[str, Any]) -> str:
+    try:
+        return machine_operator_request_capability_tier(request_dict)
+    except Exception:
+        return str(request_dict.get("capability_tier", ""))
+
+
 def _execute_request(
     *,
     request_dict: dict[str, Any],
@@ -329,12 +357,300 @@ def _execute_request(
     )
 
 
+def _execute_workflow(
+    *,
+    workflow_request: dict[str, Any],
+    request_dict: dict[str, Any],
+    context: MachineOperatorAdapterContext,
+    audit_event_ids: list[str],
+    health_state: _BackendHealthState,
+) -> MachineOperatorAdapterResult:
+    workflow_steps = workflow_request["workflow_steps"]
+    workflow_capabilities = machine_operator_request_capabilities(workflow_request)
+    workflow_audit_event_ids = list(audit_event_ids)
+    aggregated_budget = MachineOperatorBudgetUsage()
+    aggregated_evidence_refs: list[MachineOperatorEvidenceRef] = []
+    step_results: list[dict[str, Any]] = []
+    workflow_execution_id = f"{context.execution_id}:workflow"
+
+    for step_index, workflow_step in enumerate(workflow_steps):
+        if step_index > 0 and not _workflow_budget_available(
+            budget=workflow_request["budget"],
+            consumed_budget=aggregated_budget,
+        ):
+            detail = (
+                "MACHINE_OPERATOR workflow exhausted declared budget before "
+                f"step {step_index} ({workflow_step['capability_name']})."
+            )
+            return _finalize_terminal_result(
+                result=_build_workflow_terminal_result(
+                    status="aborted",
+                    summary="MACHINE_OPERATOR workflow exhausted declared budget.",
+                    detail=detail,
+                    metadata={
+                        "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
+                        "backend_status": "budget_exhausted",
+                        "backend_execution_attempted": bool(step_results),
+                        "backend_execution_performed": any(
+                            bool(step_result["backend_execution_performed"]) for step_result in step_results
+                        ),
+                        "machine_action_performed": any(
+                            bool(step_result["machine_action_performed"]) for step_result in step_results
+                        ),
+                        "adapter_status": "budget_exhausted",
+                        "workflow_step_count": len(workflow_steps),
+                        "workflow_capabilities": list(workflow_capabilities),
+                        "step_results": list(step_results),
+                        **_backend_observability_metadata(
+                            health_state=health_state,
+                            backend_latency_ms=aggregated_budget.duration_ms,
+                        ),
+                    },
+                    evidence_refs=aggregated_evidence_refs,
+                    consumed_budget=aggregated_budget,
+                    audit_event_ids=workflow_audit_event_ids,
+                ),
+                request_dict=request_dict,
+                context=context,
+                audit_event_ids=workflow_audit_event_ids,
+            )
+
+        step_request = _build_step_request(
+            workflow_request=workflow_request,
+            workflow_step=workflow_step,
+            consumed_budget=aggregated_budget,
+        )
+        step_context = MachineOperatorAdapterContext(
+            plan_id=context.plan_id,
+            execution_id=context.execution_id,
+            trace_id=context.trace_id,
+            policy_decision_ref=context.policy_decision_ref,
+            capability_name=workflow_step["capability_name"],
+            capability_tier=workflow_step["capability_tier"],
+            policy_reason_code=context.policy_reason_code,
+            policy_message=context.policy_message,
+        )
+        step_audit_event_ids: list[str] = []
+        step_result = _execute_step_request_core(
+            request_dict=step_request,
+            context=step_context,
+            audit_event_ids=step_audit_event_ids,
+            health_state=health_state,
+            reuse_session=step_index > 0,
+            close_session=step_index == len(workflow_steps) - 1,
+            workflow_execution_id=workflow_execution_id,
+        )
+        workflow_audit_event_ids.extend(step_result.audit_event_ids)
+        aggregated_budget = _merge_budget_usage(aggregated_budget, step_result.consumed_budget)
+        try:
+            aggregated_evidence_refs = _merge_evidence_refs(
+                existing=aggregated_evidence_refs,
+                new=step_result.evidence_refs,
+            )
+            step_result_payload = _build_workflow_step_result(
+                step_index=step_index,
+                step_request=step_request,
+                step_result=step_result,
+            )
+        except ValueError as exc:
+            step_result_payload = _build_workflow_step_result(
+                step_index=step_index,
+                step_request=step_request,
+                step_result=step_result,
+            )
+            step_result_payload.update(
+                {
+                    "status": "failed",
+                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
+                    "backend_status": "invalid_workflow_result",
+                    "observation": asdict(
+                        MachineOperatorObservation(
+                            summary="MACHINE_OPERATOR workflow evidence aggregation failed closed.",
+                            detail=str(exc),
+                            structured_data={
+                                "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
+                                "backend_status": "invalid_workflow_result",
+                                "backend_execution_performed": step_result_payload["backend_execution_performed"],
+                                "machine_action_performed": step_result_payload["machine_action_performed"],
+                                "adapter_boundary_reached": True,
+                            },
+                        )
+                    ),
+                }
+            )
+            step_results.append(step_result_payload)
+            return _finalize_terminal_result(
+                result=_build_workflow_terminal_result(
+                    status="failed",
+                    summary="MACHINE_OPERATOR workflow evidence aggregation failed closed.",
+                    detail=str(exc),
+                    metadata={
+                        "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
+                        "backend_status": "invalid_workflow_result",
+                        "backend_execution_attempted": any(
+                            bool(step_entry["backend_execution_attempted"]) for step_entry in step_results
+                        )
+                        or step_result_payload["backend_execution_attempted"],
+                        "backend_execution_performed": any(
+                            bool(step_entry["backend_execution_performed"]) for step_entry in step_results
+                        )
+                        or step_result_payload["backend_execution_performed"],
+                        "machine_action_performed": any(
+                            bool(step_entry["machine_action_performed"]) for step_entry in step_results
+                        )
+                        or step_result_payload["machine_action_performed"],
+                        "adapter_status": "invalid_workflow_result",
+                        "workflow_step_count": len(workflow_steps),
+                        "workflow_capabilities": list(workflow_capabilities),
+                        "step_results": list(step_results),
+                        **_backend_observability_metadata(
+                            health_state=health_state,
+                            backend_latency_ms=aggregated_budget.duration_ms,
+                            backend_error_type="ValueError",
+                        ),
+                    },
+                    evidence_refs=aggregated_evidence_refs,
+                    consumed_budget=aggregated_budget,
+                    audit_event_ids=workflow_audit_event_ids,
+                ),
+                request_dict=request_dict,
+                context=context,
+                audit_event_ids=workflow_audit_event_ids,
+            )
+
+        step_results.append(step_result_payload)
+        if step_result.status == "ok":
+            continue
+
+        completed_steps = step_index
+        if step_result.status == "partial" or completed_steps > 0:
+            status = "partial"
+            lane_outcome = MACHINE_OPERATOR_OUTCOME_EXECUTION_PARTIAL
+            summary = "MACHINE_OPERATOR workflow partially completed."
+            detail = (
+                f"Execution stopped at step {step_index} ({workflow_step['capability_name']}): "
+                f"{step_result.observation.summary}"
+            )
+        elif step_result.metadata.get("lane_outcome") == MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE:
+            status = "aborted"
+            lane_outcome = MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE
+            summary = "MACHINE_OPERATOR workflow aborted before completing the first step."
+            detail = step_result.observation.detail or step_result.observation.summary
+        elif step_result.status == "denied":
+            status = "aborted"
+            lane_outcome = MACHINE_OPERATOR_OUTCOME_POLICY_VIOLATION
+            summary = "MACHINE_OPERATOR workflow aborted by policy at the first step."
+            detail = step_result.observation.detail or step_result.observation.summary
+        elif step_result.metadata.get("lane_outcome") == MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST:
+            status = "aborted"
+            lane_outcome = MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST
+            summary = "MACHINE_OPERATOR workflow aborted by invalid first-step input."
+            detail = step_result.observation.detail or step_result.observation.summary
+        else:
+            status = "aborted"
+            lane_outcome = MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED
+            summary = "MACHINE_OPERATOR workflow aborted at the first failing step."
+            detail = step_result.observation.detail or step_result.observation.summary
+
+        return _finalize_terminal_result(
+            result=_build_workflow_terminal_result(
+                status=status,
+                summary=summary,
+                detail=detail,
+                metadata={
+                    "lane_outcome": lane_outcome,
+                    "backend_status": step_result.metadata.get("backend_status", ""),
+                    "backend_execution_attempted": any(
+                        bool(step_entry["backend_execution_attempted"]) for step_entry in step_results
+                    ),
+                    "backend_execution_performed": any(
+                        bool(step_entry["backend_execution_performed"]) for step_entry in step_results
+                    ),
+                    "machine_action_performed": any(
+                        bool(step_entry["machine_action_performed"]) for step_entry in step_results
+                    ),
+                    "adapter_status": step_result.metadata.get("adapter_status", ""),
+                    "workflow_step_count": len(workflow_steps),
+                    "workflow_capabilities": list(workflow_capabilities),
+                    "step_results": list(step_results),
+                    **_backend_observability_metadata(
+                        health_state=health_state,
+                        backend_latency_ms=aggregated_budget.duration_ms,
+                        backend_error_type=str(step_result.metadata.get("backend_error_type", "")),
+                    ),
+                },
+                evidence_refs=aggregated_evidence_refs,
+                consumed_budget=aggregated_budget,
+                audit_event_ids=workflow_audit_event_ids,
+            ),
+            request_dict=request_dict,
+            context=context,
+            audit_event_ids=workflow_audit_event_ids,
+        )
+
+    return _finalize_terminal_result(
+        result=_build_workflow_terminal_result(
+            status="ok",
+            summary="MACHINE_OPERATOR workflow completed.",
+            detail=(
+                "All workflow steps completed successfully: "
+                + " -> ".join(workflow_capabilities)
+            ),
+            metadata={
+                "lane_outcome": MACHINE_OPERATOR_OUTCOME_SUCCESS,
+                "backend_status": "completed",
+                "backend_execution_attempted": True,
+                "backend_execution_performed": True,
+                "machine_action_performed": True,
+                "adapter_status": "completed",
+                "workflow_step_count": len(workflow_steps),
+                "workflow_capabilities": list(workflow_capabilities),
+                "step_results": list(step_results),
+                **_backend_observability_metadata(
+                    health_state=health_state,
+                    backend_latency_ms=aggregated_budget.duration_ms,
+                ),
+            },
+            evidence_refs=aggregated_evidence_refs,
+            consumed_budget=aggregated_budget,
+            audit_event_ids=workflow_audit_event_ids,
+        ),
+        request_dict=request_dict,
+        context=context,
+        audit_event_ids=workflow_audit_event_ids,
+    )
+
+
 def _execute_step_request(
     *,
     request_dict: dict[str, Any],
     context: MachineOperatorAdapterContext,
     audit_event_ids: list[str],
     health_state: _BackendHealthState,
+) -> MachineOperatorAdapterResult:
+    result = _execute_step_request_core(
+        request_dict=request_dict,
+        context=context,
+        audit_event_ids=audit_event_ids,
+        health_state=health_state,
+    )
+    return _finalize_terminal_result(
+        result=result,
+        request_dict=request_dict,
+        context=context,
+        audit_event_ids=audit_event_ids,
+    )
+
+
+def _execute_step_request_core(
+    *,
+    request_dict: dict[str, Any],
+    context: MachineOperatorAdapterContext,
+    audit_event_ids: list[str],
+    health_state: _BackendHealthState,
+    reuse_session: bool = False,
+    close_session: bool = True,
+    workflow_execution_id: str = "",
 ) -> MachineOperatorAdapterResult:
     capability_name = request_dict["capability_name"]
     if capability_name not in _SUPPORTED_REAL_CAPABILITIES:
@@ -348,25 +664,22 @@ def _execute_step_request(
                 include_aborted=True,
             )
         )
-        return _finalize_terminal_result(
-            result=_build_nonexecuted_result(
-                status="aborted",
-                summary="MACHINE_OPERATOR capability is not implemented for live execution.",
-                detail=f"Capability remains non-executing in Sprint 5: {capability_name}",
-                metadata={
-                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
-                    "backend_status": "unsupported_capability",
-                    "backend_execution_attempted": False,
-                    "backend_execution_performed": False,
-                    "machine_action_performed": False,
-                    "adapter_status": "unsupported_capability",
-                },
-                audit_event_ids=audit_event_ids,
-            ),
-            request_dict=request_dict,
-            context=context,
+        result = _build_nonexecuted_result(
+            status="aborted",
+            summary="MACHINE_OPERATOR capability is not implemented for live execution.",
+            detail=f"Capability remains non-executing in Sprint 5: {capability_name}",
+            metadata={
+                "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
+                "backend_status": "unsupported_capability",
+                "backend_execution_attempted": False,
+                "backend_execution_performed": False,
+                "machine_action_performed": False,
+                "adapter_status": "unsupported_capability",
+            },
             audit_event_ids=audit_event_ids,
         )
+        result.audit_event_ids = list(audit_event_ids)
+        return result
 
     probe_allowed = False
     if health_state.state == _BACKEND_STATE_UNAVAILABLE:
@@ -388,29 +701,26 @@ def _execute_step_request(
                     backend_state=health_state.state,
                 )
             )
-            return _finalize_terminal_result(
-                result=_build_nonexecuted_result(
-                    status="aborted",
-                    summary="MACHINE_OPERATOR backend circuit is open.",
-                    detail=detail,
-                    metadata={
-                        "lane_outcome": MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
-                        "backend_status": "unavailable",
-                        "backend_execution_attempted": False,
-                        "backend_execution_performed": False,
-                        "machine_action_performed": False,
-                        "adapter_status": "circuit_open",
-                        **_backend_observability_metadata(
-                            health_state=health_state,
-                            backend_latency_ms=0,
-                        ),
-                    },
-                    audit_event_ids=audit_event_ids,
-                ),
-                request_dict=request_dict,
-                context=context,
+            result = _build_nonexecuted_result(
+                status="aborted",
+                summary="MACHINE_OPERATOR backend circuit is open.",
+                detail=detail,
+                metadata={
+                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
+                    "backend_status": "unavailable",
+                    "backend_execution_attempted": False,
+                    "backend_execution_performed": False,
+                    "machine_action_performed": False,
+                    "adapter_status": "circuit_open",
+                    **_backend_observability_metadata(
+                        health_state=health_state,
+                        backend_latency_ms=0,
+                    ),
+                },
                 audit_event_ids=audit_event_ids,
             )
+            result.audit_event_ids = list(audit_event_ids)
+            return result
 
     try:
         requested_url = _extract_request_url(request_dict)
@@ -424,25 +734,22 @@ def _execute_step_request(
                 include_skipped=True,
             )
         )
-        return _finalize_terminal_result(
-            result=_build_nonexecuted_result(
-                status="failed",
-                summary="MACHINE_OPERATOR request is missing a safe browser target.",
-                detail=str(exc),
-                metadata={
-                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST,
-                    "backend_status": "invalid_arguments",
-                    "backend_execution_attempted": False,
-                    "backend_execution_performed": False,
-                    "machine_action_performed": False,
-                    "adapter_status": "invalid_arguments",
-                },
-                audit_event_ids=audit_event_ids,
-            ),
-            request_dict=request_dict,
-            context=context,
+        result = _build_nonexecuted_result(
+            status="failed",
+            summary="MACHINE_OPERATOR request is missing a safe browser target.",
+            detail=str(exc),
+            metadata={
+                "lane_outcome": MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST,
+                "backend_status": "invalid_arguments",
+                "backend_execution_attempted": False,
+                "backend_execution_performed": False,
+                "machine_action_performed": False,
+                "adapter_status": "invalid_arguments",
+            },
             audit_event_ids=audit_event_ids,
         )
+        result.audit_event_ids = list(audit_event_ids)
+        return result
 
     if not _is_allowlisted_url(requested_url, request_dict["policy_context"]["allowlist_refs"]):
         detail = f"MACHINE_OPERATOR runtime allowlist blocked URL: {requested_url.normalized_url}"
@@ -455,25 +762,22 @@ def _execute_step_request(
                 include_skipped=True,
             )
         )
-        return _finalize_terminal_result(
-            result=_build_nonexecuted_result(
-                status="denied",
-                summary="MACHINE_OPERATOR request blocked by runtime allowlist.",
-                detail=detail,
-                metadata={
-                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_POLICY_VIOLATION,
-                    "backend_status": "allowlist_blocked",
-                    "backend_execution_attempted": False,
-                    "backend_execution_performed": False,
-                    "machine_action_performed": False,
-                    "adapter_status": "allowlist_blocked",
-                },
-                audit_event_ids=audit_event_ids,
-            ),
-            request_dict=request_dict,
-            context=context,
+        result = _build_nonexecuted_result(
+            status="denied",
+            summary="MACHINE_OPERATOR request blocked by runtime allowlist.",
+            detail=detail,
+            metadata={
+                "lane_outcome": MACHINE_OPERATOR_OUTCOME_POLICY_VIOLATION,
+                "backend_status": "allowlist_blocked",
+                "backend_execution_attempted": False,
+                "backend_execution_performed": False,
+                "machine_action_performed": False,
+                "adapter_status": "allowlist_blocked",
+            },
             audit_event_ids=audit_event_ids,
         )
+        result.audit_event_ids = list(audit_event_ids)
+        return result
 
     timeout_seconds = _compute_timeout_seconds(request_dict)
     audit_event_ids.append(
@@ -501,6 +805,9 @@ def _execute_step_request(
             request_dict=request_dict,
             context=context,
             timeout_seconds=timeout_seconds,
+            reuse_session=reuse_session,
+            close_session=close_session,
+            workflow_execution_id=workflow_execution_id,
         )
     except Exception as exc:
         _record_backend_failure(health_state, preserve_unavailable=probe_allowed)
@@ -517,12 +824,8 @@ def _execute_step_request(
             result=result,
             audit_event_ids=audit_event_ids,
         )
-        return _finalize_terminal_result(
-            result=result,
-            request_dict=request_dict,
-            context=context,
-            audit_event_ids=audit_event_ids,
-        )
+        result.audit_event_ids = list(audit_event_ids)
+        return result
 
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     try:
@@ -568,11 +871,135 @@ def _execute_step_request(
         result=result,
         audit_event_ids=audit_event_ids,
     )
-    return _finalize_terminal_result(
-        result=result,
-        request_dict=request_dict,
-        context=context,
-        audit_event_ids=audit_event_ids,
+    result.audit_event_ids = list(audit_event_ids)
+    return result
+
+
+def _build_step_request(
+    *,
+    workflow_request: dict[str, Any],
+    workflow_step: dict[str, Any],
+    consumed_budget: MachineOperatorBudgetUsage,
+) -> dict[str, Any]:
+    remaining_budget = {
+        "max_steps": max(workflow_request["budget"]["max_steps"] - consumed_budget.steps, 0),
+        "max_duration_ms": max(workflow_request["budget"]["max_duration_ms"] - consumed_budget.duration_ms, 0),
+        "max_output_bytes": max(workflow_request["budget"]["max_output_bytes"] - consumed_budget.output_bytes, 0),
+        "max_side_effects": max(workflow_request["budget"]["max_side_effects"] - consumed_budget.side_effects, 0),
+    }
+    return {
+        "intent_id": workflow_request["intent_id"],
+        "correlation_id": workflow_request["correlation_id"],
+        "capability_name": workflow_step["capability_name"],
+        "capability_tier": workflow_step["capability_tier"],
+        "arguments": dict(workflow_step["arguments"]),
+        "policy_context": dict(workflow_request["policy_context"]),
+        "budget": remaining_budget,
+        "requested_side_effects": list(workflow_request["requested_side_effects"]),
+        "approval_token": workflow_request.get("approval_token"),
+    }
+
+
+def _workflow_budget_available(
+    *,
+    budget: dict[str, Any],
+    consumed_budget: MachineOperatorBudgetUsage,
+) -> bool:
+    return (
+        budget["max_steps"] - consumed_budget.steps > 0
+        and budget["max_duration_ms"] - consumed_budget.duration_ms > 0
+    )
+
+
+def _merge_budget_usage(
+    current: MachineOperatorBudgetUsage,
+    new: MachineOperatorBudgetUsage,
+) -> MachineOperatorBudgetUsage:
+    return MachineOperatorBudgetUsage(
+        steps=current.steps + new.steps,
+        duration_ms=current.duration_ms + new.duration_ms,
+        output_bytes=current.output_bytes + new.output_bytes,
+        side_effects=current.side_effects + new.side_effects,
+    )
+
+
+def _merge_evidence_refs(
+    *,
+    existing: list[MachineOperatorEvidenceRef],
+    new: list[MachineOperatorEvidenceRef],
+) -> list[MachineOperatorEvidenceRef]:
+    seen_ref_ids = {evidence.ref_id for evidence in existing}
+    seen_uris = {evidence.uri for evidence in existing}
+    merged = list(existing)
+    for evidence in new:
+        if evidence.ref_id in seen_ref_ids:
+            raise ValueError(
+                f"Duplicate evidence ref_id across workflow steps is not allowed: {evidence.ref_id}"
+            )
+        if evidence.uri in seen_uris:
+            raise ValueError(
+                f"Duplicate evidence uri across workflow steps is not allowed: {evidence.uri}"
+            )
+        seen_ref_ids.add(evidence.ref_id)
+        seen_uris.add(evidence.uri)
+        merged.append(evidence)
+    return merged
+
+
+def _build_workflow_step_result(
+    *,
+    step_index: int,
+    step_request: dict[str, Any],
+    step_result: MachineOperatorAdapterResult,
+) -> dict[str, Any]:
+    return {
+        "step_index": step_index,
+        "capability_name": step_request["capability_name"],
+        "capability_tier": step_request["capability_tier"],
+        "status": step_result.status,
+        "lane_outcome": step_result.metadata.get("lane_outcome", ""),
+        "backend_status": step_result.metadata.get("backend_status", ""),
+        "backend_execution_attempted": bool(step_result.metadata.get("backend_execution_attempted")),
+        "backend_execution_performed": bool(step_result.metadata.get("backend_execution_performed")),
+        "machine_action_performed": bool(step_result.metadata.get("machine_action_performed")),
+        "observation": asdict(step_result.observation),
+        "evidence_refs": [asdict(evidence_ref) for evidence_ref in step_result.evidence_refs],
+        "consumed_budget": asdict(step_result.consumed_budget),
+        "side_effects_declared": [
+            asdict(side_effect) for side_effect in step_result.side_effects_declared
+        ],
+        "audit_event_ids": list(step_result.audit_event_ids),
+    }
+
+
+def _build_workflow_terminal_result(
+    *,
+    status: str,
+    summary: str,
+    detail: str,
+    metadata: dict[str, Any],
+    evidence_refs: list[MachineOperatorEvidenceRef],
+    consumed_budget: MachineOperatorBudgetUsage,
+    audit_event_ids: list[str],
+) -> MachineOperatorAdapterResult:
+    return MachineOperatorAdapterResult(
+        status=status,
+        observation=MachineOperatorObservation(
+            summary=summary,
+            detail=detail,
+            structured_data={
+                "lane_outcome": metadata.get("lane_outcome", ""),
+                "backend_status": metadata.get("backend_status", ""),
+                "backend_execution_performed": metadata.get("backend_execution_performed", False),
+                "machine_action_performed": metadata.get("machine_action_performed", False),
+                "adapter_boundary_reached": True,
+            },
+        ),
+        evidence_refs=evidence_refs,
+        consumed_budget=consumed_budget,
+        side_effects_declared=[],
+        metadata=metadata,
+        audit_event_ids=list(audit_event_ids),
     )
 
 
@@ -709,7 +1136,7 @@ def _emit_execution_terminal_event(
             trace_id=context.trace_id,
             intent_id=request_dict["intent_id"],
             correlation_id=request_dict["correlation_id"],
-            capability_name=request_dict["capability_name"],
+            capability_name=_request_capability_name(request_dict),
             status=status,
             detail=(
                 result.observation.summary
@@ -732,7 +1159,7 @@ def _emit_base_audit_events(
             trace_id=context.trace_id,
             intent_id=request_dict["intent_id"],
             correlation_id=request_dict["correlation_id"],
-            capability_name=request_dict["capability_name"],
+            capability_name=_request_capability_name(request_dict),
             status="received",
             detail="MACHINE_OPERATOR intent reached the adapter boundary.",
         ),
@@ -743,7 +1170,7 @@ def _emit_base_audit_events(
             trace_id=context.trace_id,
             intent_id=request_dict["intent_id"],
             correlation_id=request_dict["correlation_id"],
-            capability_name=request_dict["capability_name"],
+            capability_name=_request_capability_name(request_dict),
             status=context.policy_reason_code,
             detail=context.policy_message,
         ),
@@ -771,7 +1198,7 @@ def _emit_terminal_events(
                 trace_id=context.trace_id,
                 intent_id=request_dict["intent_id"],
                 correlation_id=request_dict["correlation_id"],
-                capability_name=request_dict["capability_name"],
+                capability_name=_request_capability_name(request_dict),
                 status=status,
                 detail=detail,
             )
@@ -785,7 +1212,7 @@ def _emit_terminal_events(
                 trace_id=context.trace_id,
                 intent_id=request_dict["intent_id"],
                 correlation_id=request_dict["correlation_id"],
-                capability_name=request_dict["capability_name"],
+                capability_name=_request_capability_name(request_dict),
                 status=status,
                 detail=detail,
             )
@@ -799,7 +1226,7 @@ def _emit_terminal_events(
                 trace_id=context.trace_id,
                 intent_id=request_dict["intent_id"],
                 correlation_id=request_dict["correlation_id"],
-                capability_name=request_dict["capability_name"],
+                capability_name=_request_capability_name(request_dict),
                 status=status,
                 detail=detail,
             )
@@ -813,7 +1240,7 @@ def _emit_terminal_events(
                 trace_id=context.trace_id,
                 intent_id=request_dict["intent_id"],
                 correlation_id=request_dict["correlation_id"],
-                capability_name=request_dict["capability_name"],
+                capability_name=_request_capability_name(request_dict),
                 status=status,
                 detail=detail,
             )
@@ -864,7 +1291,7 @@ def _finalize_terminal_result(
             trace_id=context.trace_id,
             intent_id=request_dict["intent_id"],
             correlation_id=request_dict["correlation_id"],
-            capability_name=request_dict["capability_name"],
+            capability_name=_request_capability_name(request_dict),
             status=lane_outcome,
             detail="MACHINE_OPERATOR retained no reusable session state after terminal outcome.",
             backend_state=str(result.metadata.get("backend_state", "")),
@@ -900,11 +1327,13 @@ def _validate_context_consistency(
     context: MachineOperatorAdapterContext,
     audit_event_ids: list[str],
 ) -> MachineOperatorAdapterResult | None:
-    if request_dict["capability_name"] == context.capability_name and request_dict["capability_tier"] == context.capability_tier:
+    request_capability_name = _request_capability_name(request_dict)
+    request_capability_tier = _request_capability_tier(request_dict)
+    if request_capability_name == context.capability_name and request_capability_tier == context.capability_tier:
         return None
     detail = (
         "MACHINE_OPERATOR adapter context must match the request capability and tier. "
-        f"request={request_dict['capability_name']}:{request_dict['capability_tier']} "
+        f"request={request_capability_name}:{request_capability_tier} "
         f"context={context.capability_name}:{context.capability_tier}"
     )
     audit_event_ids.extend(
@@ -989,6 +1418,14 @@ def _validate_execution_governance(
 
 
 def _abort_requested(request_dict: dict[str, Any]) -> bool:
+    if machine_operator_request_kind(request_dict) == "workflow":
+        normalized_request, error = normalize_machine_operator_request(request_dict)
+        if normalized_request is None:
+            raise ValueError(error)
+        for workflow_step in normalized_request["workflow_steps"]:
+            arguments = workflow_step.get("arguments", {})
+            if isinstance(arguments, dict) and arguments.get("abort_requested") is True:
+                return True
     arguments = request_dict.get("arguments", {})
     if isinstance(arguments, dict) and arguments.get("abort_requested") is True:
         return True
@@ -1138,6 +1575,9 @@ def _post_openclaw_request(
     request_dict: dict[str, Any],
     context: MachineOperatorAdapterContext,
     timeout_seconds: float,
+    reuse_session: bool = False,
+    close_session: bool = True,
+    workflow_execution_id: str = "",
 ) -> dict[str, Any]:
     if requests is None:
         raise RuntimeError("requests dependency unavailable")
@@ -1149,6 +1589,9 @@ def _post_openclaw_request(
             request_dict=request_dict,
             context=context,
             timeout_seconds=timeout_seconds,
+            reuse_session=reuse_session,
+            close_session=close_session,
+            workflow_execution_id=workflow_execution_id,
         ),
         timeout=timeout_seconds,
     )
@@ -1164,7 +1607,23 @@ def _build_gateway_payload(
     request_dict: dict[str, Any],
     context: MachineOperatorAdapterContext,
     timeout_seconds: float,
+    reuse_session: bool = False,
+    close_session: bool = True,
+    workflow_execution_id: str = "",
 ) -> dict[str, Any]:
+    execution_payload = {
+        "mode": "ephemeral",
+        "reuse_session": reuse_session,
+        "persist_profile": False,
+        "allow_side_effects": False,
+        "require_credentials": False,
+        "timeout_seconds": timeout_seconds,
+    }
+    if workflow_execution_id:
+        execution_payload["workflow_execution_id"] = workflow_execution_id
+    if close_session:
+        execution_payload["close_session"] = True
+
     return {
         "intent_id": request_dict["intent_id"],
         "correlation_id": request_dict["correlation_id"],
@@ -1182,14 +1641,7 @@ def _build_gateway_payload(
             "constraints": list(request_dict["policy_context"]["constraints"]),
             "approval_mode": request_dict["policy_context"]["approval_mode"],
         },
-        "execution": {
-            "mode": "ephemeral",
-            "reuse_session": False,
-            "persist_profile": False,
-            "allow_side_effects": False,
-            "require_credentials": False,
-            "timeout_seconds": timeout_seconds,
-        },
+        "execution": execution_payload,
     }
 
 
