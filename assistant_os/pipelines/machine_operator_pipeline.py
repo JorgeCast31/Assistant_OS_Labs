@@ -330,6 +330,10 @@ def _build_domain_data(
         "backend_execution_performed": False,
         "machine_action_performed": False,
         "adapter_status": "not_executed",
+        "backend_latency_ms": 0,
+        "backend_state": "",
+        "backend_error_type": "",
+        "circuit_state": "closed",
     }
     return {
         "type": RESULT_TYPE_MACHINE_OPERATOR_ACTION,
@@ -364,15 +368,15 @@ def _build_domain_data(
         "backend_execution_performed": metadata["backend_execution_performed"],
         "machine_action_performed": metadata["machine_action_performed"],
         "adapter_status": metadata["adapter_status"],
+        "backend_latency_ms": metadata.get("backend_latency_ms", 0),
+        "backend_state": metadata.get("backend_state", ""),
+        "backend_error_type": metadata.get("backend_error_type", ""),
+        "circuit_state": metadata.get("circuit_state", "closed"),
         "session_mode": metadata.get("session_mode", ""),
         "session_reused": metadata.get("session_reused", False),
         "session_persisted": metadata.get("session_persisted", False),
         "session_retained_after_terminal": metadata.get("session_retained_after_terminal", False),
         "cleanup_semantics": metadata.get("cleanup_semantics", ""),
-        "evidence_expected": metadata.get("evidence_expected", False),
-        "evidence_available": metadata.get("evidence_available", False),
-        "evidence_count": metadata.get("evidence_count", 0),
-        "evidence_semantics": metadata.get("evidence_semantics", ""),
         "machine_operator_response": asdict(response),
     }
 

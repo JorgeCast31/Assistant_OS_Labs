@@ -48,7 +48,6 @@ from .machine_operator_policy import (
     CAPABILITY_BROWSER_SCREENSHOT,
     CAPABILITY_BROWSER_SNAPSHOT,
     enforce_machine_operator_request,
-    get_machine_operator_policy,
 )
 
 _SUPPORTED_REAL_CAPABILITIES = frozenset(
@@ -62,6 +61,11 @@ _SUPPORTED_REAL_CAPABILITIES = frozenset(
 _SUPPORTED_URL_SCHEMES = frozenset({"http", "https"})
 _FORBIDDEN_ESCAPES = ("%2f", "%5c", "%00")
 _PERCENT_ESCAPE_RE = re.compile(r"%[0-9a-fA-F]{2}")
+_BACKEND_STATE_HEALTHY = "HEALTHY"
+_BACKEND_STATE_DEGRADED = "DEGRADED"
+_BACKEND_STATE_UNAVAILABLE = "UNAVAILABLE"
+_BACKEND_UNAVAILABLE_FAILURE_THRESHOLD = 2
+_BACKEND_UNAVAILABLE_COOLDOWN_SECONDS = 30.0
 
 
 @dataclass(slots=True)
@@ -123,6 +127,14 @@ class _AllowlistRule:
     hostname: str
     ports: frozenset[int]
     path_prefix: str
+
+
+@dataclass(slots=True)
+class _BackendHealthState:
+    state: str = _BACKEND_STATE_HEALTHY
+    consecutive_failures: int = 0
+    last_success_timestamp: float = 0.0
+    last_failure_timestamp: float = 0.0
 
 
 class MachineOperatorAdapter(Protocol):
@@ -219,6 +231,12 @@ class OpenClawGatewayMachineOperatorAdapter:
     requests; Sprint 7 makes that lifecycle explicit in terminal metadata/audit.
     """
 
+    def __init__(self) -> None:
+        self._backend_health = _BackendHealthState()
+
+    def reset_backend_health(self) -> None:
+        self._backend_health = _BackendHealthState()
+
     def execute(
         self,
         request: Any,
@@ -241,38 +259,6 @@ class OpenClawGatewayMachineOperatorAdapter:
         )
         if governance_result is not None:
             return governance_result
-
-        capability_name = request_dict["capability_name"]
-        if capability_name not in _SUPPORTED_REAL_CAPABILITIES:
-            audit_event_ids.extend(
-                _emit_terminal_events(
-                    request_dict,
-                    context,
-                    status=MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
-                    detail=f"MACHINE_OPERATOR capability is not implemented for live execution: {capability_name}",
-                    include_skipped=True,
-                    include_aborted=True,
-                )
-            )
-            return _finalize_terminal_result(
-                result=_build_nonexecuted_result(
-                    status="aborted",
-                    summary="MACHINE_OPERATOR capability is not implemented for live execution.",
-                    detail=f"Capability remains non-executing in Sprint 5: {capability_name}",
-                    metadata={
-                        "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
-                        "backend_status": "unsupported_capability",
-                        "backend_execution_attempted": False,
-                        "backend_execution_performed": False,
-                        "machine_action_performed": False,
-                        "adapter_status": "unsupported_capability",
-                    },
-                    audit_event_ids=audit_event_ids,
-                ),
-                request_dict=request_dict,
-                context=context,
-                audit_event_ids=audit_event_ids,
-            )
 
         if _abort_requested(request_dict):
             audit_event_ids.extend(
@@ -304,202 +290,11 @@ class OpenClawGatewayMachineOperatorAdapter:
                 context=context,
                 audit_event_ids=audit_event_ids,
             )
-
-        try:
-            requested_url = _extract_request_url(request_dict)
-        except ValueError as exc:
-            audit_event_ids.extend(
-                _emit_terminal_events(
-                    request_dict,
-                    context,
-                    status=MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST,
-                    detail=str(exc),
-                    include_skipped=True,
-                )
-            )
-            return _finalize_terminal_result(
-                result=_build_nonexecuted_result(
-                    status="failed",
-                    summary="MACHINE_OPERATOR request is missing a safe browser target.",
-                    detail=str(exc),
-                    metadata={
-                        "lane_outcome": MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST,
-                        "backend_status": "invalid_arguments",
-                        "backend_execution_attempted": False,
-                        "backend_execution_performed": False,
-                        "machine_action_performed": False,
-                        "adapter_status": "invalid_arguments",
-                    },
-                    audit_event_ids=audit_event_ids,
-                ),
-                request_dict=request_dict,
-                context=context,
-                audit_event_ids=audit_event_ids,
-            )
-
-        if not _is_allowlisted_url(requested_url, request_dict["policy_context"]["allowlist_refs"]):
-            audit_event_ids.extend(
-                _emit_terminal_events(
-                    request_dict,
-                    context,
-                    status=MACHINE_OPERATOR_OUTCOME_POLICY_VIOLATION,
-                    detail=f"MACHINE_OPERATOR runtime allowlist blocked URL: {requested_url.normalized_url}",
-                    include_skipped=True,
-                )
-            )
-            return _finalize_terminal_result(
-                result=_build_nonexecuted_result(
-                    status="denied",
-                    summary="MACHINE_OPERATOR request blocked by runtime allowlist.",
-                    detail="The requested URL is not permitted by the provided allowlist_refs.",
-                    metadata={
-                        "lane_outcome": MACHINE_OPERATOR_OUTCOME_POLICY_VIOLATION,
-                        "backend_status": "allowlist_blocked",
-                        "backend_execution_attempted": False,
-                        "backend_execution_performed": False,
-                        "machine_action_performed": False,
-                        "adapter_status": "allowlist_blocked",
-                    },
-                    audit_event_ids=audit_event_ids,
-                ),
-                request_dict=request_dict,
-                context=context,
-                audit_event_ids=audit_event_ids,
-            )
-
-        timeout_seconds = _compute_timeout_seconds(request_dict)
-        audit_event_ids.append(
-            emit_machine_operator_event(
-                event_type=MachineOperatorAuditEventType.MO_STEP_STARTED,
-                plan_id=context.plan_id,
-                execution_id=context.execution_id,
-                trace_id=context.trace_id,
-                intent_id=request_dict["intent_id"],
-                correlation_id=request_dict["correlation_id"],
-                capability_name=capability_name,
-                status="started",
-                detail=f"MACHINE_OPERATOR Tier A execution started with timeout {timeout_seconds:.3f}s.",
-            )
-        )
-
-        started = time.perf_counter()
-        try:
-            gateway_response = _post_openclaw_request(
-                request_dict=request_dict,
-                context=context,
-                timeout_seconds=timeout_seconds,
-            )
-        except Exception as exc:
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            return _handle_gateway_exception(
-                exc=exc,
-                request_dict=request_dict,
-                context=context,
-                audit_event_ids=audit_event_ids,
-                elapsed_ms=elapsed_ms,
-            )
-
-        elapsed_ms = int((time.perf_counter() - started) * 1000)
-        try:
-            result = _translate_gateway_response(
-                request_dict=request_dict,
-                capability_name=capability_name,
-                timeout_seconds=timeout_seconds,
-                elapsed_ms=elapsed_ms,
-                body=gateway_response,
-            )
-        except ValueError as exc:
-            audit_event_ids.extend(
-                _emit_terminal_events(
-                    request_dict,
-                    context,
-                    status=MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
-                    detail=str(exc),
-                    include_execution_failed=True,
-                )
-            )
-            return _finalize_terminal_result(
-                result=_build_nonexecuted_result(
-                    status="failed",
-                    summary="MACHINE_OPERATOR backend returned an invalid execution envelope.",
-                    detail=str(exc),
-                    metadata={
-                        "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
-                        "backend_status": "invalid_backend_response",
-                        "backend_execution_attempted": True,
-                        "backend_execution_performed": False,
-                        "machine_action_performed": False,
-                        "adapter_status": "invalid_backend_response",
-                        "timeout_seconds": timeout_seconds,
-                    },
-                    audit_event_ids=audit_event_ids,
-                ),
-                request_dict=request_dict,
-                context=context,
-                audit_event_ids=audit_event_ids,
-            )
-
-        if result.status == "ok":
-            audit_event_ids.append(
-                emit_machine_operator_event(
-                    event_type=MachineOperatorAuditEventType.MO_STEP_COMPLETED,
-                    plan_id=context.plan_id,
-                    execution_id=context.execution_id,
-                    trace_id=context.trace_id,
-                    intent_id=request_dict["intent_id"],
-                    correlation_id=request_dict["correlation_id"],
-                    capability_name=capability_name,
-                    status=MACHINE_OPERATOR_OUTCOME_SUCCESS,
-                    detail=result.observation.summary,
-                )
-            )
-        elif result.status == "partial":
-            audit_event_ids.append(
-                emit_machine_operator_event(
-                    event_type=MachineOperatorAuditEventType.MO_STEP_PARTIAL,
-                    plan_id=context.plan_id,
-                    execution_id=context.execution_id,
-                    trace_id=context.trace_id,
-                    intent_id=request_dict["intent_id"],
-                    correlation_id=request_dict["correlation_id"],
-                    capability_name=capability_name,
-                    status=MACHINE_OPERATOR_OUTCOME_EXECUTION_PARTIAL,
-                    detail=result.observation.summary,
-                )
-            )
-        elif result.status == "failed":
-            audit_event_ids.append(
-                emit_machine_operator_event(
-                    event_type=MachineOperatorAuditEventType.MO_EXECUTION_FAILED,
-                    plan_id=context.plan_id,
-                    execution_id=context.execution_id,
-                    trace_id=context.trace_id,
-                    intent_id=request_dict["intent_id"],
-                    correlation_id=request_dict["correlation_id"],
-                    capability_name=capability_name,
-                    status=MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
-                    detail=result.observation.summary,
-                )
-            )
-        elif result.status == "aborted":
-            audit_event_ids.append(
-                emit_machine_operator_event(
-                    event_type=MachineOperatorAuditEventType.MO_ABORTED,
-                    plan_id=context.plan_id,
-                    execution_id=context.execution_id,
-                    trace_id=context.trace_id,
-                    intent_id=request_dict["intent_id"],
-                    correlation_id=request_dict["correlation_id"],
-                    capability_name=capability_name,
-                    status=MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
-                    detail=result.observation.summary,
-                )
-            )
-        return _finalize_terminal_result(
-            result=result,
+        return _execute_request(
             request_dict=request_dict,
             context=context,
             audit_event_ids=audit_event_ids,
+            health_state=self._backend_health,
         )
 
 
@@ -512,6 +307,417 @@ def execute_machine_operator(
 ) -> MachineOperatorAdapterResult:
     """Execute the default MACHINE_OPERATOR adapter boundary."""
     return DEFAULT_MACHINE_OPERATOR_ADAPTER.execute(request, context)
+
+
+def reset_machine_operator_backend_health() -> None:
+    if isinstance(DEFAULT_MACHINE_OPERATOR_ADAPTER, OpenClawGatewayMachineOperatorAdapter):
+        DEFAULT_MACHINE_OPERATOR_ADAPTER.reset_backend_health()
+
+
+def _execute_request(
+    *,
+    request_dict: dict[str, Any],
+    context: MachineOperatorAdapterContext,
+    audit_event_ids: list[str],
+    health_state: _BackendHealthState,
+) -> MachineOperatorAdapterResult:
+    return _execute_step_request(
+        request_dict=request_dict,
+        context=context,
+        audit_event_ids=audit_event_ids,
+        health_state=health_state,
+    )
+
+
+def _execute_step_request(
+    *,
+    request_dict: dict[str, Any],
+    context: MachineOperatorAdapterContext,
+    audit_event_ids: list[str],
+    health_state: _BackendHealthState,
+) -> MachineOperatorAdapterResult:
+    capability_name = request_dict["capability_name"]
+    if capability_name not in _SUPPORTED_REAL_CAPABILITIES:
+        audit_event_ids.extend(
+            _emit_terminal_events(
+                request_dict,
+                context,
+                status=MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
+                detail=f"MACHINE_OPERATOR capability is not implemented for live execution: {capability_name}",
+                include_skipped=True,
+                include_aborted=True,
+            )
+        )
+        return _finalize_terminal_result(
+            result=_build_nonexecuted_result(
+                status="aborted",
+                summary="MACHINE_OPERATOR capability is not implemented for live execution.",
+                detail=f"Capability remains non-executing in Sprint 5: {capability_name}",
+                metadata={
+                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
+                    "backend_status": "unsupported_capability",
+                    "backend_execution_attempted": False,
+                    "backend_execution_performed": False,
+                    "machine_action_performed": False,
+                    "adapter_status": "unsupported_capability",
+                },
+                audit_event_ids=audit_event_ids,
+            ),
+            request_dict=request_dict,
+            context=context,
+            audit_event_ids=audit_event_ids,
+        )
+
+    probe_allowed = False
+    if health_state.state == _BACKEND_STATE_UNAVAILABLE:
+        if _cooldown_elapsed(health_state):
+            probe_allowed = True
+        else:
+            detail = "MACHINE_OPERATOR backend circuit is open; execution was blocked before gateway dispatch."
+            audit_event_ids.append(
+                emit_machine_operator_event(
+                    event_type=MachineOperatorAuditEventType.MO_BACKEND_UNAVAILABLE,
+                    plan_id=context.plan_id,
+                    execution_id=context.execution_id,
+                    trace_id=context.trace_id,
+                    intent_id=request_dict["intent_id"],
+                    correlation_id=request_dict["correlation_id"],
+                    capability_name=capability_name,
+                    status=MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
+                    detail=detail,
+                    backend_state=health_state.state,
+                )
+            )
+            return _finalize_terminal_result(
+                result=_build_nonexecuted_result(
+                    status="aborted",
+                    summary="MACHINE_OPERATOR backend circuit is open.",
+                    detail=detail,
+                    metadata={
+                        "lane_outcome": MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
+                        "backend_status": "unavailable",
+                        "backend_execution_attempted": False,
+                        "backend_execution_performed": False,
+                        "machine_action_performed": False,
+                        "adapter_status": "circuit_open",
+                        **_backend_observability_metadata(
+                            health_state=health_state,
+                            backend_latency_ms=0,
+                        ),
+                    },
+                    audit_event_ids=audit_event_ids,
+                ),
+                request_dict=request_dict,
+                context=context,
+                audit_event_ids=audit_event_ids,
+            )
+
+    try:
+        requested_url = _extract_request_url(request_dict)
+    except ValueError as exc:
+        audit_event_ids.extend(
+            _emit_terminal_events(
+                request_dict,
+                context,
+                status=MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST,
+                detail=str(exc),
+                include_skipped=True,
+            )
+        )
+        return _finalize_terminal_result(
+            result=_build_nonexecuted_result(
+                status="failed",
+                summary="MACHINE_OPERATOR request is missing a safe browser target.",
+                detail=str(exc),
+                metadata={
+                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_INVALID_REQUEST,
+                    "backend_status": "invalid_arguments",
+                    "backend_execution_attempted": False,
+                    "backend_execution_performed": False,
+                    "machine_action_performed": False,
+                    "adapter_status": "invalid_arguments",
+                },
+                audit_event_ids=audit_event_ids,
+            ),
+            request_dict=request_dict,
+            context=context,
+            audit_event_ids=audit_event_ids,
+        )
+
+    if not _is_allowlisted_url(requested_url, request_dict["policy_context"]["allowlist_refs"]):
+        detail = f"MACHINE_OPERATOR runtime allowlist blocked URL: {requested_url.normalized_url}"
+        audit_event_ids.extend(
+            _emit_terminal_events(
+                request_dict,
+                context,
+                status=MACHINE_OPERATOR_OUTCOME_POLICY_VIOLATION,
+                detail=detail,
+                include_skipped=True,
+            )
+        )
+        return _finalize_terminal_result(
+            result=_build_nonexecuted_result(
+                status="denied",
+                summary="MACHINE_OPERATOR request blocked by runtime allowlist.",
+                detail=detail,
+                metadata={
+                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_POLICY_VIOLATION,
+                    "backend_status": "allowlist_blocked",
+                    "backend_execution_attempted": False,
+                    "backend_execution_performed": False,
+                    "machine_action_performed": False,
+                    "adapter_status": "allowlist_blocked",
+                },
+                audit_event_ids=audit_event_ids,
+            ),
+            request_dict=request_dict,
+            context=context,
+            audit_event_ids=audit_event_ids,
+        )
+
+    timeout_seconds = _compute_timeout_seconds(request_dict)
+    audit_event_ids.append(
+        emit_machine_operator_event(
+            event_type=MachineOperatorAuditEventType.MO_STEP_STARTED,
+            plan_id=context.plan_id,
+            execution_id=context.execution_id,
+            trace_id=context.trace_id,
+            intent_id=request_dict["intent_id"],
+            correlation_id=request_dict["correlation_id"],
+            capability_name=capability_name,
+            status="started",
+            detail=(
+                f"MACHINE_OPERATOR backend request started with timeout {timeout_seconds:.3f}s."
+                if not probe_allowed
+                else f"MACHINE_OPERATOR recovery probe started with timeout {timeout_seconds:.3f}s."
+            ),
+            backend_state=health_state.state,
+        )
+    )
+
+    started = time.perf_counter()
+    try:
+        gateway_response = _post_openclaw_request(
+            request_dict=request_dict,
+            context=context,
+            timeout_seconds=timeout_seconds,
+        )
+    except Exception as exc:
+        _record_backend_failure(health_state, preserve_unavailable=probe_allowed)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        result = _build_gateway_exception_result(
+            exc=exc,
+            request_dict=request_dict,
+            elapsed_ms=elapsed_ms,
+            health_state=health_state,
+        )
+        _emit_execution_terminal_event(
+            request_dict=request_dict,
+            context=context,
+            result=result,
+            audit_event_ids=audit_event_ids,
+        )
+        return _finalize_terminal_result(
+            result=result,
+            request_dict=request_dict,
+            context=context,
+            audit_event_ids=audit_event_ids,
+        )
+
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    try:
+        result = _translate_gateway_response(
+            request_dict=request_dict,
+            capability_name=capability_name,
+            timeout_seconds=timeout_seconds,
+            elapsed_ms=elapsed_ms,
+            body=gateway_response,
+        )
+        _record_backend_success(health_state)
+        result.metadata.update(
+            _backend_observability_metadata(
+                health_state=health_state,
+                backend_latency_ms=elapsed_ms,
+            )
+        )
+    except ValueError as exc:
+        _record_backend_failure(health_state, preserve_unavailable=probe_allowed)
+        result = _build_nonexecuted_result(
+            status="failed",
+            summary="MACHINE_OPERATOR backend returned an invalid execution envelope.",
+            detail=str(exc),
+            metadata={
+                "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
+                "backend_status": "invalid_backend_response",
+                "backend_execution_attempted": True,
+                "backend_execution_performed": False,
+                "machine_action_performed": False,
+                "adapter_status": "invalid_backend_response",
+                "timeout_seconds": timeout_seconds,
+                **_backend_observability_metadata(
+                    health_state=health_state,
+                    backend_latency_ms=elapsed_ms,
+                    backend_error_type=type(exc).__name__,
+                ),
+            },
+            audit_event_ids=audit_event_ids,
+        )
+    _emit_execution_terminal_event(
+        request_dict=request_dict,
+        context=context,
+        result=result,
+        audit_event_ids=audit_event_ids,
+    )
+    return _finalize_terminal_result(
+        result=result,
+        request_dict=request_dict,
+        context=context,
+        audit_event_ids=audit_event_ids,
+    )
+
+
+def _build_gateway_exception_result(
+    *,
+    exc: Exception,
+    request_dict: dict[str, Any],
+    elapsed_ms: int,
+    health_state: _BackendHealthState,
+) -> MachineOperatorAdapterResult:
+    timeout_seconds = _compute_timeout_seconds(request_dict)
+    backend_error_type = type(exc).__name__
+    if requests is None:
+        detail = "Python requests dependency is unavailable for MACHINE_OPERATOR execution."
+        return _build_nonexecuted_result(
+            status="aborted",
+            summary="MACHINE_OPERATOR backend is unavailable.",
+            detail=detail,
+            metadata={
+                "lane_outcome": MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
+                "backend_status": "unavailable",
+                "backend_execution_attempted": False,
+                "backend_execution_performed": False,
+                "machine_action_performed": False,
+                "adapter_status": "backend_unavailable",
+                "timeout_seconds": timeout_seconds,
+                **_backend_observability_metadata(
+                    health_state=health_state,
+                    backend_latency_ms=elapsed_ms,
+                    backend_error_type=backend_error_type,
+                ),
+            },
+            consumed_budget=MachineOperatorBudgetUsage(
+                steps=0,
+                duration_ms=max(elapsed_ms, 0),
+                output_bytes=0,
+                side_effects=0,
+            ),
+            audit_event_ids=[],
+        )
+    if isinstance(exc, requests.Timeout):
+        detail = f"MACHINE_OPERATOR execution timed out after {timeout_seconds:.3f}s."
+        return _build_nonexecuted_result(
+            status="aborted",
+            summary="MACHINE_OPERATOR execution timed out.",
+            detail=detail,
+            metadata={
+                "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
+                "backend_status": "timeout",
+                "backend_execution_attempted": True,
+                "backend_execution_performed": False,
+                "machine_action_performed": False,
+                "adapter_status": "timeout",
+                "timeout_seconds": timeout_seconds,
+                **_backend_observability_metadata(
+                    health_state=health_state,
+                    backend_latency_ms=elapsed_ms,
+                    backend_error_type=backend_error_type,
+                ),
+            },
+            consumed_budget=MachineOperatorBudgetUsage(
+                steps=0,
+                duration_ms=max(elapsed_ms, 0),
+                output_bytes=0,
+                side_effects=0,
+            ),
+            audit_event_ids=[],
+        )
+    detail = f"MACHINE_OPERATOR backend request failed: {exc}"
+    return _build_nonexecuted_result(
+        status="aborted",
+        summary="MACHINE_OPERATOR backend is unavailable.",
+        detail=detail,
+        metadata={
+            "lane_outcome": MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
+            "backend_status": "unavailable",
+            "backend_execution_attempted": True,
+            "backend_execution_performed": False,
+            "machine_action_performed": False,
+            "adapter_status": "backend_unavailable",
+            "timeout_seconds": timeout_seconds,
+            **_backend_observability_metadata(
+                health_state=health_state,
+                backend_latency_ms=elapsed_ms,
+                backend_error_type=backend_error_type,
+            ),
+        },
+        consumed_budget=MachineOperatorBudgetUsage(
+            steps=0,
+            duration_ms=max(elapsed_ms, 0),
+            output_bytes=0,
+            side_effects=0,
+        ),
+        audit_event_ids=[],
+    )
+
+
+def _emit_execution_terminal_event(
+    *,
+    request_dict: dict[str, Any],
+    context: MachineOperatorAdapterContext,
+    result: MachineOperatorAdapterResult,
+    audit_event_ids: list[str],
+) -> None:
+    lane_outcome = str(result.metadata.get("lane_outcome", ""))
+    backend_error_type = str(result.metadata.get("backend_error_type", ""))
+    adapter_status = str(result.metadata.get("adapter_status", ""))
+    if adapter_status == "circuit_open":
+        event_type = MachineOperatorAuditEventType.MO_BACKEND_UNAVAILABLE
+        status = MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE
+    elif lane_outcome == MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE:
+        event_type = MachineOperatorAuditEventType.MO_BACKEND_UNAVAILABLE
+        status = MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE
+    elif result.status == "ok":
+        event_type = MachineOperatorAuditEventType.MO_STEP_COMPLETED
+        status = MACHINE_OPERATOR_OUTCOME_SUCCESS
+    elif result.status == "partial":
+        event_type = MachineOperatorAuditEventType.MO_STEP_PARTIAL
+        status = MACHINE_OPERATOR_OUTCOME_EXECUTION_PARTIAL
+    elif result.status == "failed":
+        event_type = MachineOperatorAuditEventType.MO_EXECUTION_FAILED
+        status = MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED
+    elif result.status == "denied":
+        event_type = MachineOperatorAuditEventType.MO_EXECUTION_SKIPPED
+        status = MACHINE_OPERATOR_OUTCOME_POLICY_VIOLATION
+    else:
+        event_type = MachineOperatorAuditEventType.MO_ABORTED
+        status = MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED
+    audit_event_ids.append(
+        emit_machine_operator_event(
+            event_type=event_type,
+            plan_id=context.plan_id,
+            execution_id=context.execution_id,
+            trace_id=context.trace_id,
+            intent_id=request_dict["intent_id"],
+            correlation_id=request_dict["correlation_id"],
+            capability_name=request_dict["capability_name"],
+            status=status,
+            detail=(
+                result.observation.summary
+                + (f" (error_type={backend_error_type})" if backend_error_type else "")
+            ),
+            backend_state=str(result.metadata.get("backend_state", "")),
+        )
+    )
 
 
 def _emit_base_audit_events(
@@ -626,33 +832,21 @@ def _finalize_terminal_result(
     if not is_machine_operator_transition_allowed(MACHINE_OPERATOR_STATE_REQUESTED, lane_outcome):
         raise ValueError(f"Unsupported MACHINE_OPERATOR lane_outcome: {lane_outcome}")
 
-    evidence_expected = _evidence_expected(
-        capability_name=request_dict["capability_name"],
-        status=result.status,
-        evidence_refs=result.evidence_refs,
-    )
-    evidence_semantics = _evidence_semantics(
-        capability_name=request_dict["capability_name"],
-        status=result.status,
-        evidence_refs=result.evidence_refs,
-    )
     result.metadata.update(_ephemeral_session_metadata())
-    result.metadata.update(
-        {
-            "evidence_expected": evidence_expected,
-            "evidence_available": bool(result.evidence_refs),
-            "evidence_count": len(result.evidence_refs),
-            "evidence_semantics": evidence_semantics,
-        }
-    )
+    result.metadata.setdefault("backend_latency_ms", max(result.consumed_budget.duration_ms, 0))
+    result.metadata.setdefault("backend_state", "")
+    result.metadata.setdefault("backend_error_type", "")
+    result.metadata.setdefault("circuit_state", "closed")
     structured_data = dict(result.observation.structured_data)
     structured_data.update(_ephemeral_session_structured_data())
     structured_data.update(
         {
-            "evidence_expected": evidence_expected,
             "evidence_available": bool(result.evidence_refs),
             "evidence_count": len(result.evidence_refs),
-            "evidence_semantics": evidence_semantics,
+            "backend_latency_ms": result.metadata["backend_latency_ms"],
+            "backend_state": result.metadata["backend_state"],
+            "backend_error_type": result.metadata["backend_error_type"],
+            "circuit_state": result.metadata["circuit_state"],
         }
     )
     result.observation = MachineOperatorObservation(
@@ -673,6 +867,7 @@ def _finalize_terminal_result(
             capability_name=request_dict["capability_name"],
             status=lane_outcome,
             detail="MACHINE_OPERATOR retained no reusable session state after terminal outcome.",
+            backend_state=str(result.metadata.get("backend_state", "")),
         )
     )
     result.audit_event_ids = finalized_audit_ids
@@ -697,42 +892,6 @@ def _ephemeral_session_structured_data() -> dict[str, Any]:
         "session_retained_after_terminal": False,
         "cleanup_semantics": "no_reusable_session_retained",
     }
-
-
-def _evidence_expected(
-    *,
-    capability_name: str,
-    status: str,
-    evidence_refs: list[MachineOperatorEvidenceRef],
-) -> bool:
-    if evidence_refs:
-        return True
-    if status in {"failed", "aborted", "denied"}:
-        return False
-    return capability_name in {CAPABILITY_BROWSER_SNAPSHOT, CAPABILITY_BROWSER_SCREENSHOT}
-
-
-def _evidence_semantics(
-    *,
-    capability_name: str,
-    status: str,
-    evidence_refs: list[MachineOperatorEvidenceRef],
-) -> str:
-    if evidence_refs:
-        if status == "partial":
-            return "partial_evidence"
-        return "evidence_present"
-    if status == "aborted":
-        return "aborted_before_evidence"
-    if status == "failed":
-        return "failure_before_evidence"
-    if status in {"ok", "denied", "partial"} and not _evidence_expected(
-        capability_name=capability_name,
-        status=status,
-        evidence_refs=evidence_refs,
-    ):
-        return "no_evidence_expected"
-    return "no_evidence_expected"
 
 
 def _validate_context_consistency(
@@ -785,8 +944,7 @@ def _validate_execution_governance(
     audit_event_ids: list[str],
 ) -> MachineOperatorAdapterResult | None:
     decision = enforce_machine_operator_request(request_dict)
-    policy = get_machine_operator_policy(request_dict["capability_name"])
-    if decision.allowed and context.policy_reason_code == "allowed" and policy.policy_level in {"N0", "N1"}:
+    if decision.allowed and context.policy_reason_code == "allowed" and decision.policy.policy_level in {"N0", "N1"}:
         return None
 
     if decision.reason_code == "invalid_request":
@@ -840,123 +998,6 @@ def _abort_requested(request_dict: dict[str, Any]) -> bool:
         if isinstance(constraints, list):
             return any(item in {"abort_requested", "cancel_requested"} for item in constraints)
     return False
-
-
-def _handle_gateway_exception(
-    *,
-    exc: Exception,
-    request_dict: dict[str, Any],
-    context: MachineOperatorAdapterContext,
-    audit_event_ids: list[str],
-    elapsed_ms: int,
-) -> MachineOperatorAdapterResult:
-    timeout_seconds = _compute_timeout_seconds(request_dict)
-    if requests is None:
-        detail = "Python requests dependency is unavailable for MACHINE_OPERATOR execution."
-        audit_event_ids.extend(
-            _emit_terminal_events(
-                request_dict,
-                context,
-                status=MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
-                detail=detail,
-                include_backend_unavailable=True,
-            )
-        )
-        return _finalize_terminal_result(
-            result=_build_nonexecuted_result(
-                status="aborted",
-                summary="MACHINE_OPERATOR backend is unavailable.",
-                detail=detail,
-                metadata={
-                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
-                    "backend_status": "unavailable",
-                    "backend_execution_attempted": False,
-                    "backend_execution_performed": False,
-                    "machine_action_performed": False,
-                    "adapter_status": "backend_unavailable",
-                    "timeout_seconds": timeout_seconds,
-                },
-                audit_event_ids=audit_event_ids,
-            ),
-            request_dict=request_dict,
-            context=context,
-            audit_event_ids=audit_event_ids,
-        )
-
-    if isinstance(exc, requests.Timeout):
-        detail = f"MACHINE_OPERATOR execution timed out after {timeout_seconds:.3f}s."
-        audit_event_ids.extend(
-            _emit_terminal_events(
-                request_dict,
-                context,
-                status=MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
-                detail=detail,
-                include_execution_failed=True,
-            )
-        )
-        return _finalize_terminal_result(
-            result=_build_nonexecuted_result(
-                status="failed",
-                summary="MACHINE_OPERATOR execution timed out.",
-                detail=detail,
-                metadata={
-                    "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_FAILED,
-                    "backend_status": "timed_out",
-                    "backend_execution_attempted": True,
-                    "backend_execution_performed": False,
-                    "machine_action_performed": False,
-                    "adapter_status": "timed_out",
-                    "timeout_seconds": timeout_seconds,
-                },
-                consumed_budget=MachineOperatorBudgetUsage(
-                    steps=0,
-                    duration_ms=max(elapsed_ms, 0),
-                    output_bytes=0,
-                    side_effects=0,
-                ),
-                audit_event_ids=audit_event_ids,
-            ),
-            request_dict=request_dict,
-            context=context,
-            audit_event_ids=audit_event_ids,
-        )
-
-    detail = f"MACHINE_OPERATOR backend request failed: {exc}"
-    audit_event_ids.extend(
-        _emit_terminal_events(
-            request_dict,
-            context,
-            status=MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
-            detail=detail,
-            include_backend_unavailable=True,
-        )
-    )
-    return _finalize_terminal_result(
-        result=_build_nonexecuted_result(
-            status="aborted",
-            summary="MACHINE_OPERATOR backend is unavailable.",
-            detail=detail,
-            metadata={
-                "lane_outcome": MACHINE_OPERATOR_OUTCOME_BACKEND_UNAVAILABLE,
-                "backend_status": "unavailable",
-                "backend_execution_attempted": True,
-                "backend_execution_performed": False,
-                "machine_action_performed": False,
-                "adapter_status": "backend_unavailable",
-                "timeout_seconds": timeout_seconds,
-            },
-            consumed_budget=MachineOperatorBudgetUsage(
-                steps=0,
-                duration_ms=max(elapsed_ms, 0),
-                output_bytes=0,
-                side_effects=0,
-            ),
-            audit_event_ids=audit_event_ids,
-        ),
-        request_dict=request_dict,
-        context=context,
-        audit_event_ids=audit_event_ids,
-    )
 
 
 def _translate_gateway_response(
@@ -1101,6 +1142,7 @@ def _post_openclaw_request(
     if requests is None:
         raise RuntimeError("requests dependency unavailable")
 
+    # No retry policy by design (deterministic execution model).
     response = requests.post(
         _gateway_execute_url(),
         json=_build_gateway_payload(
@@ -1587,6 +1629,52 @@ def _compute_timeout_seconds(request_dict: dict[str, Any]) -> float:
         requested_timeout = max(config.OPENCLAW_TIMEOUT_SECONDS, 0.001)
     configured_timeout = max(config.OPENCLAW_TIMEOUT_SECONDS, 0.001)
     return min(requested_timeout, configured_timeout)
+
+
+def _backend_observability_metadata(
+    *,
+    health_state: _BackendHealthState,
+    backend_latency_ms: int,
+    backend_error_type: str = "",
+) -> dict[str, Any]:
+    return {
+        "backend_latency_ms": max(backend_latency_ms, 0),
+        "backend_state": health_state.state,
+        "backend_error_type": backend_error_type,
+        "circuit_state": _circuit_state(health_state),
+    }
+
+
+def _circuit_state(health_state: _BackendHealthState) -> str:
+    return "open" if health_state.state == _BACKEND_STATE_UNAVAILABLE else "closed"
+
+
+def _record_backend_success(health_state: _BackendHealthState) -> None:
+    health_state.consecutive_failures = 0
+    health_state.state = _BACKEND_STATE_HEALTHY
+    health_state.last_success_timestamp = time.time()
+
+
+def _cooldown_elapsed(health_state: _BackendHealthState) -> bool:
+    if health_state.last_failure_timestamp <= 0:
+        return False
+    return (time.time() - health_state.last_failure_timestamp) >= _BACKEND_UNAVAILABLE_COOLDOWN_SECONDS
+
+
+def _record_backend_failure(
+    health_state: _BackendHealthState,
+    *,
+    preserve_unavailable: bool = False,
+) -> None:
+    health_state.consecutive_failures += 1
+    health_state.last_failure_timestamp = time.time()
+    if preserve_unavailable:
+        health_state.state = _BACKEND_STATE_UNAVAILABLE
+        return
+    if health_state.consecutive_failures >= _BACKEND_UNAVAILABLE_FAILURE_THRESHOLD:
+        health_state.state = _BACKEND_STATE_UNAVAILABLE
+        return
+    health_state.state = _BACKEND_STATE_DEGRADED
 
 
 def _gateway_execute_url() -> str:
