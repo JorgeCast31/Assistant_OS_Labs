@@ -53,6 +53,38 @@ def evaluate_governance(
             )
         )
 
+    # FROZEN dominates ALL other governance decisions — no execution permitted
+    # under any circumstances until the operator explicitly clears the freeze.
+    # This is the system kill-switch: checked before capability, risk, or anomaly
+    # evaluation. Auto-unfreeze is intentionally NOT possible.
+    if operational_mode == "FROZEN":
+        reasons.append(GovernanceReason(
+            code="system_frozen",
+            detail="System is FROZEN. All execution is blocked until operator clears the freeze.",
+        ))
+        interventions.append(GovernanceIntervention(
+            kind="system_freeze", value="*", reason="Operator-imposed system freeze.",
+        ))
+        return GovernanceDecision(
+            governance_ref=f"governance:{created_at}:{action}",
+            action="BLOCK",
+            target_domain=domain,
+            target_action=action,
+            effective_execution_mode=EXECUTION_MODE_BLOCKED,
+            risk_level=risk.level,
+            justification="System is FROZEN. All execution blocked until operator clears the freeze.",
+            reasons=reasons,
+            constraints=constraints,
+            interventions=interventions,
+            capability_mode=capability.mode,
+            base_execution_mode=base_execution_mode,
+            operational_mode=operational_mode,
+            created_at=created_at,
+            capability_source=capability.source,
+            anomaly_signals=anomaly_signals,
+            dynamic_factors=dynamic_factors,
+        )
+
     if capability.source != "static":
         dynamic_factors.append(f"capability_source:{capability.source}")
 

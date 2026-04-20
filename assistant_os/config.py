@@ -34,6 +34,9 @@ MAX_ITERATIONS: int = 10
 # In production, ALWAYS set WEBHOOK_TOKEN environment variable!
 _WEBHOOK_TOKEN_FALLBACK = "TEST_TOKEN_NOT_FOR_PRODUCTION_USE"
 WEBHOOK_TOKEN: str = os.environ.get("WEBHOOK_TOKEN", _WEBHOOK_TOKEN_FALLBACK)
+# A2-FIX: Admin token for schema operations. When set, X-Assistant-Admin-Token
+# header must match this value exactly. Empty = presence-only check (dev mode).
+WEBHOOK_ADMIN_TOKEN: str = os.environ.get("WEBHOOK_ADMIN_TOKEN", "")
 WEBHOOK_HOST: str = os.environ.get("WEBHOOK_HOST", "0.0.0.0")
 WEBHOOK_PORT: int = int(os.environ.get("WEBHOOK_PORT", "8787"))
 CONTROL_PLANE_HOST: str = os.environ.get("CONTROL_PLANE_HOST", "127.0.0.1")

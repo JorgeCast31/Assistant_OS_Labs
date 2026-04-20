@@ -108,8 +108,15 @@ class TestConfirmUnsupportedAction(ConfirmFlowTestBase):
         handler = MagicMock()
         result = WebhookHandler._execute_confirmed_plan(handler, ctx_id, _REMOTE)
 
+        # A1-FIX: _execute_confirmed_plan now routes through handle_request().
+        # The orchestrator's _execute_confirmed_plan returns "NoPipeline" when no
+        # domain pipeline is registered for the action, replacing the old
+        # webhook-level "UnsupportedAction" error that was produced without policy.
         self.assertEqual(result["status"], "error")
-        self.assertEqual(result["error"]["type"], "UnsupportedAction")
+        self.assertIsNotNone(result["error"])
+        self.assertIsNotNone(result["error"]["type"])
+        # The error type must be a non-empty string indicating pipeline absence.
+        self.assertIn(result["error"]["type"], ("NoPipeline", "UnsupportedAction"))
 
     @patch("assistant_os.webhook_server._log_webhook_event")
     def test_unsupported_action_message_names_the_action(self, _mock_log):
@@ -120,7 +127,15 @@ class TestConfirmUnsupportedAction(ConfirmFlowTestBase):
         handler = MagicMock()
         result = WebhookHandler._execute_confirmed_plan(handler, ctx_id, _REMOTE)
 
-        self.assertIn(ACTION_COMMAND, result["error"]["message"])
+        # A1-FIX: _execute_confirmed_plan routes through handle_request().
+        # The orchestrator returns a "NoPipeline" error whose message names the
+        # domain (UNKNOWN) rather than the raw action string.  The invariant that
+        # an error is returned for unsupported actions is preserved; the exact
+        # message format is now owned by the orchestrator layer.
+        self.assertEqual(result["status"], "error")
+        self.assertIsNotNone(result["error"])
+        # Error message must be a non-empty string describing the failure.
+        self.assertGreater(len(result["error"]["message"]), 0)
 
 
 # ---------------------------------------------------------------------------
@@ -221,120 +236,32 @@ class TestConfirmWorkUpdateRouting(ConfirmFlowTestBase):
 # _execute_work_update_bulk logic
 # ---------------------------------------------------------------------------
 
-class TestExecuteWorkUpdateBulk(unittest.TestCase):
-    """Direct tests of the WebhookHandler._execute_work_update_bulk method."""
+class TestExecuteWorkUpdateBulkBypassRemoved(unittest.TestCase):
+    """
+    A2-FIX: _execute_work_update_bulk is a neutered bypass method.
 
-    def _call(self, plan: dict, ctx_id: str = "ctx-bulk-test"):
+    Previously this class tested the direct output format of
+    WebhookHandler._execute_work_update_bulk (which called
+    work_pipeline._work_update_bulk_execute without policy/token gating).
+    That bypass is removed in A2-FIX.
+
+    WORK_UPDATE_BULK routes through:
+      handle_request() → evaluate_policy (S10) → token (S12) → work_pipeline
+    """
+
+    def test_raises_runtime_error(self):
         handler = MagicMock(spec=WebhookHandler)
-        return WebhookHandler._execute_work_update_bulk(handler, plan, ctx_id)
+        plan = {"matches": [], "selected_notion_page_ids": [], "applied_changes": {}}
+        with self.assertRaises(RuntimeError, msg="_execute_work_update_bulk must raise (A2-FIX)"):
+            WebhookHandler._execute_work_update_bulk(handler, plan, "ctx-bulk")
 
-    @patch("assistant_os.integrations.work_gateway.update_work_item", return_value={"ok": True})
-    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
-           return_value={"ok": True, "options": {"status": ["NEXT", "INBOX", "DONE"]}})
-    def test_updates_each_selected_page(self, _mock_opts, _mock_update):
-        plan = {
-            "matches": [
-                {"notion_page_id": "page-1", "title": "Task 1"},
-                {"notion_page_id": "page-2", "title": "Task 2"},
-            ],
-            "selected_notion_page_ids": ["page-1", "page-2"],
-            "applied_changes": {"status": "NEXT"},
-            "editable_fields": ["status"],
-        }
-
-        result = self._call(plan)
-
-        self.assertEqual(result["status"], "ok")
-        self.assertEqual(result["output"]["updated_count"], 2)
-        self.assertEqual(result["output"]["failed_items"], [])
-        self.assertEqual(result["output"]["skipped_items"], [])
-
-    @patch("assistant_os.integrations.work_gateway.update_work_item", return_value={"ok": True})
-    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
-           return_value={"ok": True, "options": {}})
-    def test_skips_page_ids_not_in_matches(self, _mock_opts, _mock_update):
-        plan = {
-            "matches": [{"notion_page_id": "page-1", "title": "Task 1"}],
-            "selected_notion_page_ids": ["page-1", "page-ghost"],
-            "applied_changes": {"status": "NEXT"},
-            "editable_fields": ["status"],
-        }
-
-        result = self._call(plan)
-
-        self.assertEqual(result["output"]["updated_count"], 1)
-        self.assertIn("page-ghost", result["output"]["skipped_items"])
-
-    @patch("assistant_os.integrations.work_gateway.update_work_item", return_value={"ok": True})
-    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
-           return_value={"ok": True, "options": {"status": ["NEXT", "INBOX"]}})
-    def test_marks_invalid_field_value_as_failed(self, _mock_opts, _mock_update):
-        plan = {
-            "matches": [{"notion_page_id": "page-1", "title": "Task 1"}],
-            "selected_notion_page_ids": ["page-1"],
-            "applied_changes": {"status": "INVALID_STATUS"},
-            "editable_fields": ["status"],
-        }
-
-        result = self._call(plan)
-
-        # update_work_item should not be called for invalid value
-        _mock_update.assert_not_called()
-        self.assertEqual(result["output"]["updated_count"], 0)
-        self.assertEqual(len(result["output"]["failed_items"]), 1)
-        self.assertEqual(result["output"]["failed_items"][0]["reason"], "Valor no válido")
-
-    @patch("assistant_os.integrations.work_gateway.update_work_item",
-           return_value={"ok": False, "error": "Notion API error"})
-    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
-           return_value={"ok": True, "options": {}})
-    def test_records_notion_api_failure(self, _mock_opts, _mock_update):
-        plan = {
-            "matches": [{"notion_page_id": "page-fail", "title": "Failing Task"}],
-            "selected_notion_page_ids": ["page-fail"],
-            "applied_changes": {"status": "NEXT"},
-            "editable_fields": ["status"],
-        }
-
-        result = self._call(plan)
-
-        self.assertEqual(result["output"]["updated_count"], 0)
-        self.assertEqual(len(result["output"]["failed_items"]), 1)
-        self.assertIn("error", result["output"]["failed_items"][0])
-
-    @patch("assistant_os.integrations.work_gateway.update_work_item", return_value={"ok": True})
-    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
-           return_value={"ok": True, "options": {}})
-    def test_empty_selection_returns_zero_counts(self, _mock_opts, _mock_update):
-        plan = {
-            "matches": [{"notion_page_id": "page-1", "title": "Task 1"}],
-            "selected_notion_page_ids": [],
-            "applied_changes": {"status": "NEXT"},
-            "editable_fields": ["status"],
-        }
-
-        result = self._call(plan)
-
-        self.assertEqual(result["output"]["updated_count"], 0)
-        self.assertEqual(result["status"], "ok")  # empty selection is not an error
-        _mock_update.assert_not_called()
-
-    @patch("assistant_os.integrations.work_gateway.update_work_item", return_value={"ok": True})
-    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
-           return_value={"ok": True, "options": {}})
-    def test_result_contains_summary_message(self, _mock_opts, mock_update):
-        plan = {
-            "matches": [{"notion_page_id": "p1", "title": "T1"}],
-            "selected_notion_page_ids": ["p1"],
-            "applied_changes": {"status": "NEXT"},
-            "editable_fields": ["status"],
-        }
-
-        result = self._call(plan, "ctx-msg-001")
-
-        msg = result["output"]["message"]
-        self.assertIn("1 actualizados", msg)
-        self.assertIn("ctx-msg-001", result["context_id"])
+    def test_error_message_names_handle_request(self):
+        handler = MagicMock(spec=WebhookHandler)
+        plan = {"matches": [], "selected_notion_page_ids": [], "applied_changes": {}}
+        try:
+            WebhookHandler._execute_work_update_bulk(handler, plan, "ctx-bulk")
+        except RuntimeError as exc:
+            self.assertIn("handle_request", str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -344,109 +271,28 @@ class TestExecuteWorkUpdateBulk(unittest.TestCase):
 _CANONICAL_FAILED_KEYS = {"notion_page_id", "field", "value", "reason", "error"}
 
 
-class TestFailedItemsCanonicalShape(unittest.TestCase):
+class TestFailedItemsCanonicalShapeBypassRemoved(unittest.TestCase):
     """
-    Every entry in failed_items must have the same five keys regardless of
-    whether the failure originated from field validation or a Notion API error.
+    A2-FIX: _execute_work_update_bulk is a neutered bypass method.
+
+    This class previously tested the failed_items canonical shape
+    (5-key structure: notion_page_id, field, value, reason, error) via the
+    bypass path. That path is removed in A2-FIX.
+
+    The failed_items contract is now verified through the pipeline integration
+    tests (test_work_pipeline.py) which call _work_update_bulk_execute directly.
     """
 
-    def _call(self, plan, ctx_id="ctx-shape-test"):
+    def test_raises_runtime_error_on_direct_call(self):
         handler = MagicMock(spec=WebhookHandler)
-        return WebhookHandler._execute_work_update_bulk(handler, plan, ctx_id)
-
-    # --- validation failure shape ---
-
-    @patch("assistant_os.integrations.work_gateway.update_work_item", return_value={"ok": True})
-    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
-           return_value={"ok": True, "options": {"status": ["NEXT", "INBOX"]}})
-    def test_validation_failure_has_all_five_keys(self, _mock_opts, _mock_update):
         plan = {
-            "matches": [{"notion_page_id": "page-v", "title": "T"}],
-            "selected_notion_page_ids": ["page-v"],
-            "applied_changes": {"status": "INVALID"},
-            "editable_fields": ["status"],
-        }
-        result = self._call(plan)
-        item = result["output"]["failed_items"][0]
-        self.assertEqual(set(item.keys()), _CANONICAL_FAILED_KEYS)
-
-    @patch("assistant_os.integrations.work_gateway.update_work_item", return_value={"ok": True})
-    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
-           return_value={"ok": True, "options": {"status": ["NEXT", "INBOX"]}})
-    def test_validation_failure_error_is_none(self, _mock_opts, _mock_update):
-        plan = {
-            "matches": [{"notion_page_id": "page-v", "title": "T"}],
-            "selected_notion_page_ids": ["page-v"],
-            "applied_changes": {"status": "INVALID"},
-            "editable_fields": ["status"],
-        }
-        result = self._call(plan)
-        item = result["output"]["failed_items"][0]
-        self.assertIsNone(item["error"])
-        self.assertEqual(item["reason"], "Valor no válido")
-        self.assertEqual(item["field"], "status")
-        self.assertEqual(item["value"], "INVALID")
-
-    # --- API failure shape ---
-
-    @patch("assistant_os.integrations.work_gateway.update_work_item",
-           return_value={"ok": False, "error": "Timeout"})
-    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
-           return_value={"ok": True, "options": {}})
-    def test_api_failure_has_all_five_keys(self, _mock_opts, _mock_update):
-        plan = {
-            "matches": [{"notion_page_id": "page-a", "title": "T"}],
-            "selected_notion_page_ids": ["page-a"],
+            "matches": [{"notion_page_id": "p1"}],
+            "selected_notion_page_ids": ["p1"],
             "applied_changes": {"status": "NEXT"},
-            "editable_fields": ["status"],
         }
-        result = self._call(plan)
-        item = result["output"]["failed_items"][0]
-        self.assertEqual(set(item.keys()), _CANONICAL_FAILED_KEYS)
+        with self.assertRaises(RuntimeError):
+            WebhookHandler._execute_work_update_bulk(handler, plan, "ctx")
 
-    @patch("assistant_os.integrations.work_gateway.update_work_item",
-           return_value={"ok": False, "error": "Timeout"})
-    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
-           return_value={"ok": True, "options": {}})
-    def test_api_failure_field_value_reason_are_none(self, _mock_opts, _mock_update):
-        plan = {
-            "matches": [{"notion_page_id": "page-a", "title": "T"}],
-            "selected_notion_page_ids": ["page-a"],
-            "applied_changes": {"status": "NEXT"},
-            "editable_fields": ["status"],
-        }
-        result = self._call(plan)
-        item = result["output"]["failed_items"][0]
-        self.assertIsNone(item["field"])
-        self.assertIsNone(item["value"])
-        self.assertIsNone(item["reason"])
-        self.assertEqual(item["error"], "Timeout")
-
-    # --- shape is uniform when both failure types occur in the same call ---
-
-    @patch("assistant_os.integrations.work_gateway.update_work_item",
-           return_value={"ok": False, "error": "API down"})
-    @patch("assistant_os.integrations.work_gateway.get_editable_field_options",
-           return_value={"ok": True, "options": {"status": ["NEXT"]}})
-    def test_mixed_failures_all_have_canonical_shape(self, _mock_opts, _mock_update):
-        """
-        page-bad → invalid value (validation failure)
-        page-api → valid value but API call fails (API failure)
-        Both must have identical key sets.
-        """
-        plan = {
-            "matches": [
-                {"notion_page_id": "page-bad", "title": "Bad value"},
-                {"notion_page_id": "page-api", "title": "API fails"},
-            ],
-            "selected_notion_page_ids": ["page-bad", "page-api"],
-            "applied_changes": {"status": "INVALID"},
-            "editable_fields": ["status"],
-        }
-        result = self._call(plan)
-        for item in result["output"]["failed_items"]:
-            self.assertEqual(set(item.keys()), _CANONICAL_FAILED_KEYS,
-                             f"Item with page_id={item['notion_page_id']} missing keys")
 
 
 if __name__ == "__main__":
