@@ -563,21 +563,33 @@ class TestCanonicalRouteInvariantsALFA(unittest.TestCase):
 
     def test_openclaw_is_subordinate_to_host_pipeline(self):
         """
-        OpenClaw adapter must be imported ONLY by host_pipeline — not by
-        webhook_server, orchestrator, or any other module.
+        openclaw_adapter must never be imported by any module OUTSIDE of
+        host_pipeline.
 
-        The invariant is structural subordination:
-          host_pipeline.execute → _dispatch → openclaw_adapter (conditionally)
+        The invariant holds across two coexisting states of the codebase:
 
-        This test does NOT assert on exact adapter function names, which are
-        implementation details. It asserts on the import graph: only one module
-        in the codebase is allowed to depend on openclaw_adapter directly.
+          (a) Active scaffold state — host_pipeline imports openclaw_adapter
+              as a feature-flagged fallback executor (branch reality).
+          (b) Quarantine state — main has deprecated openclaw_adapter;
+              host_pipeline no longer imports it; no module does.
+
+        In both cases the FORBIDDEN set is the same: the critical execution
+        surface (webhook_server, orchestrator, chat_core, etc.) must never
+        reach openclaw_adapter directly, bypassing host_pipeline.
+
+        The invariant therefore is:
+          len(importers that are NOT host_pipeline) == 0
+
+        Zero total importers (quarantine state) satisfies this because
+        the forbidden set is still empty.
         """
         import pathlib, ast
 
         repo_root = pathlib.Path(__file__).parent.parent / "assistant_os"
         adapter_module = "openclaw_adapter"
 
+        # Scan every .py file under assistant_os/ for any import of
+        # openclaw_adapter (direct or via package path).
         importers: list[str] = []
         for py_file in repo_root.rglob("*.py"):
             try:
@@ -588,30 +600,34 @@ class TestCanonicalRouteInvariantsALFA(unittest.TestCase):
             for node in ast.walk(tree):
                 if found_in_file:
                     break
-                # catches: from .openclaw_adapter import ...
-                #          from assistant_os.pipelines.openclaw_adapter import ...
+                # from .openclaw_adapter import ...
+                # from assistant_os.pipelines.openclaw_adapter import ...
                 if isinstance(node, ast.ImportFrom):
                     if node.module and adapter_module in node.module:
                         importers.append(str(py_file.relative_to(repo_root.parent)))
                         found_in_file = True
-                # catches: import openclaw_adapter  (unlikely but covered)
+                # import openclaw_adapter  (unlikely but covered)
                 elif isinstance(node, ast.Import):
                     if any(adapter_module in alias.name for alias in node.names):
                         importers.append(str(py_file.relative_to(repo_root.parent)))
                         found_in_file = True
 
-        # The adapter file itself imports nothing from itself — exclude it
-        importers = [f for f in importers if adapter_module not in f.replace("\\", "/").split("/")[-1]]
+        # Exclude the adapter file itself (it cannot import itself)
+        importers = [
+            f for f in importers
+            if adapter_module not in f.replace("\\", "/").split("/")[-1]
+        ]
 
+        # The only PERMITTED importer is host_pipeline.
+        # All other modules are forbidden from touching openclaw_adapter directly.
+        forbidden = [
+            f for f in importers
+            if "host_pipeline" not in f.replace("\\", "/")
+        ]
         self.assertEqual(
-            len(importers), 1,
-            f"openclaw_adapter must be imported by exactly one module "
-            f"(host_pipeline). Found importers: {importers}",
-        )
-        self.assertIn(
-            "host_pipeline",
-            importers[0],
-            f"The sole importer of openclaw_adapter must be host_pipeline, got: {importers[0]}",
+            len(forbidden), 0,
+            f"openclaw_adapter must not be imported outside of host_pipeline. "
+            f"Forbidden importers found: {forbidden}",
         )
 
         # Secondary check: host_pipeline exposes a callable public `execute` entry point
