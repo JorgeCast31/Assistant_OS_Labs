@@ -562,19 +562,57 @@ class TestCanonicalRouteInvariantsALFA(unittest.TestCase):
             "remove_pending_plan must come before pipeline execution")
 
     def test_openclaw_is_subordinate_to_host_pipeline(self):
-        """OpenClaw is only invoked from within host_pipeline.execute — not directly."""
-        import inspect
-        from assistant_os.pipelines import host_pipeline
-        src = inspect.getsource(host_pipeline)
-        # openclaw is only called from within _dispatch, which is called by execute
-        self.assertIn("execute_host_action_via_openclaw", src)
-        # verify it is NOT imported in webhook_server
-        import pathlib
-        ws_src = pathlib.Path(
-            "assistant_os/webhook_server.py"
-        ).read_text(encoding="utf-8")
-        self.assertNotIn("openclaw", ws_src.lower().replace("# openclaw", ""),
-            "webhook_server must not import openclaw directly")
+        """
+        OpenClaw adapter must be imported ONLY by host_pipeline — not by
+        webhook_server, orchestrator, or any other module.
+
+        The invariant is structural subordination:
+          host_pipeline.execute → _dispatch → openclaw_adapter (conditionally)
+
+        This test does NOT assert on exact adapter function names, which are
+        implementation details. It asserts on the import graph: only one module
+        in the codebase is allowed to depend on openclaw_adapter directly.
+        """
+        import importlib, pathlib, ast
+
+        repo_root = pathlib.Path(__file__).parent.parent / "assistant_os"
+        adapter_module = "openclaw_adapter"
+
+        importers: list[str] = []
+        for py_file in repo_root.rglob("*.py"):
+            try:
+                tree = ast.parse(py_file.read_text(encoding="utf-8"))
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                # catches: from .openclaw_adapter import ...
+                #          from assistant_os.pipelines.openclaw_adapter import ...
+                #          import openclaw_adapter  (unlikely but covered)
+                if isinstance(node, (ast.ImportFrom, ast.Import)):
+                    src = ast.unparse(node) if hasattr(ast, "unparse") else ""
+                    if adapter_module in src:
+                        importers.append(str(py_file.relative_to(repo_root.parent)))
+
+        # The adapter file itself imports nothing from itself — exclude it
+        importers = [f for f in importers if adapter_module not in f.replace("\\", "/").split("/")[-1]]
+
+        self.assertEqual(
+            len(importers), 1,
+            f"openclaw_adapter must be imported by exactly one module "
+            f"(host_pipeline). Found importers: {importers}",
+        )
+        self.assertIn(
+            "host_pipeline",
+            importers[0],
+            f"The sole importer of openclaw_adapter must be host_pipeline, got: {importers[0]}",
+        )
+
+        # Secondary check: host_pipeline exposes a callable public `execute` entry point
+        from assistant_os.pipelines.host_pipeline import execute as host_execute
+        self.assertTrue(
+            callable(host_execute),
+            "host_pipeline.execute must be a callable (single public entry point)",
+        )
 
     def test_chat_core_execution_helpers_exist_but_are_fenced(self):
         """
