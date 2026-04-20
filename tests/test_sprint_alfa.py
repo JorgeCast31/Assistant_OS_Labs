@@ -573,7 +573,7 @@ class TestCanonicalRouteInvariantsALFA(unittest.TestCase):
         implementation details. It asserts on the import graph: only one module
         in the codebase is allowed to depend on openclaw_adapter directly.
         """
-        import importlib, pathlib, ast
+        import pathlib, ast
 
         repo_root = pathlib.Path(__file__).parent.parent / "assistant_os"
         adapter_module = "openclaw_adapter"
@@ -584,14 +584,21 @@ class TestCanonicalRouteInvariantsALFA(unittest.TestCase):
                 tree = ast.parse(py_file.read_text(encoding="utf-8"))
             except SyntaxError:
                 continue
+            found_in_file = False
             for node in ast.walk(tree):
+                if found_in_file:
+                    break
                 # catches: from .openclaw_adapter import ...
                 #          from assistant_os.pipelines.openclaw_adapter import ...
-                #          import openclaw_adapter  (unlikely but covered)
-                if isinstance(node, (ast.ImportFrom, ast.Import)):
-                    src = ast.unparse(node) if hasattr(ast, "unparse") else ""
-                    if adapter_module in src:
+                if isinstance(node, ast.ImportFrom):
+                    if node.module and adapter_module in node.module:
                         importers.append(str(py_file.relative_to(repo_root.parent)))
+                        found_in_file = True
+                # catches: import openclaw_adapter  (unlikely but covered)
+                elif isinstance(node, ast.Import):
+                    if any(adapter_module in alias.name for alias in node.names):
+                        importers.append(str(py_file.relative_to(repo_root.parent)))
+                        found_in_file = True
 
         # The adapter file itself imports nothing from itself — exclude it
         importers = [f for f in importers if adapter_module not in f.replace("\\", "/").split("/")[-1]]
