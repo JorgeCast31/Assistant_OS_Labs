@@ -150,105 +150,104 @@ class TestWebhookSummaryEndpoint(unittest.TestCase):
     # Agent-Specific Summary Tests
     # -------------------------------------------------------------------------
     
-    def test_code_agent_summary_contains_relevant_info(self):
-        """Summary de CodeAgent debe contener module_name o path."""
-        # Remove accumulated CodeAgent artifacts so ensure_unique_path() does not hit
-        # its safety limit (RuntimeError at version > 100) after many test runs.
-        # Both src/ (module) and tests_generated/ (test file) accumulate versions.
-        from assistant_os.config import WORKSPACE_ROOT
-        for _p in sorted((WORKSPACE_ROOT / "src").glob("crea_modulo_ejemplo_simple*.py")):
-            _p.unlink(missing_ok=True)
-        for _p in sorted((WORKSPACE_ROOT / "tests_generated").glob("test_crea_modulo_ejemplo_simple*.py")):
-            _p.unlink(missing_ok=True)
+    def test_code_agent_summary_uses_canonical_path(self):
+        """A1.5: CODE: prefix routes through canonical orchestrator path.
 
+        After A1.5, all prefix text goes through handle_request → NL classifier.
+        The summary is produced by _summarize_classifier(), not _summarize_code().
+        Verify the response structure is valid and agent is "classifier".
+        """
         status, data = self._post_summary("CODE: crea modulo ejemplo simple")
-        
+
         self.assertEqual(status, 200)
-        self.assertTrue(data["ok"])
-        self.assertIn("code", data["title"].lower())
-        
-        # Summary should mention module or path
-        summary_lower = data["summary"].lower()
-        details = data["details"]
-        
-        # At least one of these should be present
-        has_module_info = (
-            "module" in summary_lower or
-            "path" in summary_lower or
-            details.get("module_name") or
-            details.get("module_path")
-        )
-        self.assertTrue(has_module_info, f"Summary should mention module: {data['summary']}")
+        self.assertIn("ok", data)
+        self.assertIn("title", data)
+        self.assertIn("summary", data)
+        self.assertIn("details", data)
+        # A1.5: canonical path uses classifier, not legacy "code" agent
+        self.assertIn("classifier", data["title"].lower(), (
+            f"A1.5: title must reflect canonical classifier path, got: {data['title']!r}"
+        ))
+        # Summary must have some content
+        self.assertTrue(len(data["summary"]) > 0, "Summary must not be empty")
     
-    def test_doc_agent_summary_contains_doc_info(self):
-        """Summary de DocAgent debe contener doc info."""
+    def test_doc_agent_summary_uses_canonical_path(self):
+        """A1.5: DOC: prefix routes through canonical orchestrator path.
+
+        After A1.5, all prefix text goes through handle_request → NL classifier.
+        Verify the response structure is valid and agent is "classifier".
+        """
         status, data = self._post_summary("DOC: generate readme")
-        
+
         self.assertEqual(status, 200)
-        self.assertTrue(data["ok"])
-        self.assertIn("doc", data["title"].lower())
-        
-        # Should have doc-related details
-        details = data["details"]
-        has_doc_info = (
-            details.get("doc_id") or
-            details.get("title") or
-            details.get("path") or
-            "doc" in data["summary"].lower()
-        )
-        self.assertTrue(has_doc_info, f"Summary should have doc info: {data}")
+        self.assertIn("ok", data)
+        self.assertIn("title", data)
+        self.assertIn("summary", data)
+        self.assertIn("details", data)
+        # A1.5: canonical path uses classifier, not legacy "doc" agent
+        self.assertIn("classifier", data["title"].lower(), (
+            f"A1.5: title must reflect canonical classifier path, got: {data['title']!r}"
+        ))
+        self.assertTrue(len(data["summary"]) > 0, "Summary must not be empty")
     
-    def test_jobs_agent_summary_contains_results(self):
-        """Summary de JobsAgent debe contener count o resultados."""
+    def test_jobs_agent_summary_uses_canonical_path(self):
+        """A1.5: JOBS: prefix routes through canonical orchestrator path.
+
+        After A1.5, all prefix text goes through handle_request → NL classifier.
+        Verify the response structure is valid and agent is "classifier".
+        """
         status, data = self._post_summary("JOBS: buscar Python developer")
-        
+
         self.assertEqual(status, 200)
-        self.assertTrue(data["ok"])
-        self.assertIn("jobs", data["title"].lower())
-        
-        # Should mention results or count
-        details = data["details"]
-        has_results_info = (
-            "count" in details or
-            "result" in data["summary"].lower() or
-            "found" in data["summary"].lower()
-        )
-        self.assertTrue(has_results_info, f"Summary should mention results: {data}")
+        self.assertIn("ok", data)
+        self.assertIn("title", data)
+        self.assertIn("summary", data)
+        self.assertIn("details", data)
+        # A1.5: canonical path uses classifier, not legacy "jobs" agent
+        self.assertIn("classifier", data["title"].lower(), (
+            f"A1.5: title must reflect canonical classifier path, got: {data['title']!r}"
+        ))
+        self.assertTrue(len(data["summary"]) > 0, "Summary must not be empty")
     
-    def test_biz_agent_summary_contains_actions(self):
-        """Summary de BizAgent debe contener actions info."""
+    def test_biz_agent_summary_uses_canonical_path(self):
+        """A1.5: BIZ: prefix routes through canonical orchestrator path.
+
+        After A1.5, all prefix text goes through handle_request → NL classifier.
+        Verify the response structure is valid and agent is "classifier".
+        """
         status, data = self._post_summary("BIZ: analizar competencia AI")
-        
+
         self.assertEqual(status, 200)
-        self.assertTrue(data["ok"])
-        self.assertIn("biz", data["title"].lower())
-        
-        # Should have actions info
-        details = data["details"]
-        summary_lower = data["summary"].lower()
-        has_biz_info = (
-            "actions_count" in details or
-            "action" in summary_lower or
-            "risk" in summary_lower
-        )
-        self.assertTrue(has_biz_info, f"Summary should have biz info: {data}")
+        self.assertIn("ok", data)
+        self.assertIn("title", data)
+        self.assertIn("summary", data)
+        self.assertIn("details", data)
+        # A1.5: canonical path uses classifier, not legacy "biz" agent
+        self.assertIn("classifier", data["title"].lower(), (
+            f"A1.5: title must reflect canonical classifier path, got: {data['title']!r}"
+        ))
+        self.assertTrue(len(data["summary"]) > 0, "Summary must not be empty")
     
     # -------------------------------------------------------------------------
     # Error Summary Tests
     # -------------------------------------------------------------------------
     
-    def test_error_summary_contains_error_info(self):
-        """Summary de error debe contener type y message."""
-        # Send invalid command (no valid prefix)
+    def test_unknown_prefix_handled_by_canonical_path(self):
+        """A1.5: Unknown prefixes are handled by the canonical orchestrator path.
+
+        Before A1.5, unknown prefixes like "INVALID:" were rejected with 400.
+        After A1.5, ALL text (including unknown prefixes) routes through
+        handle_request → NL classifier, which processes any text. The response
+        is a valid SummaryResponse, not a rejection.
+        """
         status, data = self._post_summary("INVALID: this should fail")
-        
-        # Should get 400 with error info
-        self.assertEqual(status, 400)
-        self.assertFalse(data["ok"])
-        self.assertIn("ERROR", data["title"])
-        
-        # Summary should contain error message
-        self.assertTrue(len(data["summary"]) > 0)
+
+        # A1.5: canonical path processes any text; no upfront prefix rejection
+        self.assertEqual(status, 200)
+        self.assertIn("ok", data)
+        self.assertIn("title", data)
+        self.assertIn("summary", data)
+        self.assertTrue(len(data["summary"]) > 0, "Summary must not be empty")
 
 
 class TestSummarizeFunction(unittest.TestCase):

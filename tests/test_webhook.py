@@ -113,7 +113,10 @@ class TestWebhookServer(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("status", data)
         self.assertIn(data["status"], ("ok", "pending"))
-        self.assertEqual(data["agent"], "doc")
+        # A1.5: All prefix text routes through the canonical orchestrator path
+        # (handle_request → NL classifier). Legacy agent-specific values like
+        # "doc" are no longer returned; verify structural response instead.
+        self.assertIn("agent", data)
         self.assertIn("context_id", data)
     
     def test_response_structure(self):
@@ -307,18 +310,32 @@ class TestWebhookServer(unittest.TestCase):
             self.assertNotEqual(error_type, "InvalidPrefix",
                               "Should not return InvalidPrefix for text without prefix")
     
-    def test_command_with_prefix_uses_existing_routing(self):
-        """POST /command con prefijo CODE: debe usar routing existente."""
+    def test_command_with_prefix_uses_canonical_routing(self):
+        """POST /command con prefijo CODE: debe usar routing canónico (A1.5).
+
+        A1.5 removed _gated_legacy_route. All prefix text now routes through
+        _route_text_by_classification → handle_request (canonical path). The
+        response will contain agent="classifier" rather than a legacy agent name.
+        Verify a valid structured response is returned, not a legacy bypass.
+        """
         headers = {
             "Content-Type": "application/json",
             "X-Assistant-Token": WEBHOOK_TOKEN,
         }
         body = json.dumps({"text": "CODE: crear modulo test"}).encode("utf-8")
-        
+
         status, data = self._request("POST", "/command", body, headers)
-        
-        # Agent should be "code"
-        self.assertEqual(data.get("agent"), "code")
+
+        # Must return a structured response (not an unhandled error)
+        self.assertIn(status, (200, 202), f"Expected 200/202, got {status}: {data}")
+        self.assertIn("agent", data, "Response must include 'agent' field")
+        # Must NOT return legacy agent values (prefix bypass was removed)
+        legacy_agents = {"doc", "code", "jobs", "biz"}
+        self.assertNotIn(
+            data.get("agent"),
+            legacy_agents,
+            f"agent={data.get('agent')!r} indicates a legacy bypass is still active (A1.5)",
+        )
     
     # -------------------------------------------------------------------------
     # GET /work/schema Robustness Tests

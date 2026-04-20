@@ -54,6 +54,51 @@ from ..contracts import (
 _log = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# S12: Capability token gate helper
+# ---------------------------------------------------------------------------
+
+def _require_token(token: "CapabilityToken", binding: "OperationBinding") -> "DomainResult | None":  # type: ignore[name-defined]
+    """
+    S12 execution gate: verify + consume a capability token before dispatch.
+
+    Returns None when the token passes (proceed with execution).
+    Returns a denied DomainResult when the token is missing, expired,
+    already consumed, or has a binding mismatch.
+
+    Called at every actual execution dispatch point:
+      - _execute_confirmed_plan  (confirm path)
+      - _dispatch_cognitive_execution  (structured and NL AUTO paths)
+      - pipeline(...)  (structured and NL AUTO paths)
+
+    The token is consumed on the first successful verification, enforcing
+    single-use.  Non-execution paths (CONFIRM, BLOCKED, PLAN_GENERATED)
+    do not call this function; their tokens expire naturally.
+    """
+    from ..capabilities.token_verifier import verify_token as _vt, consume_token as _ct
+    if not _vt(token, binding):
+        _log.warning(
+            "_require_token: token verification failed token_id=%s operation_key=%s",
+            token.token_id,
+            token.operation_key,
+        )
+        return make_domain_result(
+            ok=False,
+            result_type="denied",
+            domain="*",
+            message="Capability token verification failed.",
+            error={
+                "type": "token_invalid",
+                "message": (
+                    "Capability token is missing, expired, already consumed, "
+                    "or binding mismatch. No execution permitted."
+                ),
+            },
+        )
+    _ct(token)
+    return None
+
+
 def _consult_mso_advisory(
     req: CanonicalRequest,
     *,
@@ -459,104 +504,76 @@ def handle_request(
     text = req["text"]
 
     # ---------------------------------------------------------------------------
-    # F3: Identity Guard — consume guard_decision from CanonicalRequest.
-    # The decision was stamped upstream by build_guarded_request (identity_guard.py).
-    # handle_request NEVER calls identity_guard() itself — it only reads the
-    # already-computed decision.  When absent (legacy callers), skip enforcement.
+    # S10/S13: Policy Engine — single deterministic authorization gate.
+    #
+    # Subsumes F3 identity guard checks (guard DENY + DEGRADED write block),
+    # the S9 capability gate, and the S13 grant check.
+    # Evaluation order (steps 1–7) is documented in policy/policy_engine.py.
+    #
+    # guard_decision, action_type, and subject_state are stamped on the request
+    # by build_guarded_request() (identity_guard.py).
+    # operation_key is set to context_id (unique per request).
+    # grant_store is the process-local default store (grants/grant_store.py).
+    #
+    # Backward-compatibility: when the default grant store is empty the grant
+    # check is skipped — Sprint 9–12 callers and legacy code are unaffected.
     # ---------------------------------------------------------------------------
-    _guard_decision = req.get("guard_decision")
-    if _guard_decision == "deny":
-        _log.warning(
-            "handle_request: guard DENY on context_id=%s principal=%s",
-            context_id, req.get("principal_id", "unknown"),
-        )
-        return make_domain_result(
-            ok=False,
-            result_type="denied",
-            domain="*",
-            message="Identity guard denied this request.",
-            error={
-                "type": "access_denied",
-                "message": (
-                    "Request blocked by identity guard. "
-                    f"Subject state: {req.get('subject_state', 'unknown')}."
-                ),
-            },
-        )
+    from ..policy.policy_engine import evaluate_policy as _eval_policy
+    from ..policy.policy_models import PolicyContext as _PolicyContext
+    from ..grants.grant_store import get_default_store as _get_grant_store
 
-    # ---------------------------------------------------------------------------
-    # F3: DEGRADED guard — block write operations before any domain logic.
-    # Read-only operations are permitted under DEGRADED (Quarantined state).
-    # ---------------------------------------------------------------------------
-    if _guard_decision == "degraded":
-        from ..identity_guard import is_write_operation as _is_write_op
-        meta_early = req.get("metadata", {})
-        _action_candidate = meta_early.get("action", "")
-        if _is_write_op(_action_candidate):
-            _log.info(
-                "handle_request: guard DEGRADED — blocking write action=%s principal=%s",
-                _action_candidate, req.get("principal_id", "unknown"),
-            )
-            return make_domain_result(
-                ok=False,
-                result_type="denied",
-                domain="*",
-                message="Write operation blocked: session is in read-only (quarantined) mode.",
-                error={
-                    "type": "write_blocked",
-                    "message": (
-                        f"Action '{_action_candidate}' is a write operation and is blocked "
-                        "while the subject is quarantined."
-                    ),
-                },
-            )
-
-    # ---------------------------------------------------------------------------
-    # S9: Capability Gate — after identity guard, before execution dispatch.
-    #
-    # Deterministic, fail-closed check: does the subject's lifecycle state
-    # permit the specific MO capability required for this action_type?
-    #
-    # This is orthogonal to the identity guard:
-    #   - Identity guard (above): (state, action_type) → ALLOW/DENY/DEGRADED
-    #   - Capability gate (here): (state, Capability)  → bool
-    # Both must pass. The gate is a second, independent layer.
-    #
-    # action_type and subject_state are stamped by build_guarded_request().
-    # When absent (legacy callers, NL requests without explicit action_type),
-    # required_capability returns None and the gate passes unconditionally.
-    # ---------------------------------------------------------------------------
-    from ..capabilities.capability_gate import (
-        evaluate_capability as _eval_cap,
-        required_capability as _req_cap,
+    _policy_ctx = _PolicyContext(
+        subject_state=req.get("subject_state", ""),
+        guard_decision=req.get("guard_decision", ""),
+        action_type=req.get("action_type", ""),
+        principal_id=req.get("principal_id", ""),
+        operation_key=context_id,
     )
-    _cap_action_type   = req.get("action_type", "")
-    _cap_subject_state = req.get("subject_state", "")
-    _required_cap      = _req_cap(_cap_action_type)
-    if _required_cap is not None and not _eval_cap(_cap_subject_state, _required_cap):
+    _policy_decision = _eval_policy(_policy_ctx, grant_store=_get_grant_store())
+
+    if not _policy_decision.permitted:
         _log.warning(
-            "handle_request: capability DENIED action_type=%s capability=%s "
-            "subject_state=%s principal=%s",
-            _cap_action_type, _required_cap.value,
-            _cap_subject_state, req.get("principal_id", "unknown"),
+            "handle_request: policy denied outcome=%s reason=%s principal=%s",
+            _policy_decision.outcome.value,
+            _policy_decision.reason.value,
+            req.get("principal_id", "unknown"),
         )
         return make_domain_result(
             ok=False,
             result_type="denied",
             domain="*",
-            message=(
-                f"Capability '{_required_cap.value}' not permitted "
-                f"for subject state '{_cap_subject_state}'."
-            ),
+            message=_policy_decision.detail,
             error={
-                "type": "capability_denied",
-                "message": (
-                    f"Action '{_cap_action_type}' requires capability "
-                    f"'{_required_cap.value}', which is not granted "
-                    f"for subject state '{_cap_subject_state}'."
-                ),
+                "type": _policy_decision.error_type,
+                "message": _policy_decision.detail,
             },
         )
+
+    # ---------------------------------------------------------------------------
+    # S12: Issue capability token — only reached when policy has APPROVED.
+    #
+    # The token is bound to the abstract action_type (stamped by
+    # build_guarded_request) and context_id (unique per request).
+    # required_capability(action_type) → the specific MO Capability (or None
+    # for read/unknown), serialized as its .value string.
+    #
+    # Legacy callers without action_type/subject_state fields receive a token
+    # bound to empty strings and None capability (backward-compatible; the
+    # token still enforces single-use and expiry).
+    # ---------------------------------------------------------------------------
+    from ..capabilities.token_models import OperationBinding as _OperationBinding
+    from ..capabilities.token_issuer import issue_token as _issue_token
+    from ..capabilities.capability_gate import required_capability as _req_cap_tok
+
+    _cap_tok = _req_cap_tok(req.get("action_type", ""))
+    _tok_binding = _OperationBinding(
+        principal_id=req.get("principal_id", ""),
+        subject_state=req.get("subject_state", ""),
+        action_type=req.get("action_type", ""),
+        capability=_cap_tok.value if _cap_tok is not None else None,
+        operation_key=context_id,
+    )
+    _cap_token = _issue_token(_tok_binding)
 
     # ---------------------------------------------------------------------------
     # Confirm path (Phase 3C): execute a previously stored plan.
@@ -564,6 +581,9 @@ def handle_request(
     # ---------------------------------------------------------------------------
     meta = req.get("metadata", {})
     if meta.get("confirm_plan_id"):
+        _gate = _require_token(_cap_token, _tok_binding)
+        if _gate is not None:
+            return _gate
         return _execute_confirmed_plan(
             plan_id=meta["confirm_plan_id"],
             context_id=context_id,
@@ -623,6 +643,10 @@ def handle_request(
         plan_for_exec["raw_text"] = text
 
         if execution_mode == EXECUTION_MODE_AUTO:
+            # S12: verify + consume token before any execution dispatch.
+            _gate = _require_token(_cap_token, _tok_binding)
+            if _gate is not None:
+                return _gate
             if _is_cognitive_execution(structured_plan):
                 result = _dispatch_cognitive_execution(plan_for_exec, context_id)
                 return _publish_mso_observation(
@@ -761,6 +785,10 @@ def handle_request(
     # execution_mode == "auto": policy determined this action is safe to execute
     # immediately. Only actions in _AUTO_EXECUTE_WHITELIST reach this path.
     if execution_mode == EXECUTION_MODE_AUTO:
+        # S12: verify + consume token before any execution dispatch.
+        _gate = _require_token(_cap_token, _tok_binding)
+        if _gate is not None:
+            return _gate
         if _is_cognitive_execution(plan):
             result = _dispatch_cognitive_execution(plan_for_exec, context_id)
             return _publish_mso_observation(
@@ -906,13 +934,16 @@ def _execute_confirmed_plan(plan_id: str, context_id: str) -> DomainResult:
     ----------
     - Single-use: plan is removed BEFORE pipeline execution to prevent replay.
     - plan_id is preserved end-to-end (plan["plan_id"] == the original plan_id).
-    - No policy re-evaluation: the plan already passed policy in pass 1.
+    - Governance re-check: if the system entered FROZEN or DEGRADED between
+      plan creation and confirmation, execution is blocked fail-closed.
     - Control plane / confirmed gates still fire inside the pipeline.
 
     Error paths
     -----------
     - plan not found or expired → ok=False, result_type=confirm_error
     - no registered pipeline for domain → ok=False, result_type=confirm_error
+    - governance FROZEN at confirm time → ok=False, result_type=confirm_error
+    - governance DEGRADED at confirm time → ok=False, result_type=confirm_error
     """
     from ..context_store import get_pending_plan, remove_pending_plan
     from .routing import get_pipeline, action_domain
@@ -946,6 +977,60 @@ def _execute_confirmed_plan(plan_id: str, context_id: str) -> DomainResult:
             error={
                 "type": "NoPipeline",
                 "message": f"No pipeline for domain: {domain!r}",
+            },
+        )
+
+    # ALFA governance re-check at confirm time.
+    #
+    # The plan was approved by governance at request time; however the
+    # operational mode may have changed between plan creation and this confirm.
+    # FROZEN → absolute block (kill-switch); the plan must be re-issued after
+    # the operator clears the freeze.
+    # DEGRADED → block as well: if the system degraded between passes, the
+    # operator must clear the mode before any pending confirms can execute.
+    # This is intentionally fail-closed — safety over convenience.
+    try:
+        from ..mso.system_state import build_system_state_snapshot as _snap
+        _mode = _snap().operational_mode
+        if _mode in ("FROZEN", "DEGRADED"):
+            _log.warning(
+                "_execute_confirmed_plan: blocked confirm replay due to governance "
+                "mode=%s plan_id=%s action=%s",
+                _mode, plan_id, action,
+            )
+            return make_domain_result(
+                ok=False,
+                result_type=RESULT_TYPE_CONFIRM_ERROR,
+                domain=domain,
+                message=(
+                    f"Cannot execute confirmed plan: system is {_mode}. "
+                    "Re-issue the request after the operator clears the mode."
+                ),
+                data={"plan_id": plan_id, "action": action, "operational_mode": _mode},
+                error={
+                    "type": "GovernanceBlocked",
+                    "message": (
+                        f"Confirmed execution blocked: operational_mode={_mode}. "
+                        "The system entered a restricted state after this plan was created."
+                    ),
+                },
+            )
+    except Exception as _gov_exc:
+        # Governance snapshot failure is fatal in the confirm path — fail closed.
+        _log.error(
+            "_execute_confirmed_plan: governance check failed, blocking confirm "
+            "plan_id=%s error=%s",
+            plan_id, _gov_exc,
+        )
+        return make_domain_result(
+            ok=False,
+            result_type=RESULT_TYPE_CONFIRM_ERROR,
+            domain=domain,
+            message="Cannot execute confirmed plan: governance check failed.",
+            data={"plan_id": plan_id},
+            error={
+                "type": "GovernanceCheckFailed",
+                "message": str(_gov_exc),
             },
         )
 

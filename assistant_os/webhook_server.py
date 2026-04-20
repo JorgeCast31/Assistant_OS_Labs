@@ -31,7 +31,10 @@ from .config import (
     is_repo_allowed,
     is_path_in_workspace,
 )
-from .router import parse_command_to_request, route_request
+# A1.5: parse_command_to_request / route_request are kept available for
+# router.py callers and tests; they are no longer called from the webhook
+# handler after the canonical reroute (all text goes through handle_request).
+from .router import parse_command_to_request, route_request  # noqa: F401
 from .contracts import Response, new_context_id, now_iso, ClassifyRequest, ClassifyResponse, ChatSession, ChatCoreResponse
 from .contracts import (
     Plan, make_plan, should_auto_execute,
@@ -510,6 +513,25 @@ def _adapt_result_to_response(dr: "DomainResult", context_id: str) -> dict:
         "error": dr.get("error"),
         "ts": now_iso(),
     }
+
+
+# ---------------------------------------------------------------------------
+# A1.5: _gated_legacy_route REMOVED
+#
+# This function was introduced in A1-FIX as a separate mini-policy path for
+# prefix commands (CODE:, DOC:, JOBS:, BIZ:).  It used synthetic identity
+# values (subject_state="active", guard_decision="allow") that were never
+# grounded in a real RequestIdentity — a structural weakness.
+#
+# A1.5 eliminates the parallel path entirely.  All text — with or without a
+# legacy prefix — now routes through _route_text_by_classification(), which
+# calls handle_request() via the canonical orchestrator.  Policy (S10),
+# token (S12), and grant (S13) enforcement are applied uniformly by the
+# orchestrator, with the same identity context used for every request.
+#
+# The legacy prefix-detection helpers (_has_command_prefix, _has_invalid_prefix)
+# are kept as utility functions but no longer drive separate code paths.
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------
@@ -1307,6 +1329,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_cognition_preferences_post(remote)
             return
 
+        # ALFA kill-switch: POST /admin/governance/mode
+        # Sets or clears the system operational mode (FROZEN / DEGRADED / RESTRICTED / NORMAL).
+        # FROZEN blocks ALL execution across every path including /chat/process.
+        if path == "/admin/governance/mode":
+            self._handle_governance_mode(remote)
+            return
+
         # 404 for unknown paths
         status, error = _make_json_error(404, f"Not found: {path}", "NotFound")
         _log_webhook_event(path, remote, ok=False)
@@ -1682,15 +1711,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._send_json_response(status, error)
             return
         
-        # Check if text has a command prefix (CODE:, DOC:, JOBS:, BIZ:) or invalid prefix (WORD:)
-        if _has_command_prefix(text) or _has_invalid_prefix(text):
-            # Has valid prefix or looks like invalid prefix - use existing routing
-            req = parse_command_to_request(text)
-            response = route_request(req)
-        else:
-            # No prefix: classify and route based on operation
-            response = self._route_text_by_classification(text, remote)
-        
+        # A1.5: All text routes through the canonical orchestrator path regardless
+        # of prefix.  The NL classifier handles prefix text uniformly; no separate
+        # mini-policy path exists.  Policy (S10), token (S12), and grant (S13)
+        # enforcement are applied by handle_request() for every request.
+        response = self._route_text_by_classification(text, remote)
+
         # Determine status code
         if response["status"] == "ok":
             status_code = 200
@@ -1772,15 +1798,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if not isinstance(forced_operation, str):
             forced_operation = ""
         
-        # Check if text has a command prefix (CODE:, DOC:, JOBS:, BIZ:) or invalid prefix (WORD:)
-        if _has_command_prefix(text) or _has_invalid_prefix(text):
-            # Has valid prefix or looks like invalid prefix - use existing routing
-            req = parse_command_to_request(text)
-            response = route_request(req)
-        else:
-            # No prefix: classify and route based on operation
-            response = self._route_text_by_classification(text, remote, forced_operation=forced_operation)
-        
+        # A1.5: All text routes through the canonical orchestrator path regardless
+        # of prefix.  The NL classifier handles prefix text uniformly; no separate
+        # mini-policy path exists.  Policy (S10), token (S12), and grant (S13)
+        # enforcement are applied by handle_request() for every request.
+        response = self._route_text_by_classification(text, remote, forced_operation=forced_operation)
+
         # Store plan in context store if confirmation is required
         output = response.get("output", {})
         output_type = output.get("type", "")
@@ -1884,31 +1907,64 @@ class WebhookHandler(BaseHTTPRequestHandler):
         return response
     
     def _execute_work_query_from_plan(self, plan: Plan, context_id: str) -> Response:
-        """Execute a WORK query from a Plan and return Response."""
-        from .pipelines.work_pipeline import execute as _work_execute
-        return _wrap_work_result(_work_execute(plan, context_id), context_id)
+        """
+        A1-FIX: Dead code — never called from any reachable path.
+
+        Raises RuntimeError unconditionally to prevent accidental reactivation.
+        This method previously called the work pipeline directly without any
+        policy, token, or grant enforcement.  Any future implementation MUST
+        route through handle_request() instead.
+        """
+        raise RuntimeError(
+            "_execute_work_query_from_plan is an unreachable unsafe execution path "
+            "(A1-FIX: direct pipeline call without policy enforcement). "
+            "Route through handle_request() instead."
+        )
 
     def _execute_work_update_preview(self, plan: Plan, context_id: str, text: str) -> Response:
-        """Execute WORK_UPDATE Phase 1: Return preview/proposal (read-only)."""
-        from .pipelines.work_pipeline import execute as _work_execute
-        plan_with_text = dict(plan)
-        plan_with_text["raw_text"] = text
-        return _wrap_work_result(_work_execute(plan_with_text, context_id), context_id)
+        """
+        A1-FIX: Dead code — never called from any reachable path.
+
+        Raises RuntimeError unconditionally to prevent accidental reactivation.
+        This method previously called the work pipeline directly without any
+        policy, token, or grant enforcement.  Any future implementation MUST
+        route through handle_request() instead.
+        """
+        raise RuntimeError(
+            "_execute_work_update_preview is an unreachable unsafe execution path "
+            "(A1-FIX: direct pipeline call without policy enforcement). "
+            "Route through handle_request() instead."
+        )
 
     def _execute_confirmed_plan(self, context_id: str, remote: str) -> Response:
         """
         Execute a previously stored plan after user confirmation.
-        
+
+        A1-FIX: Routes through handle_request() to enforce the full S10/S12/S13
+        policy chain before any domain pipeline executes:
+          evaluate_policy (S10/S13) → issue_token (S12) → verify+consume token →
+          orchestrator._execute_confirmed_plan → domain pipeline.
+
+        The orchestrator detects metadata["confirm_plan_id"] and dispatches to its
+        internal _execute_confirmed_plan(plan_id, context_id) function, which
+        retrieves the stored plan and calls the registered domain pipeline.
+
+        Single-use guarantee: the orchestrator removes the pending plan from the
+        context store BEFORE calling the pipeline (replay protection). The
+        remove_pending_plan() call below is a harmless no-op when the orchestrator
+        has already consumed the entry.
+
         Args:
-            context_id: The context ID of the stored plan
+            context_id: The context ID of the stored plan (plan_id for lookup)
             remote: Remote address for logging
-        
+
         Returns:
             Response with execution result
         """
-        # Get stored plan from context store
+        # Quick existence check: surface a clean error before building a request
+        # when the plan has already been consumed or has expired.
         stored = get_pending_plan(context_id)
-        
+
         if stored is None:
             _log_webhook_event("/command", remote, ok=False, context_id=context_id, event_type="confirm_not_found")
             return {
@@ -1918,39 +1974,36 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "output": {},
                 "error": {
                     "type": "ContextNotFound",
-                    "message": f"No pending plan found for context_id={context_id}. It may have expired or already been executed.",
+                    "message": (
+                        f"No pending plan found for context_id={context_id}. "
+                        "It may have expired or already been executed."
+                    ),
                 },
                 "ts": now_iso(),
             }
-        
-        plan = stored["plan"]
-        action = plan.get("action", "")
 
-        # Delegate confirmed execution through the domain registry.
-        # action_domain() maps action prefix → domain key ("WORK", "FIN", …).
-        # get_pipeline() returns the registered execute(plan, context_id) callable.
-        # _adapt_result_to_response() converts the DomainResult to the transport
-        # Response shape, dispatching by domain — domain-agnostic confirmed execution.
-        from .core.routing import get_pipeline, action_domain
-        pipeline = get_pipeline(action_domain(action))
-        if pipeline:
-            result = _adapt_result_to_response(pipeline(plan, context_id), context_id)
-        else:
-            result = {
-                "context_id": context_id,
-                "agent": "kernel",
-                "status": "error",
-                "output": {"plan": dict(plan)},
-                "error": {
-                    "type": "UnsupportedAction",
-                    "message": f"Action '{action}' is not yet supported for confirmed execution.",
-                },
-                "ts": now_iso(),
-            }
-        
-        # Remove plan from store after execution (success or failure)
+        # A1-FIX: Route through handle_request so that evaluate_policy (S10/S13),
+        # token issuance (S12), and grant enforcement (S13) all fire before
+        # the domain pipeline executes.
+        #
+        # A fresh context_id is generated for this execution request so the
+        # orchestrator can track it independently.  The original context_id is
+        # passed as confirm_plan_id so the orchestrator's _execute_confirmed_plan
+        # can look up and remove the stored plan.
+        from .core.orchestrator import handle_request as _handle_request
+        from .contracts import normalize_request as _normalize_request, new_context_id as _new_ctx_id
+
+        execution_req = _normalize_request(
+            text="",
+            context_id=_new_ctx_id(),
+            metadata={"confirm_plan_id": context_id},
+        )
+        domain_result = _handle_request(execution_req)
+        result = _adapt_result_to_response(domain_result, execution_req["context_id"])
+
+        # Orchestrator already removed the plan; this is a no-op safety net.
         remove_pending_plan(context_id)
-        
+
         # Log execution
         executed = result.get("status") == "ok"
         _log_webhook_event(
@@ -1960,13 +2013,30 @@ class WebhookHandler(BaseHTTPRequestHandler):
             agent=result.get("agent", "kernel"),
             context_id=context_id,
         )
-        
+
         return result
 
+    # A2-FIX: _execute_work_create, _execute_work_delete, _execute_work_update_bulk,
+    # and _execute_work_update were callable bypass methods that invoked work_pipeline
+    # functions directly — no handle_request, no evaluate_policy, no issue_token,
+    # no verify_token, no consume_token.  They are neutered here matching the
+    # A1-FIX pattern for _execute_work_query_from_plan and _execute_work_update_preview.
+    #
+    # All WORK execution now routes through:
+    #   handle_request() → evaluate_policy (S10) → issue_token (S12) → verify_token
+    #   → consume_token → work_pipeline._work_{create,delete,update,update_bulk}_execute()
+    #
+    # These method stubs are preserved to keep the class surface stable and to make
+    # accidental re-wiring fail loudly rather than silently bypass policy.
+
     def _execute_work_create(self, plan: Plan, context_id: str, test_mode: bool = False) -> Response:
-        """Execute WORK_CREATE from a confirmed plan. Delegates to work_pipeline."""
-        from .pipelines.work_pipeline import _work_create_execute
-        return _wrap_work_result(_work_create_execute(plan, context_id), context_id)
+        """A2-FIX: Neutered — unreachable unsafe execution path removed in A2-FIX."""
+        raise RuntimeError(
+            "_execute_work_create is an unreachable unsafe execution path "
+            "removed in A2-FIX. All WORK_CREATE execution must route through "
+            "handle_request() to enforce policy (S10), token issuance (S12), "
+            "and token verification before the pipeline executes."
+        )
 
     def _execute_work_delete(
         self,
@@ -1975,28 +2045,31 @@ class WebhookHandler(BaseHTTPRequestHandler):
         test_mode: bool = False,
         reset_all: bool = False,
     ) -> Response:
-        """Execute WORK_DELETE from a confirmed plan. Delegates to work_pipeline."""
-        from .pipelines.work_pipeline import _work_delete_execute
-        return _wrap_work_result(_work_delete_execute(plan, context_id), context_id)
+        """A2-FIX: Neutered — unreachable unsafe execution path removed in A2-FIX."""
+        raise RuntimeError(
+            "_execute_work_delete is an unreachable unsafe execution path "
+            "removed in A2-FIX. All WORK_DELETE execution must route through "
+            "handle_request() to enforce policy (S10), token issuance (S12), "
+            "and token verification before the pipeline executes."
+        )
 
     def _execute_work_update_bulk(self, plan: dict, context_id: str) -> dict:
-        """
-        Execute bulk WORK_UPDATE from a confirmed bulk proposal.
-
-        Args:
-            plan: The bulk proposal plan (type=work_update_bulk_proposal)
-            context_id: Context ID for the response
-
-        Returns:
-            Response dict with updated_count, updated_items, failed_items, skipped_items
-        """
-        from .pipelines.work_pipeline import _work_update_bulk_execute
-        return _wrap_work_result(_work_update_bulk_execute(plan, context_id), context_id)
+        """A2-FIX: Neutered — unreachable unsafe execution path removed in A2-FIX."""
+        raise RuntimeError(
+            "_execute_work_update_bulk is an unreachable unsafe execution path "
+            "removed in A2-FIX. All WORK_UPDATE_BULK execution must route through "
+            "handle_request() to enforce policy (S10), token issuance (S12), "
+            "and token verification before the pipeline executes."
+        )
 
     def _execute_work_update(self, plan: Plan, context_id: str) -> Response:
-        """Execute WORK_UPDATE Phase 2 from a confirmed plan. Delegates to work_pipeline."""
-        from .pipelines.work_pipeline import _work_update_execute
-        return _wrap_work_result(_work_update_execute(plan, context_id), context_id)
+        """A2-FIX: Neutered — unreachable unsafe execution path removed in A2-FIX."""
+        raise RuntimeError(
+            "_execute_work_update is an unreachable unsafe execution path "
+            "removed in A2-FIX. All WORK_UPDATE execution must route through "
+            "handle_request() to enforce policy (S10), token issuance (S12), "
+            "and token verification before the pipeline executes."
+        )
 
     def _handle_classify(self, remote: str) -> None:
         """Handle POST /classify endpoint - deterministic intent classification."""
@@ -2259,6 +2332,45 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "subject_state": guard_result.subject_state,
                 "identity": request_identity.to_audit_dict(),
                 "guard": guard_result.to_audit_dict(),
+            })
+            return
+
+        # ALFA governance gate — checked before ANY execution through chat_core.
+        #
+        # chat_core._execute_work_item / _execute_work_delete / _execute_fin_item
+        # call external APIs directly, bypassing the canonical orchestrator pipeline.
+        # This gate ensures that the system kill-switch (FROZEN) and degraded mode
+        # block ALL chat execution — not just the canonical path.
+        #
+        # FROZEN  → absolute block; operator must explicitly clear the freeze.
+        # DEGRADED → block chat mutations; canonical paths require confirmation already.
+        #
+        # Fail-closed: if the governance snapshot itself fails, block the request.
+        try:
+            from .mso.system_state import build_system_state_snapshot as _chat_snap
+            _chat_mode = _chat_snap().operational_mode
+            if _chat_mode in ("FROZEN", "DEGRADED"):
+                _log.warning(
+                    "chat_process: governance gate blocked request operational_mode=%s",
+                    _chat_mode,
+                )
+                self._send_json_response(503, {
+                    "ok": False,
+                    "error": "governance_blocked",
+                    "operational_mode": _chat_mode,
+                    "reason": (
+                        "System is FROZEN. All chat execution blocked until operator clears the freeze."
+                        if _chat_mode == "FROZEN"
+                        else "System is DEGRADED. Chat mutations are blocked. Use the canonical API endpoints."
+                    ),
+                })
+                return
+        except Exception as _chat_gov_exc:
+            _log.error("chat_process: governance snapshot failed, blocking request: %s", _chat_gov_exc)
+            self._send_json_response(503, {
+                "ok": False,
+                "error": "governance_check_failed",
+                "reason": "Governance check failed. Request blocked for safety.",
             })
             return
 
@@ -3398,15 +3510,137 @@ class WebhookHandler(BaseHTTPRequestHandler):
             status, error = auth_error
             self._send_json_response(status, error)
             return
-        
+
         # Signal shutdown
         self._send_json_response(200, {"status": "ok", "message": "Shutting down"})
-        
+
         # Schedule shutdown in separate thread to allow response to be sent
         def shutdown():
             self.server.shutdown()
-        
+
         threading.Thread(target=shutdown, daemon=True).start()
+
+    def _handle_governance_mode(self, remote: str) -> None:
+        """
+        ALFA kill-switch: POST /admin/governance/mode
+
+        Set or clear the system-wide operational mode.  This is the operator
+        kill-switch that blocks ALL execution across EVERY path (canonical,
+        chat, confirm replay) until explicitly cleared.
+
+        Auth: requires shared-secret auth AND X-Assistant-Admin-Token header
+        (same two-layer guard as schema endpoints).
+
+        Request body:
+            {
+                "mode":   "FROZEN" | "DEGRADED" | "RESTRICTED" | "NORMAL",
+                "reason": str   — required, explains why the mode was set
+            }
+
+        "NORMAL" or omitted mode → clears the override (system returns to
+        derived mode from anomaly analysis).
+
+        Response:
+            {
+                "ok":   true,
+                "mode": str,    — mode that was applied
+                "cleared": bool — true when override was cleared
+            }
+
+        Mode semantics
+        --------------
+        FROZEN     → absolute kill-switch; ALL execution blocked everywhere.
+                     No auto-unfreeze. Operator must POST mode=NORMAL to clear.
+        DEGRADED   → all AUTO execution → CONFIRM (canonical path);
+                     /chat/process mutations blocked.
+        RESTRICTED → AUTO execution with medium/low risk → CONFIRM.
+        NORMAL     → clears any override; derived from anomaly analysis.
+        """
+        # Layer 1: shared-secret auth
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        # Layer 2: admin token (same guard as schema endpoints)
+        from .config import WEBHOOK_ADMIN_TOKEN as _ADMIN_TOKEN
+        admin_token = self.headers.get("X-Assistant-Admin-Token", "")
+        if not admin_token or (_ADMIN_TOKEN and admin_token != _ADMIN_TOKEN):
+            status, error = _make_json_error(
+                403, "Admin token missing or invalid for governance operations", "Forbidden"
+            )
+            self._send_json_response(status, error)
+            return
+
+        # Read + parse body
+        result = self._read_body()
+        if result[1] is not None:
+            status, error = result[1]
+            self._send_json_response(status, error)
+            return
+        body = result[0]
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            status, error = _make_json_error(400, f"Invalid JSON: {exc}", "BadRequest")
+            self._send_json_response(status, error)
+            return
+        if not isinstance(data, dict):
+            status, error = _make_json_error(400, "Request body must be a JSON object", "BadRequest")
+            self._send_json_response(status, error)
+            return
+
+        mode = str(data.get("mode", "NORMAL")).strip().upper()
+        reason = str(data.get("reason", "")).strip()
+
+        _VALID_MODES = {"FROZEN", "DEGRADED", "RESTRICTED", "NORMAL"}
+        if mode not in _VALID_MODES:
+            status, error = _make_json_error(
+                400,
+                f"Invalid mode {mode!r}. Must be one of: {', '.join(sorted(_VALID_MODES))}",
+                "BadRequest",
+            )
+            self._send_json_response(status, error)
+            return
+
+        if mode != "NORMAL" and not reason:
+            status, error = _make_json_error(
+                400, "reason is required when setting a non-NORMAL mode", "BadRequest"
+            )
+            self._send_json_response(status, error)
+            return
+
+        from .mso.governance_surface import (
+            set_operational_mode_override as _set_mode,
+            clear_operational_mode as _clear_mode,
+            get_operational_mode as _get_mode,
+        )
+
+        cleared = False
+        if mode == "NORMAL":
+            _clear_mode()
+            cleared = True
+            _log_webhook_event(
+                "/admin/governance/mode", remote, ok=True,
+                event_type="governance_mode_cleared",
+            )
+        else:
+            _set_mode(mode, reason=reason)  # type: ignore[arg-type]
+            _log_webhook_event(
+                "/admin/governance/mode", remote, ok=True,
+                event_type="governance_mode_set",
+                context_id=mode,
+            )
+
+        current_mode, current_reason, current_source = _get_mode()
+        self._send_json_response(200, {
+            "ok": True,
+            "mode": current_mode,
+            "cleared": cleared,
+            "reason": current_reason,
+            "source": current_source,
+        })
 
     def _handle_work_query(self, remote: str) -> None:
         """Handle POST /work/query — see handlers/work.py for implementation."""
@@ -3423,9 +3657,78 @@ class WebhookHandler(BaseHTTPRequestHandler):
         from .handlers.work import handle_work_delete
         handle_work_delete(self, remote, trash_db_id=NOTION_WORK_TRASH_DB_ID)
 
+    def _apply_schema_policy_gate(self) -> "tuple[int, dict] | None":
+        """
+        A2-FIX: Enforce the full S10/S12/S13 policy + capability-token chain
+        for schema admin endpoints.
+
+        Returns None when all checks pass (caller may execute).
+        Returns (status_code, error_dict) on any failure (caller must abort).
+
+        Chain enforced:
+          evaluate_policy (S10) → issue_token (S12) → verify_token → consume_token
+
+        action_type="schema_write" is a purpose-specific tag that causes the
+        policy engine to evaluate the schema mutation against the same guard,
+        subject-state, and grant checks that apply to all other write operations.
+        The token is single-use: issued, immediately verified, and consumed so
+        execution can proceed only once per request with no replay.
+        """
+        import uuid as _uuid
+        from .policy.policy_engine import evaluate_policy as _eval_policy
+        from .policy.policy_models import PolicyContext as _PolicyContext
+        from .grants.grant_store import get_default_store as _get_grant_store
+        from .capabilities.token_models import OperationBinding as _OperationBinding
+        from .capabilities.token_issuer import issue_token as _issue_token
+        from .capabilities.token_verifier import verify_token as _vt, consume_token as _ct
+
+        context_id = str(_uuid.uuid4())
+
+        # S10: policy gate
+        policy_ctx = _PolicyContext(
+            subject_state="",
+            guard_decision="",
+            action_type="schema_write",
+            principal_id="",
+            operation_key=context_id,
+        )
+        policy_decision = _eval_policy(policy_ctx, grant_store=_get_grant_store())
+
+        if not policy_decision.permitted:
+            status, error = _make_json_error(
+                403,
+                f"Policy denied schema operation: {policy_decision.detail}",
+                policy_decision.error_type,
+            )
+            return status, error
+
+        # S12: issue + verify + consume (single-use enforcement)
+        tok_binding = _OperationBinding(
+            principal_id="",
+            subject_state="",
+            action_type="schema_write",
+            capability=None,
+            operation_key=context_id,
+        )
+        cap_token = _issue_token(tok_binding)
+
+        if not _vt(cap_token, tok_binding):
+            status, error = _make_json_error(
+                500,
+                "Schema capability token verification failed — execution blocked.",
+                "token_invalid",
+            )
+            return status, error
+
+        _ct(cap_token)
+        return None
+
     def _handle_work_schema_plan(self, remote: str) -> None:
         """
         Handle POST /work/schema/plan - Plan schema changes (admin only).
+
+        A2-FIX: Schema endpoints now enforce the full S10/S12/S13 chain via
+        _apply_schema_policy_gate() before any execution occurs.
         
         Request JSON:
         {
@@ -3446,29 +3749,42 @@ class WebhookHandler(BaseHTTPRequestHandler):
         }
         """
         try:
-            # Check admin auth (admin token required)
+            # Layer 1: shared-secret auth
             auth_error = self._check_auth()
             if auth_error:
                 status, error = auth_error
                 self._send_json_response(status, error)
                 return
-            
-            # Verify admin token specifically (not just UI token)
+
+            # Layer 2: A2-FIX — validate admin token against configured secret,
+            # not just its presence.
+            from .config import WEBHOOK_ADMIN_TOKEN as _SCHEMA_ADMIN_TOKEN
             admin_token = self.headers.get("X-Assistant-Admin-Token", "")
-            if not admin_token:
-                status, error = _make_json_error(403, "Admin token required for schema operations", "Forbidden")
+            if not admin_token or (
+                _SCHEMA_ADMIN_TOKEN and admin_token != _SCHEMA_ADMIN_TOKEN
+            ):
+                status, error = _make_json_error(
+                    403, "Admin token missing or invalid for schema operations", "Forbidden"
+                )
                 self._send_json_response(status, error)
                 return
-            
+
+            # Layer 3: A2-FIX — full policy + capability-token gate (S10/S12/S13).
+            gate_error = self._apply_schema_policy_gate()
+            if gate_error is not None:
+                gate_status, gate_body = gate_error
+                self._send_json_response(gate_status, gate_body)
+                return
+
             # Read body
             result = self._read_body()
             if result[1] is not None:
                 status, error = result[1]
                 self._send_json_response(status, error)
                 return
-            
+
             body = result[0]
-            
+
             # Parse JSON
             try:
                 data = json.loads(body) if body else {}
@@ -3476,19 +3792,19 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 status, error = _make_json_error(400, f"Invalid JSON: {e}", "InvalidJSON")
                 self._send_json_response(status, error)
                 return
-            
+
             # Generate plan
             plan_result = generate_schema_plan(SchemaPlanRequest(changes=data.get("changes", [])))
-            
+
             _log_webhook_event(
                 "/work/schema/plan",
                 remote,
                 ok=plan_result["ok"],
                 event_type="schema_plan",
             )
-            
+
             self._send_json_response(200, plan_result)
-            
+
         except Exception as e:
             _log.error("_handle_work_schema_plan exception: %s", e, exc_info=True)
             self._send_json_response(500, {
@@ -3503,7 +3819,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
     def _handle_work_schema_commit(self, remote: str) -> None:
         """
         Handle POST /work/schema/commit - Apply schema changes (admin only).
-        
+
+        A2-FIX: Schema endpoints now enforce the full S10/S12/S13 chain via
+        _apply_schema_policy_gate() before any execution occurs.
+
         Request JSON: (same as /work/schema/plan)
         {
             "changes": [
@@ -3511,7 +3830,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 {"property": "Tags", "add_options": ["davinci"]}
             ]
         }
-        
+
         Response JSON:
         {
             "ok": true,
@@ -3521,29 +3840,42 @@ class WebhookHandler(BaseHTTPRequestHandler):
         }
         """
         try:
-            # Check admin auth
+            # Layer 1: shared-secret auth
             auth_error = self._check_auth()
             if auth_error:
                 status, error = auth_error
                 self._send_json_response(status, error)
                 return
-            
-            # Verify admin token specifically
+
+            # Layer 2: A2-FIX — validate admin token against configured secret,
+            # not just its presence.
+            from .config import WEBHOOK_ADMIN_TOKEN as _SCHEMA_ADMIN_TOKEN
             admin_token = self.headers.get("X-Assistant-Admin-Token", "")
-            if not admin_token:
-                status, error = _make_json_error(403, "Admin token required for schema operations", "Forbidden")
+            if not admin_token or (
+                _SCHEMA_ADMIN_TOKEN and admin_token != _SCHEMA_ADMIN_TOKEN
+            ):
+                status, error = _make_json_error(
+                    403, "Admin token missing or invalid for schema operations", "Forbidden"
+                )
                 self._send_json_response(status, error)
                 return
-            
+
+            # Layer 3: A2-FIX — full policy + capability-token gate (S10/S12/S13).
+            gate_error = self._apply_schema_policy_gate()
+            if gate_error is not None:
+                gate_status, gate_body = gate_error
+                self._send_json_response(gate_status, gate_body)
+                return
+
             # Read body
             result = self._read_body()
             if result[1] is not None:
                 status, error = result[1]
                 self._send_json_response(status, error)
                 return
-            
+
             body = result[0]
-            
+
             # Parse JSON
             try:
                 data = json.loads(body) if body else {}
@@ -3551,19 +3883,19 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 status, error = _make_json_error(400, f"Invalid JSON: {e}", "InvalidJSON")
                 self._send_json_response(status, error)
                 return
-            
+
             # Commit changes
             commit_result = commit_schema_changes(SchemaPlanRequest(changes=data.get("changes", [])))
-            
+
             _log_webhook_event(
                 "/work/schema/commit",
                 remote,
                 ok=commit_result["ok"],
                 event_type="schema_commit",
             )
-            
+
             self._send_json_response(200, commit_result)
-            
+
         except Exception as e:
             _log.error("_handle_work_schema_commit exception: %s", e, exc_info=True)
             self._send_json_response(500, {

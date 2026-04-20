@@ -323,375 +323,172 @@ _BASE_PLAN_KWARGS = dict(
 )
 
 
-@patch("assistant_os.integrations.work_gateway.check_notion_available", return_value=True)
 class TestWorkQueryOutput(unittest.TestCase):
+    """
+    A1-FIX: _execute_work_query_from_plan is confirmed dead code that previously
+    called the work pipeline directly without any policy enforcement.  It now
+    raises RuntimeError on every call to prevent accidental reactivation.
 
-    @patch("assistant_os.webhook_server.query_work_db")
-    @patch("assistant_os.webhook_server.format_work_query_response", return_value="formatted text")
-    def test_success_has_canonical_output(self, _fmt, mock_query, _notion):
-        mock_query.return_value = {"items": [{"title": "T1"}], "total": 1}
+    These tests were rewritten from output-shape tests into dead-code-guard tests.
+    The underlying WORK query pipeline output is exercised through handle_request()
+    in the integration test layer; no output-shape assertions are needed here.
+    """
+
+    def test_success_has_canonical_output(self):
+        """_execute_work_query_from_plan raises RuntimeError — dead code guard."""
+        from assistant_os.webhook_server import WebhookHandler
+        handler = WebhookHandler.__new__(WebhookHandler)
         plan = make_plan("WORK", ACTION_WORK_QUERY, "query", filters={}, **_BASE_PLAN_KWARGS)
+        with self.assertRaises(RuntimeError):
+            handler._execute_work_query_from_plan(plan, "ctx-1")
 
+    def test_zero_results_message(self):
+        """_execute_work_query_from_plan raises RuntimeError — dead code guard."""
         from assistant_os.webhook_server import WebhookHandler
         handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_query_from_plan(plan, "ctx-1")
-
-        _assert_response_shape(self, resp)
-        self.assertEqual(resp["status"], "ok")
-        output = resp["output"]
-        _assert_output_canonical(self, output)
-        self.assertEqual(output["result_type"], RESULT_TYPE_WORK_QUERY)
-        self.assertEqual(output["domain"], "WORK")
-        self.assertTrue(output["message"])
-        self.assertEqual(output["type"], "work_query")   # backward compat
-        self.assertIn("items", output["data"])
-        self.assertIn("total", output["data"])
-        self.assertIn("formatted", output["data"])
-
-    @patch("assistant_os.webhook_server.query_work_db")
-    @patch("assistant_os.webhook_server.format_work_query_response", return_value="")
-    def test_zero_results_message(self, _fmt, mock_query, _notion):
-        mock_query.return_value = {"items": [], "total": 0}
         plan = make_plan("WORK", ACTION_WORK_QUERY, "q", **_BASE_PLAN_KWARGS)
+        with self.assertRaises(RuntimeError):
+            handler._execute_work_query_from_plan(plan, "ctx-1")
+
+    def test_notion_unavailable_returns_error(self):
+        """_execute_work_query_from_plan raises RuntimeError — dead code guard."""
         from assistant_os.webhook_server import WebhookHandler
         handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_query_from_plan(plan, "ctx-1")
-        self.assertIn("No se encontraron", resp["output"]["message"])
-
-    @patch("assistant_os.integrations.work_gateway.get_notion_status",
-           return_value={"last_error": {"message": "down"}})
-    def test_notion_unavailable_returns_error(self, _status, _notion):
-        _notion.return_value = False
         plan = make_plan("WORK", ACTION_WORK_QUERY, "q", **_BASE_PLAN_KWARGS)
+        with self.assertRaises(RuntimeError):
+            handler._execute_work_query_from_plan(plan, "ctx-1")
+
+
+class TestWorkCreateBypassRemoved(unittest.TestCase):
+    """
+    A2-FIX: _execute_work_create is a neutered bypass method.
+
+    The method previously called work_pipeline._work_create_execute directly,
+    bypassing handle_request, evaluate_policy, issue_token, verify_token, and
+    consume_token.  It now raises RuntimeError on any call.
+
+    WORK_CREATE execution routes exclusively through:
+      handle_request() → evaluate_policy (S10) → token (S12) → work_pipeline
+    """
+
+    def _handler(self):
         from assistant_os.webhook_server import WebhookHandler
-        handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_query_from_plan(plan, "ctx-1")
-        self.assertEqual(resp["status"], "error")
-        self.assertFalse(resp["output"]["ok"])
-        self.assertEqual(resp["output"]["result_type"], RESULT_TYPE_WORK_QUERY)
-        self.assertIsNotNone(resp["error"])
-        self.assertIsInstance(resp["output"]["data"], dict)
+        return WebhookHandler.__new__(WebhookHandler)
+
+    def test_raises_runtime_error(self):
+        from assistant_os.contracts import make_plan, ACTION_WORK_CREATE
+        plan = make_plan("WORK", ACTION_WORK_CREATE, "create", filters={"title": "T"})
+        with self.assertRaises(RuntimeError, msg="_execute_work_create must raise RuntimeError (A2-FIX)"):
+            self._handler()._execute_work_create(plan, "ctx-2")
+
+    def test_error_message_names_handle_request(self):
+        from assistant_os.contracts import make_plan, ACTION_WORK_CREATE
+        plan = make_plan("WORK", ACTION_WORK_CREATE, "create", filters={"title": "T"})
+        try:
+            self._handler()._execute_work_create(plan, "ctx-2")
+        except RuntimeError as exc:
+            self.assertIn("handle_request", str(exc))
+
+    def test_error_message_names_policy(self):
+        from assistant_os.contracts import make_plan, ACTION_WORK_CREATE
+        plan = make_plan("WORK", ACTION_WORK_CREATE, "create", filters={"title": "T"})
+        try:
+            self._handler()._execute_work_create(plan, "ctx-2")
+        except RuntimeError as exc:
+            self.assertIn("policy", str(exc).lower())
 
 
-@patch("assistant_os.webhook_server.check_notion_available", return_value=True)
-class TestWorkCreateOutput(unittest.TestCase):
+class TestWorkDeleteBypassRemoved(unittest.TestCase):
+    """
+    A2-FIX: _execute_work_delete is a neutered bypass method.
 
-    @patch("assistant_os.webhook_server.create_work_item")
-    def test_success_has_canonical_output(self, mock_create, _notion):
-        mock_create.return_value = {"ok": True, "page_id": "pg1", "url": "http://x", "title": "T1"}
-        plan = make_plan("WORK", ACTION_WORK_CREATE, "create",
-                         filters={"title": "T1"}, **_BASE_PLAN_KWARGS)
+    WORK_DELETE execution routes exclusively through:
+      handle_request() → evaluate_policy (S10) → token (S12) → work_pipeline
+    """
+
+    def _handler(self):
         from assistant_os.webhook_server import WebhookHandler
-        handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_create(plan, "ctx-2")
+        return WebhookHandler.__new__(WebhookHandler)
 
-        _assert_response_shape(self, resp)
-        self.assertEqual(resp["status"], "ok")
-        output = resp["output"]
-        _assert_output_canonical(self, output)
-        self.assertEqual(output["result_type"], RESULT_TYPE_WORK_CREATE)
-        self.assertEqual(output["type"], "work_create")   # backward compat
-        self.assertIn("page_id", output["data"])
-        self.assertIn("T1", output["message"])
+    def test_raises_runtime_error(self):
+        from assistant_os.contracts import make_plan, ACTION_WORK_DELETE
+        plan = make_plan("WORK", ACTION_WORK_DELETE, "delete", filters={"keywords": ["x"]})
+        with self.assertRaises(RuntimeError):
+            self._handler()._execute_work_delete(plan, "ctx-3")
 
-    def test_missing_title_is_validation_error(self, _notion):
-        plan = make_plan("WORK", ACTION_WORK_CREATE, "create",
-                         filters={}, **_BASE_PLAN_KWARGS)
+    def test_error_message_names_handle_request(self):
+        from assistant_os.contracts import make_plan, ACTION_WORK_DELETE
+        plan = make_plan("WORK", ACTION_WORK_DELETE, "delete", filters={"keywords": ["x"]})
+        try:
+            self._handler()._execute_work_delete(plan, "ctx-3")
+        except RuntimeError as exc:
+            self.assertIn("handle_request", str(exc))
+
+
+class TestWorkUpdateSingularBypassRemoved(unittest.TestCase):
+    """
+    A2-FIX: _execute_work_update is a neutered bypass method.
+
+    WORK_UPDATE execution routes exclusively through:
+      handle_request() → evaluate_policy (S10) → token (S12) → work_pipeline
+    """
+
+    def _handler(self):
         from assistant_os.webhook_server import WebhookHandler
-        handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_create(plan, "ctx-2")
+        return WebhookHandler.__new__(WebhookHandler)
 
-        self.assertEqual(resp["status"], "error")
-        self.assertFalse(resp["output"]["ok"])
-        self.assertEqual(resp["output"]["result_type"], RESULT_TYPE_WORK_CREATE)
-        self.assertEqual(resp["error"]["type"], "ValidationError")
-        self.assertIsInstance(resp["output"]["data"], dict)
+    def test_raises_runtime_error(self):
+        from assistant_os.contracts import make_plan, ACTION_WORK_UPDATE
+        plan = make_plan("WORK", ACTION_WORK_UPDATE, "update", filters={"notion_page_id": "pg-x"})
+        with self.assertRaises(RuntimeError):
+            self._handler()._execute_work_update(plan, "ctx-4")
 
-    @patch("assistant_os.webhook_server.create_work_item")
-    def test_notion_failure_returns_error(self, mock_create, _notion):
-        mock_create.return_value = {"ok": False, "error": "API timeout"}
-        plan = make_plan("WORK", ACTION_WORK_CREATE, "create",
-                         filters={"title": "T1"}, **_BASE_PLAN_KWARGS)
-        from assistant_os.webhook_server import WebhookHandler
-        handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_create(plan, "ctx-2")
-
-        self.assertEqual(resp["status"], "error")
-        self.assertEqual(resp["error"]["type"], "WorkCreateError")
-        self.assertIsInstance(resp["output"]["data"], dict)
-
-
-@patch("assistant_os.webhook_server.check_notion_available", return_value=True)
-class TestWorkDeleteOutput(unittest.TestCase):
-
-    @patch("assistant_os.integrations.notion.archive_pages", return_value=2)
-    @patch("assistant_os.webhook_server.query_work_db")
-    def test_success_has_canonical_output(self, mock_query, _archive, _notion):
-        mock_query.return_value = {
-            "items": [
-                {"notion_page_id": "p1", "title": "task alpha"},
-                {"notion_page_id": "p2", "title": "task alpha 2"},
-            ],
-            "total": 2,
-        }
-        plan = make_plan("WORK", ACTION_WORK_DELETE, "delete",
-                         filters={"keywords": ["alpha"], "delete_all": False},
-                         **_BASE_PLAN_KWARGS)
-        from assistant_os.webhook_server import WebhookHandler
-        handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_delete(plan, "ctx-3")
-
-        _assert_response_shape(self, resp)
-        self.assertEqual(resp["status"], "ok")
-        output = resp["output"]
-        _assert_output_canonical(self, output)
-        self.assertEqual(output["result_type"], RESULT_TYPE_WORK_DELETE)
-        self.assertEqual(output["type"], "work_delete")
-        self.assertIn("deleted_count", output["data"])
-        self.assertIn("total_matched", output["data"])
-
-    @patch("assistant_os.webhook_server.query_work_db")
-    def test_no_matches_is_ok_not_error(self, mock_query, _notion):
-        mock_query.return_value = {"items": [], "total": 0}
-        plan = make_plan("WORK", ACTION_WORK_DELETE, "delete",
-                         filters={"keywords": ["notfound"], "delete_all": False},
-                         **_BASE_PLAN_KWARGS)
-        from assistant_os.webhook_server import WebhookHandler
-        handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_delete(plan, "ctx-3")
-
-        self.assertEqual(resp["status"], "ok")
-        self.assertTrue(resp["output"]["ok"])
-        self.assertEqual(resp["output"]["data"]["deleted_count"], 0)
-
-    def test_no_criteria_is_validation_error(self, _notion):
-        plan = make_plan("WORK", ACTION_WORK_DELETE, "delete",
-                         filters={"keywords": [], "delete_all": False},
-                         **_BASE_PLAN_KWARGS)
-        from assistant_os.webhook_server import WebhookHandler
-        handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_delete(plan, "ctx-3")
-
-        self.assertEqual(resp["status"], "error")
-        self.assertEqual(resp["error"]["type"], "ValidationError")
-        self.assertIsInstance(resp["output"]["data"], dict)
-
-
-@patch("assistant_os.integrations.work_gateway.check_notion_available", return_value=True)
-@patch("assistant_os.integrations.work_gateway.get_editable_field_options",
-       return_value={"ok": True, "options": {"domain": ["Tech"], "project": ["P1"], "status": ["NEXT"]}})
-class TestWorkUpdateSingularOutput(unittest.TestCase):
-
-    @patch("assistant_os.integrations.work_gateway.update_work_item")
-    def test_success_has_canonical_output(self, mock_update, _opts, _notion):
-        mock_update.return_value = {"ok": True, "changes_applied": [{"field": "status", "new_value": "NEXT"}]}
-        plan = make_plan("WORK", ACTION_WORK_UPDATE, "update",
-                         filters={
-                             "notion_page_id": "pg-abc",
-                             "title": "My Task",
-                             "current_values": {"status": "INBOX"},
-                             "proposed_changes": [{"field": "status", "new_value": "NEXT", "confidence": 1.0}],
-                         },
-                         **_BASE_PLAN_KWARGS)
-        from assistant_os.webhook_server import WebhookHandler
-        handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_update(plan, "ctx-4")
-
-        _assert_response_shape(self, resp)
-        self.assertEqual(resp["status"], "ok")
-        output = resp["output"]
-        _assert_output_canonical(self, output)
-        self.assertEqual(output["result_type"], RESULT_TYPE_WORK_UPDATE)
-        self.assertEqual(output["type"], "work_update_result")   # backward compat
-        self.assertIn("notion_page_id", output["data"])
-        self.assertIn("changes_applied", output["data"])
-
-    def test_missing_page_id_is_validation_error(self, _opts, _notion):
-        plan = make_plan("WORK", ACTION_WORK_UPDATE, "update",
-                         filters={"proposed_changes": [{"field": "status", "new_value": "NEXT"}]},
-                         **_BASE_PLAN_KWARGS)
-        from assistant_os.webhook_server import WebhookHandler
-        handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_update(plan, "ctx-4")
-
-        self.assertEqual(resp["status"], "error")
-        self.assertEqual(resp["error"]["type"], "ValidationError")
-        self.assertFalse(resp["output"]["ok"])
-        self.assertIsInstance(resp["output"]["data"], dict)
-
-    @patch("assistant_os.integrations.work_gateway.update_work_item")
-    def test_no_valid_changes_is_error(self, mock_update, _opts, _notion):
-        # proposed_changes has invalid field → no changes_dict built
-        plan = make_plan("WORK", ACTION_WORK_UPDATE, "update",
-                         filters={
-                             "notion_page_id": "pg-abc",
-                             "proposed_changes": [{"field": "status", "new_value": "INVALID_VALUE"}],
-                         },
-                         **_BASE_PLAN_KWARGS)
-        from assistant_os.webhook_server import WebhookHandler
-        handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_update(plan, "ctx-4")
-
-        self.assertEqual(resp["status"], "error")
-        self.assertEqual(resp["error"]["type"], "ValidationError")
-        self.assertIsInstance(resp["output"]["data"], dict)
+    def test_error_message_names_handle_request(self):
+        from assistant_os.contracts import make_plan, ACTION_WORK_UPDATE
+        plan = make_plan("WORK", ACTION_WORK_UPDATE, "update", filters={})
+        try:
+            self._handler()._execute_work_update(plan, "ctx-4")
+        except RuntimeError as exc:
+            self.assertIn("handle_request", str(exc))
 
 
 # ---------------------------------------------------------------------------
 # Partial success — bulk update
 # ---------------------------------------------------------------------------
 
-class TestWorkUpdateBulkPartialSuccess(unittest.TestCase):
+class TestWorkUpdateBulkBypassRemoved(unittest.TestCase):
     """
-    Bulk update with mixed results must be ok=True (partial success).
-    Failures go to data.failed_items, not top-level error.
+    A2-FIX: _execute_work_update_bulk is a neutered bypass method.
+
+    WORK_UPDATE_BULK execution routes exclusively through:
+      handle_request() → evaluate_policy (S10) → token (S12) → work_pipeline
     """
 
-    @patch("assistant_os.integrations.work_gateway.get_editable_field_options")
-    @patch("assistant_os.integrations.work_gateway.update_work_item")
-    def test_partial_success_is_ok_true(self, mock_update, mock_opts):
-        mock_opts.return_value = {"ok": True, "options": {"status": ["NEXT", "DONE"]}}
-        # page1 succeeds, page2 fails
-        mock_update.side_effect = [
-            {"ok": True, "changes_applied": [{"field": "status", "new_value": "NEXT"}]},
-            {"ok": False, "error": "Notion timeout"},
-        ]
-        plan = {
-            "matches": [
-                {"notion_page_id": "p1", "title": "T1"},
-                {"notion_page_id": "p2", "title": "T2"},
-            ],
-            "selected_notion_page_ids": ["p1", "p2"],
-            "applied_changes": {"status": "NEXT"},
-            "editable_fields": ["status"],
-        }
+    def _handler(self):
         from assistant_os.webhook_server import WebhookHandler
-        handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_update_bulk(plan, "ctx-bulk")
+        return WebhookHandler.__new__(WebhookHandler)
 
-        self.assertEqual(resp["status"], "ok")
-        self.assertTrue(resp["output"]["ok"])
-        self.assertIsNone(resp["error"])
-        data = resp["output"]["data"]
-        self.assertEqual(data["updated_count"], 1)
-        self.assertEqual(len(data["failed_items"]), 1)
-        self.assertEqual(data["failed_items"][0]["notion_page_id"], "p2")
+    def test_raises_runtime_error(self):
+        plan = {"matches": [], "selected_notion_page_ids": [], "applied_changes": {}}
+        with self.assertRaises(RuntimeError):
+            self._handler()._execute_work_update_bulk(plan, "ctx-bulk")
 
-    @patch("assistant_os.integrations.work_gateway.get_editable_field_options")
-    @patch("assistant_os.integrations.work_gateway.update_work_item")
-    def test_all_succeed_is_ok_true(self, mock_update, mock_opts):
-        mock_opts.return_value = {"ok": True, "options": {"status": ["NEXT"]}}
-        mock_update.return_value = {"ok": True, "changes_applied": []}
-        plan = {
-            "matches": [{"notion_page_id": "p1", "title": "T1"}],
-            "selected_notion_page_ids": ["p1"],
-            "applied_changes": {"status": "NEXT"},
-            "editable_fields": ["status"],
-        }
-        from assistant_os.webhook_server import WebhookHandler
-        handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_update_bulk(plan, "ctx-bulk")
-
-        self.assertEqual(resp["status"], "ok")
-        self.assertIsNone(resp["error"])
-        self.assertEqual(resp["output"]["data"]["updated_count"], 1)
-        self.assertEqual(resp["output"]["data"]["failed_items"], [])
-
-    @patch("assistant_os.integrations.work_gateway.get_editable_field_options")
-    def test_validation_failure_in_data_not_top_level_error(self, mock_opts):
-        """Invalid field value goes to failed_items, not response.error."""
-        mock_opts.return_value = {"ok": True, "options": {"status": ["NEXT", "DONE"]}}
-        plan = {
-            "matches": [{"notion_page_id": "p1", "title": "T1"}],
-            "selected_notion_page_ids": ["p1"],
-            "applied_changes": {"status": "INVALID_STATUS"},
-            "editable_fields": ["status"],
-        }
-        from assistant_os.webhook_server import WebhookHandler
-        handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_update_bulk(plan, "ctx-bulk")
-
-        self.assertEqual(resp["status"], "ok")
-        self.assertIsNone(resp["error"])
-        data = resp["output"]["data"]
-        self.assertEqual(data["updated_count"], 0)
-        self.assertEqual(len(data["failed_items"]), 1)
-        failed = data["failed_items"][0]
-        self.assertIn("notion_page_id", failed)
-        self.assertIn("field", failed)
-        self.assertIn("value", failed)
-        self.assertIn("reason", failed)
-        self.assertIn("error", failed)
-
-    @patch("assistant_os.integrations.work_gateway.get_editable_field_options")
-    def test_bulk_result_type_and_canonical_fields(self, mock_opts):
-        mock_opts.return_value = {"ok": True, "options": {}}
-        plan = {
-            "matches": [],
-            "selected_notion_page_ids": [],
-            "applied_changes": {},
-            "editable_fields": ["status"],
-        }
-        from assistant_os.webhook_server import WebhookHandler
-        handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_update_bulk(plan, "ctx-bulk")
-
-        _assert_output_canonical(self, resp["output"])
-        self.assertEqual(resp["output"]["result_type"], RESULT_TYPE_WORK_UPDATE_BULK)
-        self.assertEqual(resp["output"]["type"], "work_update_bulk_result")   # backward compat
+    def test_error_message_names_handle_request(self):
+        plan = {"matches": [], "selected_notion_page_ids": [], "applied_changes": {}}
+        try:
+            self._handler()._execute_work_update_bulk(plan, "ctx-bulk")
+        except RuntimeError as exc:
+            self.assertIn("handle_request", str(exc))
 
 
 # ---------------------------------------------------------------------------
-# failed_items canonical 5-key shape
+# failed_items shape — dead-code note
 # ---------------------------------------------------------------------------
-
-class TestFailedItemsShape(unittest.TestCase):
-    """Each failed_item must have exactly the 5-key canonical shape."""
-
-    _REQUIRED_KEYS = {"notion_page_id", "field", "value", "reason", "error"}
-
-    def _check_failed_item(self, item: dict):
-        for key in self._REQUIRED_KEYS:
-            self.assertIn(key, item, f"failed_item missing key '{key}'")
-
-    @patch("assistant_os.integrations.work_gateway.get_editable_field_options")
-    def test_validation_failure_item_has_5_keys(self, mock_opts):
-        mock_opts.return_value = {"ok": True, "options": {"status": ["NEXT"]}}
-        plan = {
-            "matches": [{"notion_page_id": "p1"}],
-            "selected_notion_page_ids": ["p1"],
-            "applied_changes": {"status": "BAD"},
-            "editable_fields": ["status"],
-        }
-        from assistant_os.webhook_server import WebhookHandler
-        handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_update_bulk(plan, "ctx")
-        failed = resp["output"]["data"]["failed_items"]
-        self.assertEqual(len(failed), 1)
-        self._check_failed_item(failed[0])
-
-    @patch("assistant_os.integrations.work_gateway.get_editable_field_options")
-    @patch("assistant_os.integrations.work_gateway.update_work_item")
-    def test_api_failure_item_has_5_keys(self, mock_update, mock_opts):
-        mock_opts.return_value = {"ok": True, "options": {"status": ["NEXT"]}}
-        mock_update.return_value = {"ok": False, "error": "API error"}
-        plan = {
-            "matches": [{"notion_page_id": "p1"}],
-            "selected_notion_page_ids": ["p1"],
-            "applied_changes": {"status": "NEXT"},
-            "editable_fields": ["status"],
-        }
-        from assistant_os.webhook_server import WebhookHandler
-        handler = WebhookHandler.__new__(WebhookHandler)
-        resp = handler._execute_work_update_bulk(plan, "ctx")
-        failed = resp["output"]["data"]["failed_items"]
-        self.assertEqual(len(failed), 1)
-        self._check_failed_item(failed[0])
-        # API failure: field/value/reason are None, error is the message
-        self.assertIsNone(failed[0]["field"])
-        self.assertIsNone(failed[0]["value"])
-        self.assertIsNone(failed[0]["reason"])
-        self.assertEqual(failed[0]["error"], "API error")
+# A2-FIX: TestFailedItemsShape previously tested _execute_work_update_bulk
+# output format for failed_items.  That method is now neutered.  The
+# failed_items contract is verified at the pipeline level via work_pipeline
+# integration tests (test_work_pipeline.py) which use _work_update_bulk_execute
+# directly without going through the neutered WebhookHandler bypass method.
 
 
 # ---------------------------------------------------------------------------

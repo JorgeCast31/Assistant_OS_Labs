@@ -229,28 +229,34 @@ class TestCapabilityBlockedInOrchestrator:
         assert result["error"]["type"] == "capability_denied"
 
     def test_execute_blocked_for_suspended_returns_denied(self):
+        # S10: The unified policy engine checks subject_state (step 1) before
+        # capability (step 4).  suspended → SUBJECT_STATE_BLOCKED → access_denied.
         from assistant_os.core.orchestrator import handle_request
         req = _make_cap_blocked_request("execute", "suspended")
         result = handle_request(req)
         assert result["ok"] is False
         assert result["result_type"] == "denied"
-        assert result["error"]["type"] == "capability_denied"
+        assert result["error"]["type"] == "access_denied"
 
     def test_execute_blocked_for_terminated_returns_denied(self):
+        # S10: terminated is a lifecycle hard stop (step 1) → access_denied,
+        # not capability_denied (which would require reaching step 4).
         from assistant_os.core.orchestrator import handle_request
         req = _make_cap_blocked_request("execute", "terminated")
         result = handle_request(req)
         assert result["ok"] is False
         assert result["result_type"] == "denied"
-        assert result["error"]["type"] == "capability_denied"
+        assert result["error"]["type"] == "access_denied"
 
     def test_write_blocked_for_suspended_returns_denied(self):
+        # S10: suspended hits step 1 (SUBJECT_STATE_BLOCKED → access_denied)
+        # before the capability gate at step 4.
         from assistant_os.core.orchestrator import handle_request
         req = _make_cap_blocked_request("write", "suspended")
         result = handle_request(req)
         assert result["ok"] is False
         assert result["result_type"] == "denied"
-        assert result["error"]["type"] == "capability_denied"
+        assert result["error"]["type"] == "access_denied"
 
     def test_capability_denied_is_distinct_from_access_denied(self):
         """capability_denied and access_denied are different error types."""
