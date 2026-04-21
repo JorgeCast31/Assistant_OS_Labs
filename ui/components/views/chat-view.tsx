@@ -10,7 +10,7 @@ import type { MessageSearchResult }           from '@/lib/api'
 import { useUIStore }             from '@/stores/ui-store'
 import { useChatSessionsStore }   from '@/stores/chat-sessions-store'
 import type { ChatSession }       from '@/lib/chat-sessions'
-import type { ChatMessage, ChatUIAction, ChatAction, PlanItem, SendChatRequest } from '@/lib/types'
+import type { ChatMessage, ChatUIAction, ChatAction, PlanItem, SendChatRequest, GovernanceTrace } from '@/lib/types'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -154,6 +154,47 @@ const DOMAIN_BADGE_COLORS: Record<string, string> = {
 }
 
 const SKIP_KEYS = new Set(['id', 'plan_id', 'trace_id'])
+
+// ── GovernanceBadge — Phase 0 ─────────────────────────────────────────────────
+//
+// Displays MSO governance decision on assistant messages when present.
+// Subtle badge that shows decision type and optional reason.
+
+const GOVERNANCE_STYLES: Record<string, { bg: string; border: string; text: string; icon: string }> = {
+  ALLOW:                { bg: 'bg-ok/10',   border: 'border-ok/25',   text: 'text-ok',   icon: '✓' },
+  BLOCK:                { bg: 'bg-err/10',  border: 'border-err/25',  text: 'text-err',  icon: '✕' },
+  REQUIRE_CONFIRMATION: { bg: 'bg-warn/10', border: 'border-warn/25', text: 'text-warn', icon: '⚠' },
+  DEGRADED:             { bg: 'bg-warn/10', border: 'border-warn/25', text: 'text-warn', icon: '◐' },
+}
+
+function GovernanceBadge({ trace }: { trace: GovernanceTrace }) {
+  const style = GOVERNANCE_STYLES[trace.decision] ?? GOVERNANCE_STYLES.ALLOW
+  
+  // Don't show badge for simple ALLOW decisions without additional context
+  if (trace.decision === 'ALLOW' && !trace.reason && !trace.risk_level) {
+    return null
+  }
+
+  return (
+    <div className={`mt-2 pt-2 border-t border-os-border`}>
+      <div className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-[10px] font-mono ${style.bg} ${style.border} border`}>
+        <span className={style.text}>{style.icon}</span>
+        <span className={style.text}>{trace.decision}</span>
+        {trace.risk_level && trace.risk_level !== 'low' && (
+          <>
+            <span className="text-tx-muted/40">·</span>
+            <span className={trace.risk_level === 'critical' ? 'text-err' : trace.risk_level === 'high' ? 'text-warn' : 'text-tx-muted'}>
+              {trace.risk_level} risk
+            </span>
+          </>
+        )}
+      </div>
+      {trace.reason && (
+        <p className="text-[10px] font-mono text-tx-muted mt-1 ml-0.5">{trace.reason}</p>
+      )}
+    </div>
+  )
+}
 
 function strVal(v: unknown): string | null {
   if (typeof v === 'string' && v.length > 0) return v
@@ -632,6 +673,11 @@ function AssistantMessage({ msg, onAction, onPlanExecute, isSending }: Assistant
             onAction={onAction}
             disabled={isDisabled}
           />
+        )}
+
+        {/* Phase 0: Governance decision visibility */}
+        {msg.governanceTrace && (
+          <GovernanceBadge trace={msg.governanceTrace} />
         )}
       </div>
     </div>
@@ -1231,7 +1277,7 @@ function SessionSidebar({
 }
 
 
-// ── ChatView ──────────────────────────────────────────────────────────────────
+// ── ChatView ──────────────────────────────────────────���───────────────────────
 
 /** Params stored for retry when a send fails. */
 type FailedDispatch = {
@@ -1399,6 +1445,8 @@ export function ChatView() {
           needsConfirmation: res.needs_confirmation,
         },
         kind: res.needs_confirmation ? 'confirmation_request' : 'normal',
+        // Phase 0: governance trace visibility
+        governanceTrace: res.governance_trace,
       }
 
       setMessages(prev => prev.map(m => m.id === loadingId ? assistantMsg : m))
