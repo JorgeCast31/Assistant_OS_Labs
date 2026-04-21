@@ -10,6 +10,8 @@ import type {
   SendChatResponse,
   HealthStatus,
   ChatAction,
+  OperationalMode,
+  SystemEvent,
 } from './types'
 
 const API_BASE =
@@ -116,6 +118,63 @@ export async function checkWebhookHealth(): Promise<HealthStatus> {
     return json.status === 'ok' ? 'ok' : 'warn'
   } catch {
     return 'down'
+  }
+}
+
+// ── System State (MSO Governance) ─────────────────────────────────────────────
+
+interface SystemStateResponse {
+  ok: boolean
+  operational_mode: OperationalMode
+  events?: SystemEvent[]
+}
+
+/**
+ * GET /api/system/state — fetches MSO operational mode and recent events.
+ * Fallback to UNKNOWN if endpoint doesn't exist yet.
+ */
+export async function getSystemState(): Promise<{ mode: OperationalMode; events: SystemEvent[] }> {
+  try {
+    const res = await fetch(`${API_BASE}/api/system/state`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) {
+      return { mode: 'UNKNOWN', events: [] }
+    }
+    const json = await res.json() as SystemStateResponse
+    return {
+      mode: json.operational_mode ?? 'UNKNOWN',
+      events: json.events ?? [],
+    }
+  } catch {
+    return { mode: 'UNKNOWN', events: [] }
+  }
+}
+
+/**
+ * POST /api/system/freeze — activates kill switch / freezes the system.
+ * Returns success/failure status.
+ */
+export async function freezeSystem(): Promise<{ ok: boolean; message: string }> {
+  try {
+    const res = await fetch(`${API_BASE}/api/system/freeze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(10000),
+      body: JSON.stringify({}),
+    })
+    const json = await res.json()
+    return {
+      ok: res.ok && json.ok !== false,
+      message: json.message ?? (res.ok ? 'System frozen' : 'Failed to freeze system'),
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : 'Failed to freeze system',
+    }
   }
 }
 

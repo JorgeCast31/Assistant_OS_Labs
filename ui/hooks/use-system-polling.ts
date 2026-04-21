@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useCallback } from 'react'
 import { useUIStore } from '@/stores/ui-store'
-import { getSystemHealth, checkWebhookHealth, getExecutions } from '@/lib/api'
+import { getSystemHealth, checkWebhookHealth, getExecutions, getSystemState } from '@/lib/api'
 import type { SystemData } from '@/lib/types'
 
 const POLL_MS = 20_000
@@ -13,15 +13,17 @@ const ACTIVE_STATUSES = new Set(['running', 'pending'])
 let _fetchInFlight = false
 
 async function fetchSystemData(): Promise<SystemData> {
-  const [apiResult, webhookResult, execsResult] = await Promise.allSettled([
+  const [apiResult, webhookResult, execsResult, stateResult] = await Promise.allSettled([
     getSystemHealth(),
     checkWebhookHealth(),
     getExecutions(),
+    getSystemState(),
   ])
 
   const apiStatus     = apiResult.status     === 'fulfilled' ? apiResult.value     : ('down' as const)
   const webhookStatus = webhookResult.status === 'fulfilled' ? webhookResult.value : ('down' as const)
   const execs         = execsResult.status   === 'fulfilled' ? execsResult.value   : null
+  const systemState   = stateResult.status   === 'fulfilled' ? stateResult.value   : { mode: 'UNKNOWN' as const, events: [] }
   const prev          = useUIStore.getState().systemData
 
   return {
@@ -35,6 +37,8 @@ async function fetchSystemData(): Promise<SystemData> {
       : prev.needsReview,
     lastUpdated: new Date().toISOString(),
     error: execs === null ? 'No se pudo obtener lista de ejecuciones' : null,
+    operationalMode: systemState.mode,
+    recentEvents: systemState.events.slice(0, 10),
   }
 }
 

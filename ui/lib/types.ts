@@ -217,6 +217,8 @@ export interface ChatMessage {
   kind?: 'normal' | 'confirmation_request'
   /** True once any action on this message has been dispatched — freezes all interactive elements */
   handled?: boolean
+  /** MSO governance trace — Phase 0 governance visibility */
+  governanceTrace?: GovernanceTrace
 }
 
 export interface SendChatRequest {
@@ -252,11 +254,38 @@ export interface SendChatResponse {
   ui_actions?: ChatUIAction[]
   plan?: unknown[]
   audit?: Record<string, unknown>
+  /** MSO governance trace — Phase 0 governance visibility */
+  governance_trace?: GovernanceTrace
 }
 
 // ── System ───────────────────────────────────────────────────────────────────
 
 export type HealthStatus = 'ok' | 'warn' | 'degraded' | 'down' | 'unknown'
+
+// ── Operational Mode (MSO Governance) ────────────────────────────────────────
+
+/** System operational mode as reported by the MSO governance layer */
+export type OperationalMode = 'NORMAL' | 'DEGRADED' | 'FROZEN' | 'UNKNOWN'
+
+/** Governance decision type from the MSO */
+export type GovernanceDecisionType = 'ALLOW' | 'BLOCK' | 'REQUIRE_CONFIRMATION' | 'DEGRADED'
+
+/** Governance trace attached to chat responses */
+export interface GovernanceTrace {
+  decision: GovernanceDecisionType
+  reason?: string
+  policy_id?: string
+  risk_level?: 'low' | 'medium' | 'high' | 'critical'
+}
+
+/** System event for the event log */
+export interface SystemEvent {
+  id: string
+  type: 'execution_started' | 'execution_completed' | 'execution_failed' | 'system_frozen' | 'system_degraded' | 'system_normal' | 'kill_switch_activated'
+  message: string
+  timestamp: string
+  metadata?: Record<string, unknown>
+}
 
 export interface SystemMetric {
   label: string
@@ -285,6 +314,10 @@ export interface SystemData {
   needsReview: number
   lastUpdated: string | null    // ISO 8601
   error: string | null
+  /** MSO operational mode — Phase 0 governance visibility */
+  operationalMode: OperationalMode
+  /** Recent system events — Phase 0 event log */
+  recentEvents: SystemEvent[]
 }
 
 // ── HUD ──────────────────────────────────────────────────────────────────────

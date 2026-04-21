@@ -10,6 +10,8 @@ const SYSTEM_DATA_INIT: SystemData = {
   needsReview:       0,
   lastUpdated:       null,
   error:             null,
+  operationalMode:   'UNKNOWN',
+  recentEvents:      [],
 }
 
 interface UIState {

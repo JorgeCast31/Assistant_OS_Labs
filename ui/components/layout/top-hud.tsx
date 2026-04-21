@@ -1,7 +1,7 @@
 'use client'
 
 import { useUIStore } from '@/stores/ui-store'
-import type { ViewId, HealthStatus } from '@/lib/types'
+import type { ViewId, HealthStatus, OperationalMode } from '@/lib/types'
 import { CognitivePresenceBadge } from '@/components/cognition/CognitivePresenceBadge'
 
 const VIEW_TITLES: Record<ViewId, string> = {
@@ -21,6 +21,15 @@ const DOT_COLOR: Record<HealthStatus, string> = {
   unknown:  'bg-idle',
 }
 
+// ── Operational Mode styling ──────────────────────────────────────────────────
+
+const MODE_STYLES: Record<OperationalMode, { bg: string; text: string; dot: string; label: string }> = {
+  NORMAL:   { bg: 'bg-ok/10',   text: 'text-ok',   dot: 'bg-ok',   label: 'NORMAL' },
+  DEGRADED: { bg: 'bg-warn/10', text: 'text-warn', dot: 'bg-warn', label: 'DEGRADED' },
+  FROZEN:   { bg: 'bg-err/10',  text: 'text-err',  dot: 'bg-err',  label: 'FROZEN' },
+  UNKNOWN:  { bg: 'bg-idle/10', text: 'text-tx-muted', dot: 'bg-idle', label: 'UNKNOWN' },
+}
+
 function overallHealth(
   api: HealthStatus,
   webhook: HealthStatus,
@@ -36,11 +45,12 @@ function overallHealth(
 
 export function TopHUD() {
   const { activeView, systemData, isSystemRefreshing } = useUIStore()
-  const { apiStatus, webhookStatus, activeExecutions, needsReview } = systemData
+  const { apiStatus, webhookStatus, activeExecutions, needsReview, operationalMode } = systemData
 
   const health = overallHealth(apiStatus, webhookStatus)
   const dotColor = DOT_COLOR[health]
   const isInitializing = apiStatus === 'unknown' && webhookStatus === 'unknown'
+  const modeStyle = MODE_STYLES[operationalMode] ?? MODE_STYLES.UNKNOWN
 
   return (
     <header className="flex items-center justify-between h-12 px-4 bg-os-base border-b border-os-border flex-shrink-0">
@@ -55,6 +65,17 @@ export function TopHUD() {
 
       {/* Right: live indicators */}
       <div className="flex items-center gap-4">
+
+        {/* Operational Mode Badge — Phase 0 */}
+        <div
+          className={`flex items-center gap-1.5 px-2 py-0.5 rounded border ${modeStyle.bg} border-current/20`}
+          title={`Operational Mode: ${operationalMode}`}
+        >
+          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${modeStyle.dot} ${operationalMode === 'FROZEN' ? 'animate-pulse' : ''}`} />
+          <span className={`text-[10px] font-mono font-medium uppercase tracking-wider ${modeStyle.text}`}>
+            {modeStyle.label}
+          </span>
+        </div>
 
         {/* M29: Local cognitive engine presence badge */}
         <CognitivePresenceBadge />
