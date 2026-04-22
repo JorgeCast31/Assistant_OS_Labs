@@ -1,0 +1,70 @@
+{
+  "contract_version": "v1",
+  "line": "F",
+  "source_of_truth": "assistant_os/mso/machine_operator_adapter.py",
+  "approval": {
+    "approval_id": {
+      "type": "string",
+      "required": true
+    },
+    "expires_at": {
+      "type": "string",
+      "required": true
+    },
+    "capability_scope": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "required": true
+    }
+  },
+  "request": {
+    "capability_name": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "policy_context": {
+    "governance_ref": {
+      "type": "string",
+      "required": true
+    },
+    "allowlist_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "required": false
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "required": false
+    },
+    "approval_mode": {
+      "type": "string",
+      "required": false
+    }
+  },
+  "context": {
+    "policy_decision_ref": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "transformation_rule": {
+    "name": "capability_scope_selection",
+    "input": "approval.capability_scope (list[string])",
+    "output": "policy.capability_scope (string)",
+    "selection": "choose first matching scope for request.capability_name",
+    "wildcard_matching": {
+      "supported": true,
+      "pattern": "<prefix>.*",
+      "rule": "match when capability_name starts with '<prefix>.'"
+    },
+    "failure_mode": "fail_closed_when_no_scope_matches"
+  }
+}
