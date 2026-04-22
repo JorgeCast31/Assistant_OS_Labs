@@ -14,6 +14,7 @@ import os
 import posixpath
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Protocol
 from urllib.parse import unquote, urlparse, urlunparse
@@ -854,6 +855,34 @@ def _execute_step_request_core(
                 "backend_execution_performed": False,
                 "machine_action_performed": False,
                 "adapter_status": "transport_auth_invalid",
+            },
+            audit_event_ids=audit_event_ids,
+        )
+        result.audit_event_ids = list(audit_event_ids)
+        return result
+    except ValueError as exc:
+        detail = str(exc)
+        audit_event_ids.extend(
+            _emit_terminal_events(
+                request_dict,
+                context,
+                status=MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
+                detail=detail,
+                include_skipped=True,
+                include_aborted=True,
+            )
+        )
+        result = _build_nonexecuted_result(
+            status="aborted",
+            summary="MACHINE_OPERATOR authority artifact is invalid for backend dispatch.",
+            detail=detail,
+            metadata={
+                "lane_outcome": MACHINE_OPERATOR_OUTCOME_EXECUTION_ABORTED,
+                "backend_status": "authority_artifact_invalid",
+                "backend_execution_attempted": False,
+                "backend_execution_performed": False,
+                "machine_action_performed": False,
+                "adapter_status": "authority_artifact_invalid",
             },
             audit_event_ids=audit_event_ids,
         )
@@ -1732,6 +1761,11 @@ def _build_gateway_payload(
     close_session: bool = True,
     workflow_execution_id: str = "",
 ) -> dict[str, Any]:
+    artifact_policy_payload = _build_authority_artifact_policy_payload(
+        request_dict=request_dict,
+        context=context,
+    )
+
     execution_payload = {
         "mode": "ephemeral",
         "reuse_session": reuse_session,
@@ -1760,6 +1794,10 @@ def _build_gateway_payload(
         },
         "policy": {
             "policy_decision_ref": context.policy_decision_ref,
+            "approval_id": artifact_policy_payload["approval_id"],
+            "capability_scope": artifact_policy_payload["capability_scope"],
+            "expires_at": artifact_policy_payload["expires_at"],
+            "governance_ref": artifact_policy_payload["governance_ref"],
             "allowlist_refs": list(request_dict["policy_context"]["allowlist_refs"]),
             "constraints": list(request_dict["policy_context"]["constraints"]),
             "approval_mode": request_dict["policy_context"]["approval_mode"],
@@ -1767,6 +1805,101 @@ def _build_gateway_payload(
         # Approval artifacts, secret_refs, and governance-only fields remain on
         # the Windows side of the adapter boundary.
         "execution": execution_payload,
+    }
+
+
+def _build_authority_artifact_policy_payload(
+    *,
+    request_dict: dict[str, Any],
+    context: MachineOperatorAdapterContext,
+) -> dict[str, str]:
+    approval = request_dict.get("approval")
+
+    policy_context = request_dict.get("policy_context")
+    approval_mode = ""
+    governance_ref = ""
+    if isinstance(policy_context, dict):
+        approval_mode = str(policy_context.get("approval_mode", "")).strip().lower()
+        governance_ref = str(policy_context.get("governance_ref", "")).strip()
+
+    capability_name = str(request_dict.get("capability_name", "")).strip()
+    if not capability_name:
+        raise ValueError("MACHINE_OPERATOR request is missing capability_name.")
+
+    if not governance_ref:
+        raise ValueError(
+            "MACHINE_OPERATOR authority artifact is required for backend dispatch: "
+            "policy_context.governance_ref is missing."
+        )
+
+    policy_decision_ref = context.policy_decision_ref.strip()
+    if not policy_decision_ref:
+        raise ValueError(
+            "MACHINE_OPERATOR authority artifact is required for backend dispatch: "
+            "context.policy_decision_ref is missing."
+        )
+
+    # Compatibility mode: for approval_mode=none requests (N0/N1), older
+    # flows may legitimately omit a user-facing approval artifact. We still
+    # propagate a deterministic authority envelope to backend policy.
+    requires_explicit_artifact = approval_mode == "required"
+    if not isinstance(approval, dict):
+        if requires_explicit_artifact:
+            raise ValueError(
+                "MACHINE_OPERATOR authority artifact is required for backend dispatch: approval is missing."
+            )
+        intent_id = str(request_dict.get("intent_id", "")).strip() or "unknown_intent"
+        synthetic_approval_id = f"approval:auto:{intent_id}"
+        synthetic_expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        return {
+            "approval_id": synthetic_approval_id,
+            "capability_scope": capability_name,
+            "expires_at": synthetic_expires_at,
+            "governance_ref": governance_ref,
+        }
+
+    approval_id = approval.get("approval_id")
+    if not isinstance(approval_id, str) or not approval_id.strip():
+        raise ValueError(
+            "MACHINE_OPERATOR authority artifact is required for backend dispatch: approval.approval_id is missing."
+        )
+
+    expires_at = approval.get("expires_at")
+    if not isinstance(expires_at, str) or not expires_at.strip():
+        raise ValueError(
+            "MACHINE_OPERATOR authority artifact is required for backend dispatch: approval.expires_at is missing."
+        )
+
+    scope_values = approval.get("capability_scope")
+    if (
+        not isinstance(scope_values, list)
+        or not scope_values
+        or any(not isinstance(item, str) or not item.strip() for item in scope_values)
+    ):
+        raise ValueError(
+            "MACHINE_OPERATOR authority artifact is required for backend dispatch: "
+            "approval.capability_scope must be a non-empty list[str]."
+        )
+
+    selected_scope = ""
+    for scope_item in scope_values:
+        scope = scope_item.strip()
+        if scope == capability_name:
+            selected_scope = scope
+            break
+        if scope.endswith(".*") and capability_name.startswith(f"{scope[:-2]}."):
+            selected_scope = scope
+            break
+    if not selected_scope:
+        raise ValueError(
+            "MACHINE_OPERATOR authority artifact does not authorize requested capability_name."
+        )
+
+    return {
+        "approval_id": approval_id.strip(),
+        "capability_scope": selected_scope,
+        "expires_at": expires_at.strip(),
+        "governance_ref": governance_ref,
     }
 
 
