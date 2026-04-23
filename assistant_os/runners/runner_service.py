@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple
 
 from .apply_engine import ApplyEngine
-from .authority_consumption_registry import AuthorityConsumptionRegistry
+from .authority_consumption import AuthorityConsumptionRegistry
 from .errors import (
     ApplyError,
     PolicyViolationError,
@@ -470,10 +470,11 @@ class RunnerService:
                 raise PolicyViolationError(
                     "Authority artifact verification failed: missing signature."
                 )
-            if not self._authority_consumption_registry.consume(signature):
+            if self._authority_consumption_registry.is_consumed(signature):
                 raise PolicyViolationError(
                     "Authority artifact replay detected: signature already consumed."
                 )
+            self._authority_consumption_registry.mark_consumed(signature)
         if not request.repo_path or not request.repo_path.strip():
             raise PreflightError("repo_path must not be empty.")
         # M2D — fast-fail: validate changes before workspace creation.
