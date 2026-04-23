@@ -1,6 +1,6 @@
 // ── Views ────────────────────────────────────────────────────────────────────
 
-export type ViewId = 'chat' | 'executions' | 'system' | 'actions'
+export type ViewId = 'chat' | 'executions' | 'system' | 'actions' | 'sovereign'
 
 // ── Execution status values ───────────────────────────────────────────────────
 

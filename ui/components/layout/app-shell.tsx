@@ -9,6 +9,7 @@ import { ChatView }            from '@/components/views/chat-view'
 import { ExecutionsView }      from '@/components/views/executions-view'
 import { SystemView }          from '@/components/views/system-view'
 import { ActionsView }         from '@/components/views/actions-view'
+import { SovereignInterface }  from '@/components/sovereign'
 
 export function AppShell() {
   const { activeView } = useUIStore()
@@ -31,6 +32,7 @@ export function AppShell() {
 
         <main className="flex-1 overflow-hidden">
           {activeView === 'chat'       && <ChatView />}
+          {activeView === 'sovereign'  && <SovereignInterface />}
           {activeView === 'executions' && <ExecutionsView />}
           {activeView === 'system'     && <SystemView />}
           {activeView === 'actions'    && <ActionsView />}

@@ -48,8 +48,20 @@ function IconActions() {
   )
 }
 
+function IconSovereign() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <path d="M8 1.5L2 5v6l6 3.5 6-3.5V5L8 1.5z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      <circle cx="8" cy="8" r="2" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M8 3v3M8 10v3M4 6l2.5 1.5M9.5 8.5L12 10M12 6l-2.5 1.5M6.5 8.5L4 10" 
+        stroke="currentColor" strokeWidth="1" strokeLinecap="round" opacity="0.6" />
+    </svg>
+  )
+}
+
 const NAV_ITEMS: NavItem[] = [
   { id: 'chat',       label: 'Chat',       icon: <IconChat /> },
+  { id: 'sovereign',  label: 'Sovereign',  icon: <IconSovereign /> },
   { id: 'executions', label: 'Executions', icon: <IconExecutions /> },
   { id: 'system',     label: 'System',     icon: <IconSystem /> },
   { id: 'actions',    label: 'Actions',    icon: <IconActions /> },
