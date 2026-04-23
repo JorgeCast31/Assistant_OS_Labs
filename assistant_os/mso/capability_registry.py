@@ -108,6 +108,23 @@ def get_capability_for_action(action: str, domain: str) -> CapabilityRecord:
     return CapabilityRecord(action=action, domain=domain, mode="deny", allowed=False, notes="Unregistered action denied by default.")
 
 
+def list_registered_capabilities(*, domain: str = "") -> list[CapabilityRecord]:
+    """Return static capability records without exposing the live registry dict."""
+    records = [
+        CapabilityRecord(
+            action=record.action,
+            domain=record.domain,
+            mode=record.mode,
+            allowed=record.allowed,
+            notes=record.notes,
+        )
+        for record in _CAPABILITIES.values()
+    ]
+    if domain:
+        records = [record for record in records if record.domain == domain]
+    return sorted(records, key=lambda record: (record.domain, record.action))
+
+
 def grant_temporary_capability(
     *,
     action: str,

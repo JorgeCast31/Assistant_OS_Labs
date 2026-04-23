@@ -165,6 +165,7 @@ class DeterministicDecisionTrace:
     created_at: str
     advisory_trace_ref: str = ""
     governance_trace_ref: str = ""
+    surface: str = ""
 
 
 @dataclass(slots=True)
@@ -1885,6 +1886,7 @@ class TraceChain:
     action: str
     execution_mode: str
     created_at: str
+    surface: str = ""
     advisory_trace_ref: str = ""
     decision_trace_ref: str = ""
     governance_trace_ref: str = ""

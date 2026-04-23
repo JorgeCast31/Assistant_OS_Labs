@@ -41,6 +41,7 @@ def begin_trace_chain(
     decision_trace: DeterministicDecisionTrace,
     governance_trace: dict | None = None,
     governance_decision: GovernanceDecision | None = None,
+    surface: str = "",
 ) -> TraceChain:
     """Register the initial unified chain before any execution occurs."""
     chain = TraceChain(
@@ -55,6 +56,7 @@ def begin_trace_chain(
         action=action,
         execution_mode=execution_mode,
         created_at=created_at,
+        surface=surface,
         advisory_trace_ref=f"advisory:{plan_id}" if advisory_trace else "",
         decision_trace_ref=decision_trace.decision_ref,
         governance_trace_ref=governance_decision.governance_ref if governance_decision else "",
