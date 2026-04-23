@@ -219,6 +219,62 @@ def _attach_governance_metadata(plan: dict, governance_trace: dict | None) -> di
     return plan_for_exec
 
 
+def _attach_authority_context(
+    req: CanonicalRequest,
+    plan: dict,
+    *,
+    policy_execution_mode: str,
+    governance_trace: dict | None,
+) -> dict:
+    """Attach the existing authority verdict and evidence for downstream transport."""
+    plan_for_exec = dict(plan)
+    metadata = req.get("metadata") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    payload = dict(plan_for_exec.get("domain_payload") or {})
+    approval = payload.get("approval", metadata.get("approval", {}))
+    if not isinstance(approval, dict):
+        approval = {}
+
+    policy_context = payload.get("policy_context", metadata.get("policy_context", {}))
+    if not isinstance(policy_context, dict):
+        policy_context = {}
+
+    plan_id = str(plan_for_exec.get("plan_id", "")).strip()
+    approval_id = str(
+        approval.get("approval_id", payload.get("approval_id", metadata.get("approval_id", "")))
+    ).strip()
+    if not approval_id and plan_id:
+        approval_id = f"approval:confirm:{plan_id}"
+
+    policy_decision_ref = str(
+        policy_context.get(
+            "policy_decision_ref",
+            payload.get("policy_decision_ref", metadata.get("policy_decision_ref", "")),
+        )
+    ).strip()
+    if not policy_decision_ref and plan_id:
+        policy_decision_ref = f"decision:{plan_id}"
+
+    governance_ref = str(
+        policy_context.get(
+            "governance_ref",
+            payload.get("governance_ref", metadata.get("governance_ref", "")),
+        )
+    ).strip()
+    if not governance_ref and governance_trace:
+        governance_ref = str(governance_trace.get("governance_ref", "")).strip()
+
+    plan_for_exec["_authority_context"] = {
+        "approval_id": approval_id,
+        "policy_decision_ref": policy_decision_ref,
+        "governance_ref": governance_ref,
+        "execution_mode": str(policy_execution_mode).strip(),
+    }
+    return plan_for_exec
+
+
 def _attach_governance_result_metadata(result: DomainResult, governance_trace: dict | None) -> DomainResult:
     if not governance_trace:
         return result
@@ -617,7 +673,8 @@ def handle_request(
             "reason": "structured_path",
         }
         policy = build_policy(req, structured_intent, structured_plan)
-        execution_mode = policy.get("execution_mode", EXECUTION_MODE_AUTO)
+        policy_execution_mode = policy.get("execution_mode", EXECUTION_MODE_AUTO)
+        execution_mode = policy_execution_mode
         advisory = _consult_mso_advisory(req, intent=structured_intent, plan=structured_plan)
         advisory_trace = _build_advisory_trace(
             advisory,
@@ -676,7 +733,13 @@ def handle_request(
                 )
 
         if execution_mode in (EXECUTION_MODE_CONFIRM, EXECUTION_MODE_CLARIFY):
-            _store_pending_plan(structured_plan, structured_action, text)
+            plan_for_exec = _attach_authority_context(
+                req,
+                plan_for_exec,
+                policy_execution_mode=policy_execution_mode,
+                governance_trace=governance_trace,
+            )
+            _store_pending_plan(plan_for_exec, structured_action, text)
             plan_id = structured_plan.get("plan_id", "")
             result = make_domain_result(
                 ok=True,
@@ -756,7 +819,8 @@ def handle_request(
     # plan.requires_confirmation is NOT read here — it feeds into policy as input
     # and is preserved in the plan data for downstream consumers (e.g. UI, audit).
     policy = build_policy(req, intent, plan)
-    execution_mode = policy.get("execution_mode", EXECUTION_MODE_CONFIRM)
+    policy_execution_mode = policy.get("execution_mode", EXECUTION_MODE_CONFIRM)
+    execution_mode = policy_execution_mode
     advisory = _consult_mso_advisory(req, intent=intent, plan=plan)
     advisory_trace = _build_advisory_trace(
         advisory,
@@ -822,7 +886,13 @@ def handle_request(
     # "clarify" means required info is missing; treated as pending confirmation
     # until a dedicated clarify response type is introduced.
     if execution_mode in (EXECUTION_MODE_CONFIRM, EXECUTION_MODE_CLARIFY):
-        _store_pending_plan(plan, action, text)
+        plan_for_exec = _attach_authority_context(
+            req,
+            plan_for_exec,
+            policy_execution_mode=policy_execution_mode,
+            governance_trace=governance_trace,
+        )
+        _store_pending_plan(plan_for_exec, action, text)
         plan_id = plan.get("plan_id", "")
         result = make_domain_result(
             ok=True,

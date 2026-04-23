@@ -922,6 +922,67 @@ _ACTION_CAPABILITY_SCOPE: dict[str, list[str]] = {
 }
 
 
+def _extract_authority_context(plan: dict) -> dict[str, str] | None:
+    """Extract authority context already issued upstream by policy/governance."""
+    authority_context = plan.get("_authority_context") or {}
+    if not isinstance(authority_context, dict):
+        authority_context = {}
+
+    payload = plan.get("domain_payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    approval = payload.get("approval") or {}
+    if not isinstance(approval, dict):
+        approval = {}
+
+    policy_context = payload.get("policy_context") or {}
+    if not isinstance(policy_context, dict):
+        policy_context = {}
+
+    governance_trace = plan.get("_mso_governance") or {}
+    if not isinstance(governance_trace, dict):
+        governance_trace = {}
+
+    approval_id = str(
+        authority_context.get(
+            "approval_id",
+            approval.get("approval_id", payload.get("approval_id", "")),
+        )
+    ).strip()
+    policy_decision_ref = str(
+        authority_context.get(
+            "policy_decision_ref",
+            policy_context.get("policy_decision_ref", payload.get("policy_decision_ref", "")),
+        )
+    ).strip()
+    governance_ref = str(
+        authority_context.get(
+            "governance_ref",
+            policy_context.get(
+                "governance_ref",
+                payload.get("governance_ref", governance_trace.get("governance_ref", "")),
+            ),
+        )
+    ).strip()
+    execution_mode = str(
+        authority_context.get(
+            "execution_mode",
+            policy_context.get("execution_mode", payload.get("execution_mode", "")),
+        )
+    ).strip()
+
+    if not all((approval_id, policy_decision_ref, governance_ref, execution_mode)):
+        return None
+
+    return {
+        "approval_id": approval_id,
+        "policy_decision_ref": policy_decision_ref,
+        "governance_ref": governance_ref,
+        "execution_mode": execution_mode,
+    }
+
+
 def _build_authorized_plan_from_kernel(plan: dict) -> "AuthorizedPlan":
     """
     Build an AuthorizedPlan from the kernel ExecutionPlan.
@@ -935,6 +996,7 @@ def _build_authorized_plan_from_kernel(plan: dict) -> "AuthorizedPlan":
     authorized_plan_hash = SHA-256 of the canonicalized plan identity so every
                            execution is traceable back to the kernel plan content.
     """
+    from ..authority import AUTHORITY_ARTIFACT_VERSION_V1, sign_authority_artifact
     from ..sandbox.authorized_plan import AuthorizedPlan
 
     plan_id = plan.get("plan_id")
@@ -942,6 +1004,7 @@ def _build_authorized_plan_from_kernel(plan: dict) -> "AuthorizedPlan":
     workspace = (plan.get("domain_payload") or {}).get("workspace", "")
 
     capability_scope = _ACTION_CAPABILITY_SCOPE.get(action, ["code_execute"])
+    runtime_profile = "python3.11"
 
     plan_identity = {
         "plan_id": plan_id,
@@ -953,12 +1016,33 @@ def _build_authorized_plan_from_kernel(plan: dict) -> "AuthorizedPlan":
         json.dumps(plan_identity, sort_keys=True, ensure_ascii=False).encode("utf-8")
     ).hexdigest()
 
+    authority_artifact = None
+    authority_context = _extract_authority_context(plan)
+    if authority_context is not None:
+        authority_artifact = sign_authority_artifact(
+            {
+                "artifact_version": AUTHORITY_ARTIFACT_VERSION_V1,
+                "execution_id": plan_id,
+                "plan_id": plan_id,
+                "authorized_plan_hash": authorized_plan_hash,
+                "policy_id": "default",
+                "policy_decision_ref": authority_context["policy_decision_ref"],
+                "governance_ref": authority_context["governance_ref"],
+                "approval_id": authority_context["approval_id"],
+                "execution_mode": authority_context["execution_mode"],
+                "capability_scope": capability_scope,
+                "runtime_profile": runtime_profile,
+            }
+        )
+
     ap = AuthorizedPlan(
         execution_id=plan_id,
         plan_id=plan_id,
         authorized_plan_hash=authorized_plan_hash,
         policy_id="default",
         capability_scope=capability_scope,
+        runtime_profile=runtime_profile,
+        authority_artifact=authority_artifact,
     )
     ap.validate()
     return ap
