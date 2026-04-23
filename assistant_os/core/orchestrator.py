@@ -363,6 +363,10 @@ def _publish_mso_observation(
         trace_id = plan.get("trace_id", "")
         domain = plan.get("domain", "UNKNOWN")
         action = plan.get("action", "")
+        metadata = req.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        surface = str(metadata.get("surface", "")).strip()
         task_id = plan_id or trace_id or req.get("context_id", "")
         advisory_ref = f"advisory:{plan_id}" if advisory_trace else ""
         decision_ref = f"decision:{plan_id}" if plan_id else ""
@@ -388,6 +392,7 @@ def _publish_mso_observation(
             created_at=timestamp,
             advisory_trace_ref=advisory_ref,
             governance_trace_ref=governance_ref,
+            surface=surface,
         )
         governance_decision = GovernanceDecision(**governance_trace) if governance_trace else None
         register_task(
@@ -424,6 +429,7 @@ def _publish_mso_observation(
             decision_trace=decision_trace,
             governance_trace=governance_trace,
             governance_decision=governance_decision,
+            surface=surface,
         )
         finalize_trace_chain(
             plan_id,

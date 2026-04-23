@@ -205,3 +205,8 @@ def get_agent(name: str) -> AgentDefinition:
 
     _validate_agent_definition(agent, name)
     return agent
+
+
+def list_agents() -> list[AgentDefinition]:
+    """Return all validated agents in stable registry order."""
+    return [get_agent(name) for name in sorted(AGENT_REGISTRY)]

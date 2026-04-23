@@ -130,6 +130,11 @@ from .parsers.work_update_parser import (
     UpdateParseResult,
     ProposedChange,
 )
+from .operability import (
+    build_agents_registry_response,
+    build_mso_state_response,
+    build_system_capabilities_response,
+)
 
 # Module-level variables for patching in tests
 NOTION_WORK_TRASH_DB_ID: str | None = None  # Set via environment or config later
@@ -225,6 +230,7 @@ def _log_chat_message(
     conversation_id: str,
     text: str,
     context_id: str = "",
+    surface: str = "",
 ) -> None:
     """Log a user chat message (type=chat_message, role=user)."""
     MEMORY_DIR.mkdir(parents=True, exist_ok=True)
@@ -242,6 +248,9 @@ def _log_chat_message(
         "text_preview": text_preview,
         "context_id": context_id,
     }
+
+    if surface:
+        event["surface"] = surface
     
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
@@ -533,6 +542,7 @@ def _chat_wire_from_domain_result(
     action_raw: "dict | None",
     identity: "Any",
     guard_result: "Any",
+    surface: str = "",
 ) -> dict:
     """Adapt a DomainResult from handle_request to the /chat/process wire format.
 
@@ -584,6 +594,8 @@ def _chat_wire_from_domain_result(
         base_audit["action_type"] = action_raw.get("type")
         base_audit["action_target"] = action_raw.get("target")
         base_audit["action_id"] = action_raw.get("id")
+    if surface:
+        base_audit["surface"] = surface
 
     return {
         "ok": bool(dr.get("ok", True)),
@@ -1453,7 +1465,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         self._send_json_response(status, error)
 
     def do_GET(self) -> None:
-        """Handle GET requests (health, chat history, sheets status)."""
+        """Handle GET requests (health, chat, operability, sheets status)."""
         path = self._get_path_without_query()
 
         if path == "/health":
@@ -1517,6 +1529,18 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         if path == "/work/schema":
             self._handle_work_schema_get()
+            return
+
+        if path == "/agents/registry":
+            self._handle_agents_registry_get()
+            return
+
+        if path == "/system/capabilities":
+            self._handle_system_capabilities_get()
+            return
+
+        if path == "/mso/state":
+            self._handle_mso_state_get()
             return
 
         # M29: Cognition presence endpoints (feature-flagged)
@@ -1659,6 +1683,33 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._send_json_response(status, error)
             return
         self._send_json_response(200, {"ok": True})
+
+    def _handle_agents_registry_get(self) -> None:
+        """GET /agents/registry — expose the canonical backend agent registry."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+        self._send_json_response(200, build_agents_registry_response())
+
+    def _handle_system_capabilities_get(self) -> None:
+        """GET /system/capabilities — expose backend capability and feature state."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+        self._send_json_response(200, build_system_capabilities_response())
+
+    def _handle_mso_state_get(self) -> None:
+        """GET /mso/state — expose the current observable MSO/system state."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+        self._send_json_response(200, build_mso_state_response())
 
     def _handle_chat_history(self) -> None:
         """Handle GET /chat/history endpoint - retrieve conversation history."""
@@ -2272,6 +2323,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     }
                 "session_context":  dict  — optional multi-turn state
                 "conversation_id":  str   — optional, for logging
+                "surface":          str   — optional UI surface label for audit/trace context
             }
 
         Validation:
@@ -2373,15 +2425,22 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         # Get optional conversation_id for logging
         conversation_id = data.get("conversation_id", "")
+        surface = data.get("surface", "")
+        if not isinstance(surface, str):
+            surface = ""
+        surface = surface.strip()
 
         # Build canonical metadata for the kernel request:
         #   - action carries the structured action (M12) into the orchestrator's structured path
         #   - confirm_plan_id routes an existing pending plan to the confirmation path
+        #   - surface is descriptive UI context only; it never changes policy or execution
         _meta: dict = {}
         if action_raw is not None:
             _meta["action"] = action_raw
         if _pending_confirm_plan_id:
             _meta["confirm_plan_id"] = _pending_confirm_plan_id
+        if surface:
+            _meta["surface"] = surface
 
         # --- Route ALL input through the canonical kernel (MSO) ---
         incoming_action = action_raw.get("type") if isinstance(action_raw, dict) else None
@@ -2472,12 +2531,17 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # No classification, no routing, no domain logic runs here.
         from .core.orchestrator import handle_request
         domain_result = handle_request(req)
+        request_metadata = req.get("metadata") or {}
+        request_surface = ""
+        if isinstance(request_metadata, dict):
+            request_surface = str(request_metadata.get("surface", "")).strip()
         response_data = _chat_wire_from_domain_result(
             domain_result,
             context_id=req["context_id"],
             action_raw=action_raw,
             identity=request_identity,
             guard_result=guard_result,
+            surface=request_surface,
         )
 
         ui_action_types = [a.get("type", "") for a in response_data.get("ui_actions", [])]
@@ -2497,6 +2561,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 conversation_id=conversation_id,
                 text=text,
                 context_id=response_data["session"].get("context_id", ""),
+                surface=request_surface,
             )
 
         # M29: Attach cognitive_trace when the feature is enabled.
