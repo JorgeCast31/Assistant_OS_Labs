@@ -515,6 +515,94 @@ def _adapt_result_to_response(dr: "DomainResult", context_id: str) -> dict:
     }
 
 
+# /chat/process result_type → intent label (authoritative mapping)
+_CHAT_RESULT_TYPE_TO_INTENT: dict = {
+    "plan_confirmation_required": "confirm",
+    "plan_generated": "plan",
+    "cognitive_execution": "cognitive",
+    "denied": "denied",
+    "error": "error",
+    "confirm_error": "error",
+}
+
+
+def _chat_wire_from_domain_result(
+    dr: "DomainResult",
+    *,
+    context_id: str,
+    action_raw: "dict | None",
+    identity: "Any",
+    guard_result: "Any",
+) -> dict:
+    """Adapt a DomainResult from handle_request to the /chat/process wire format.
+
+    Sole translation layer between the MSO kernel output and the chat UI
+    contract.  No domain logic here — only field projection.
+
+    session.pending_confirm_plan_id carries the plan_id so the next turn
+    can route through metadata["confirm_plan_id"] to the confirmation path.
+    """
+    domain = dr.get("domain", "UNKNOWN")
+    result_type = dr.get("result_type", "")
+    data = dr.get("data") or {}
+
+    intent = _CHAT_RESULT_TYPE_TO_INTENT.get(result_type, result_type or "processed")
+    needs_confirmation = (result_type == RESULT_TYPE_PLAN_CONFIRMATION_REQUIRED)
+
+    # Plan list: orchestrator stores the plan dict inside data["plan"].
+    plan_raw = data.get("plan", {})
+    if isinstance(plan_raw, dict) and plan_raw:
+        plan_list: list = [plan_raw]
+    elif isinstance(plan_raw, list):
+        plan_list = plan_raw
+    else:
+        plan_list = []
+
+    # Confirmation UI actions — only emitted when kernel decided confirm.
+    ui_actions: list = []
+    if needs_confirmation:
+        ui_actions = [
+            {"type": "confirm", "label": "Confirmar"},
+            {"type": "cancel", "label": "Cancelar"},
+        ]
+
+    # Session: carry context_id and plan_id for next-turn confirmation.
+    plan_id = data.get("plan_id", "")
+    session_out: dict = {"context_id": context_id, "last_domain": domain}
+    if plan_id:
+        session_out["pending_confirm_plan_id"] = plan_id
+
+    # Audit: expose MSO decision metadata for client observability.
+    _gov = data.get("governance_trace") or {}
+    base_audit: dict = {
+        "result_type": result_type,
+        "domain": domain,
+        "execution_mode": _gov.get("effective_execution_mode", ""),
+        "mso_decided": True,
+    }
+    if isinstance(action_raw, dict):
+        base_audit["action_type"] = action_raw.get("type")
+        base_audit["action_target"] = action_raw.get("target")
+        base_audit["action_id"] = action_raw.get("id")
+
+    return {
+        "ok": bool(dr.get("ok", True)),
+        "message": dr.get("message", ""),
+        "trace_id": context_id,
+        "domain": domain,
+        "intent": intent,
+        "mode": "chat",
+        "needs_confirmation": needs_confirmation,
+        "missing_fields": [],
+        "plan": plan_list,
+        "ui_actions": ui_actions,
+        "session": session_out,
+        "audit": base_audit,
+        "identity": identity.to_audit_dict(),
+        "guard": guard_result.to_audit_dict(),
+    }
+
+
 # ---------------------------------------------------------------------------
 # A1.5: _gated_legacy_route REMOVED
 #
@@ -2278,25 +2366,30 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 session_data = dict(session_data)
                 session_data["context_id"] = db_sess["context_id"]
 
-        session = ChatSession(
-            pending_flow=session_data.get("pending_flow"),
-            pending_data=session_data.get("pending_data", {}),
-            context_id=session_data.get("context_id") or new_context_id(),
-            last_domain=session_data.get("last_domain"),
-            last_action_type=session_data.get("last_action_type"),
-        )
+        # Extract context_id and any pending confirmation from session.
+        # pending_confirm_plan_id bridges the orchestrator's plan_id across turns.
+        _context_id: str = session_data.get("context_id") or new_context_id()
+        _pending_confirm_plan_id: "str | None" = session_data.get("pending_confirm_plan_id")
 
         # Get optional conversation_id for logging
         conversation_id = data.get("conversation_id", "")
 
-        # --- BACKEND IS KING: Process through chat_core ---
-        # action_raw is passed as-is; parse_action() in chat_core validates it.
+        # Build canonical metadata for the kernel request:
+        #   - action carries the structured action (M12) into the orchestrator's structured path
+        #   - confirm_plan_id routes an existing pending plan to the confirmation path
+        _meta: dict = {}
+        if action_raw is not None:
+            _meta["action"] = action_raw
+        if _pending_confirm_plan_id:
+            _meta["confirm_plan_id"] = _pending_confirm_plan_id
+
+        # --- Route ALL input through the canonical kernel (MSO) ---
         incoming_action = action_raw.get("type") if isinstance(action_raw, dict) else None
         _log.info(
-            "chat_recv: action=%s pending_flow=%s context_id=%s text=%r",
+            "chat_recv: action=%s pending_confirm=%s context_id=%s text=%r",
             incoming_action or "None",
-            session.get("pending_flow") or "None",
-            (session.get("context_id") or "")[:8],
+            _pending_confirm_plan_id or "None",
+            _context_id[:8],
             text[:40],
         )
 
@@ -2308,7 +2401,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
         from .identity import anonymous_human
         from .identity_guard import build_guarded_request, enforce_guard_for_handler
         request_identity = anonymous_human(session_id=session_id)
-        req, guard_result = build_guarded_request(request_identity, text=text)
+        req, guard_result = build_guarded_request(
+            request_identity,
+            text=text,
+            context_id=_context_id,
+            metadata=_meta if _meta else None,
+        )
 
         _log.debug(
             "guard: principal=%s state=%s decision=%s",
@@ -2319,9 +2417,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         # F3: Enforcement reads guard_decision FROM CanonicalRequest — not recomputed.
         # DENY → HTTP 403 immediately; no domain logic executes.
-        # DEGRADED + write-op → blocked inside process_chat_input via guard_result.
         guard_error = enforce_guard_for_handler(
-            req, action=None,  # chat path: no ACTION_* constant; write-op check is in process_chat_input
+            req, action=None,
             principal_id=request_identity.principal.id,
         )
         if guard_error and guard_error[0] == "access_denied":
@@ -2335,12 +2432,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             })
             return
 
-        # ALFA governance gate — checked before ANY execution through chat_core.
-        #
-        # chat_core._execute_work_item / _execute_work_delete / _execute_fin_item
-        # call external APIs directly, bypassing the canonical orchestrator pipeline.
-        # This gate ensures that the system kill-switch (FROZEN) and degraded mode
-        # block ALL chat execution — not just the canonical path.
+        # ALFA governance gate — checked before ANY kernel dispatch.
         #
         # FROZEN  → absolute block; operator must explicitly clear the freeze.
         # DEGRADED → block chat mutations; canonical paths require confirmation already.
@@ -2374,65 +2466,42 @@ class WebhookHandler(BaseHTTPRequestHandler):
             })
             return
 
-        response: ChatCoreResponse = process_chat_input(
-            text, session, action=action_raw,
-            identity=request_identity, guard_result=guard_result,
+        # Canonical kernel dispatch — single authority path through MSO.
+        # req is a fully-stamped CanonicalRequest (guard_decision, action_type,
+        # principal_id, context_id, metadata with action/confirm_plan_id).
+        # No classification, no routing, no domain logic runs here.
+        from .core.orchestrator import handle_request
+        domain_result = handle_request(req)
+        response_data = _chat_wire_from_domain_result(
+            domain_result,
+            context_id=req["context_id"],
+            action_raw=action_raw,
+            identity=request_identity,
+            guard_result=guard_result,
         )
 
-        ui_action_types = [a.get("type", "") for a in response.get("ui_actions", [])]
+        ui_action_types = [a.get("type", "") for a in response_data.get("ui_actions", [])]
         _log.info(
-            "chat_resp: trace=%s  intent=%s/%s  mode=%s  pending_flow=%s  ui_actions=%s",
-            response.get("trace_id", "N/A")[:8],
-            response["domain"], response["intent"],
-            response["mode"],
-            response["session"].get("pending_flow") or "None",
+            "chat_resp: trace=%s  intent=%s/%s  mode=%s  execution_mode=%s  ui_actions=%s",
+            response_data.get("trace_id", "N/A")[:8],
+            response_data["domain"], response_data["intent"],
+            response_data["mode"],
+            (response_data.get("audit") or {}).get("execution_mode", ""),
             ui_action_types,
         )
-        
+
         # Log chat message
         if conversation_id:
             _log_chat_message(
                 remote=remote,
                 conversation_id=conversation_id,
                 text=text,
-                context_id=response["session"].get("context_id", ""),
+                context_id=response_data["session"].get("context_id", ""),
             )
-        
-        # Layer 2: render human-readable message from structured response
-        rendered = render_chat_response(response)
-
-        # Build base audit — merge core audit with action-level metadata so the
-        # client can correlate which structured action triggered this response.
-        base_audit = dict(response.get("audit", {}))
-        if isinstance(action_raw, dict):
-            base_audit.setdefault("action_type",   action_raw.get("type"))
-            base_audit.setdefault("action_target", action_raw.get("target"))
-            base_audit.setdefault("action_id",     action_raw.get("id"))
-
-        # Convert ChatCoreResponse to JSON-serializable dict
-        response_data: dict = {
-            "ok": True,
-            "message": rendered.message,
-            "trace_id": response.get("trace_id", ""),
-            "domain": response["domain"],
-            "intent": response["intent"],
-            "mode": response["mode"],
-            "needs_confirmation": response.get("needs_confirmation", False),
-            "missing_fields": response.get("missing_fields", []),
-            "plan": response.get("plan", []),
-            "ui_actions": response.get("ui_actions", []),
-            "session": dict(response.get("session", {})),
-            "audit": base_audit,
-            # F1: Expose canonical identity at response level so the client
-            # can observe who acted and under what subject state.
-            "identity": request_identity.to_audit_dict(),
-            # F2: Expose guard decision at response level for client observability.
-            "guard": guard_result.to_audit_dict(),
-        }
 
         # M29: Attach cognitive_trace when the feature is enabled.
-        # The chat path is deterministic — local LLM is never consulted here.
-        # cognitive_trace.used = False is the truthful value.
+        # The chat path is deterministic — handle_request does not invoke a local LLM
+        # for NL routing. cognitive_trace.used = False is the truthful value.
         from .config import ASSISTANT_LOCAL_LLM_ENABLED
         if ASSISTANT_LOCAL_LLM_ENABLED:
             response_data["cognitive_trace"] = {
@@ -2452,7 +2521,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 f"[{action_raw.get('type', 'action')}]"
                 if isinstance(action_raw, dict) else "[action]"
             )
-            new_ctx = response["session"].get("context_id")
+            new_ctx = response_data["session"].get("context_id")
             try:
                 chat_db.append_message(session_id, "user", {
                     "id":        str(_uuid2.uuid4()),
@@ -2464,19 +2533,19 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 chat_db.append_message(session_id, "assistant", {
                     "id":        str(_uuid2.uuid4()),
                     "role":      "assistant",
-                    "content":   rendered.message,
+                    "content":   response_data["message"],
                     "status":    "sent",
                     "createdAt": now_iso(),
-                    "uiActions": response.get("ui_actions") or [],
-                    "plan":      response.get("plan") or [],
+                    "uiActions": response_data.get("ui_actions") or [],
+                    "plan":      response_data.get("plan") or [],
                     "meta": {
-                        "domain":            response["domain"],
-                        "intent":            response["intent"],
-                        "mode":              response["mode"],
-                        "traceId":           response.get("trace_id", ""),
-                        "needsConfirmation": response.get("needs_confirmation", False),
+                        "domain":            response_data["domain"],
+                        "intent":            response_data["intent"],
+                        "mode":              response_data["mode"],
+                        "traceId":           response_data.get("trace_id", ""),
+                        "needsConfirmation": response_data.get("needs_confirmation", False),
                     },
-                    "kind":    "confirmation_request" if response.get("needs_confirmation") else "normal",
+                    "kind":    "confirmation_request" if response_data.get("needs_confirmation") else "normal",
                     "handled": False,
                 })
                 if new_ctx:

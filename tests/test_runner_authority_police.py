@@ -28,16 +28,16 @@ def sample_repo(tmp_path):
     return repo
 
 
-def _artifact_payload(**overrides):
+def _artifact_payload(execution_id: str = "runner-authority-001", **overrides):
     payload = {
         "artifact_version": AUTHORITY_ARTIFACT_VERSION_V1,
-        "execution_id": "runner-authority-001",
-        "plan_id": "runner-authority-001",
+        "execution_id": execution_id,
+        "plan_id": execution_id,
         "authorized_plan_hash": "plan-hash-001",
         "policy_id": "default",
-        "policy_decision_ref": "decision:runner-authority-001",
+        "policy_decision_ref": f"decision:{execution_id}",
         "governance_ref": "gov-runner-001",
-        "approval_id": "approval-runner-001",
+        "approval_id": f"approval:{execution_id}",
         "execution_mode": "confirm",
         "capability_scope": ["code_fix"],
         "runtime_profile": "python3.11",
@@ -46,10 +46,10 @@ def _artifact_payload(**overrides):
     return payload
 
 
-def _authorized_plan(*, authority_artifact, **overrides):
+def _authorized_plan(*, authority_artifact, execution_id: str = "runner-authority-001", **overrides):
     params = {
-        "execution_id": "runner-authority-001",
-        "plan_id": "runner-authority-001",
+        "execution_id": execution_id,
+        "plan_id": execution_id,
         "authorized_plan_hash": "plan-hash-001",
         "policy_id": "default",
         "capability_scope": ["code_fix"],
@@ -114,3 +114,37 @@ class TestRunnerAuthorityPolice:
         assert result.workspace_path is None
         assert "Authority artifact verification failed" in (result.error or "")
         assert "missing required fields" in (result.error or "")
+
+    def test_replay_of_same_authority_artifact_fails_closed(self, sample_repo):
+        service = RunnerService()
+        artifact = sign_authority_artifact(_artifact_payload())
+        plan = _authorized_plan(authority_artifact=artifact)
+
+        first_result = service.run(_request(str(sample_repo), plan))
+        second_result = service.run(_request(str(sample_repo), plan))
+
+        assert first_result.error is None
+        assert second_result.final_status == "failed"
+        assert "replay detected" in (second_result.error or "")
+
+    def test_distinct_authority_artifacts_succeed(self, sample_repo):
+        service = RunnerService()
+        artifact_a = sign_authority_artifact(_artifact_payload(execution_id="runner-authority-101"))
+        artifact_b = sign_authority_artifact(_artifact_payload(execution_id="runner-authority-102"))
+
+        plan_a = _authorized_plan(
+            authority_artifact=artifact_a,
+            execution_id="runner-authority-101",
+        )
+        plan_b = _authorized_plan(
+            authority_artifact=artifact_b,
+            execution_id="runner-authority-102",
+        )
+
+        result_a = service.run(_request(str(sample_repo), plan_a))
+        result_b = service.run(_request(str(sample_repo), plan_b))
+
+        assert result_a.error is None
+        assert result_b.error is None
+        assert result_a.final_status == "needs_review"
+        assert result_b.final_status == "needs_review"

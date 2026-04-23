@@ -22,9 +22,10 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional, Tuple
 
 from .apply_engine import ApplyEngine
+from .authority_consumption import AuthorityConsumptionRegistry
 from .errors import (
     ApplyError,
     PolicyViolationError,
@@ -145,6 +146,7 @@ class RunnerService:
         self._runner_api: RunnerAPI = runner_api or _RunnerAPI()
         self._registry: ExecutionRegistry = registry or _Registry()
         self._audit_store: AuditStore = audit_store or _AuditStore(_AUDIT_STORE_PATH)
+        self._authority_consumption_registry = AuthorityConsumptionRegistry()
 
     def run(self, request: RunnerExecutionRequest) -> RunnerExecutionResult:
         """Execute the complete pipeline for *request*.
@@ -461,6 +463,18 @@ class RunnerService:
                 raise PolicyViolationError(
                     f"Authority artifact verification failed: {exc}"
                 ) from exc
+            signature = self._resolve_authority_artifact_signature(
+                request.authorized_plan.authority_artifact
+            )
+            if not signature:
+                raise PolicyViolationError(
+                    "Authority artifact verification failed: missing signature."
+                )
+            if self._authority_consumption_registry.is_consumed(signature):
+                raise PolicyViolationError(
+                    "Authority artifact replay detected: signature already consumed."
+                )
+            self._authority_consumption_registry.mark_consumed(signature)
         if not request.repo_path or not request.repo_path.strip():
             raise PreflightError("repo_path must not be empty.")
         # M2D — fast-fail: validate changes before workspace creation.
@@ -510,6 +524,13 @@ class RunnerService:
                     raise PreflightError(
                         f"changes[{i}]: patch op for {path!r} has empty 'patch' field."
                     )
+
+    def _resolve_authority_artifact_signature(self, authority_artifact: Any) -> str:
+        if hasattr(authority_artifact, "signature"):
+            return str(getattr(authority_artifact, "signature", "")).strip()
+        if isinstance(authority_artifact, Mapping):
+            return str(authority_artifact.get("signature", "")).strip()
+        return ""
 
     def _determine_status(
         self,
