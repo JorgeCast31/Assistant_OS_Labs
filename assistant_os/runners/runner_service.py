@@ -451,6 +451,16 @@ class RunnerService:
                 f"execution_id contains invalid characters (path separators or '..' not allowed): "
                 f"{request.execution_id!r}"
             )
+        if (
+            request.authorized_plan is not None
+            and request.authorized_plan.authority_artifact is not None
+        ):
+            try:
+                request.authorized_plan.validate()
+            except ValueError as exc:
+                raise PolicyViolationError(
+                    f"Authority artifact verification failed: {exc}"
+                ) from exc
         if not request.repo_path or not request.repo_path.strip():
             raise PreflightError("repo_path must not be empty.")
         # M2D — fast-fail: validate changes before workspace creation.
