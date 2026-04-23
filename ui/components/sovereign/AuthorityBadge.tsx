@@ -1,5 +1,6 @@
 'use client'
 
+import type { ReactElement } from 'react'
 import type { GovernanceTrace } from '@/lib/sovereign/types'
 
 // ── Governance Decision Styles ────────────────────────────────────────────────
@@ -52,7 +53,7 @@ function IconWarn() {
   )
 }
 
-const ICONS: Record<string, () => JSX.Element> = {
+const ICONS: Record<string, () => ReactElement> = {
   check: IconCheck,
   block: IconBlock,
   alert: IconAlert,
