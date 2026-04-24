@@ -267,7 +267,7 @@ HOST_EXECUTOR: str = os.environ.get("HOST_EXECUTOR", "native").strip().lower() o
 # http(s) execute endpoint and keeps transport details inside the MO lane.
 OPENCLAW_GATEWAY_URL: str = os.environ.get(
     "OPENCLAW_GATEWAY_URL",
-    "ws://127.0.0.1:18789",
+    "ws://127.0.0.1:18790",
 ).strip()
 
 # Hard timeout cap for one MACHINE_OPERATOR backend round-trip.

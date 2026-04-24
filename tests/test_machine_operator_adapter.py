@@ -1,5 +1,6 @@
 import os
 import unittest
+from urllib.parse import urlparse
 from unittest.mock import Mock, patch
 
 import requests
@@ -1919,18 +1920,25 @@ class TestMachineOperatorAdapter(unittest.TestCase):
     def test_gateway_execute_url_rejects_backslashes(self):
         from assistant_os.mso.machine_operator_adapter import _gateway_execute_url
 
-        with patch("assistant_os.mso.machine_operator_adapter.config.OPENCLAW_GATEWAY_URL", "ws://127.0.0.1:18789\\gateway"):
+        with patch("assistant_os.mso.machine_operator_adapter.config.OPENCLAW_GATEWAY_URL", "ws://127.0.0.1:18790\\gateway"):
             with self.assertRaisesRegex(ValueError, "URL separators"):
                 _gateway_execute_url()
 
     def test_gateway_execute_url_uses_posix_path_rules(self):
         from assistant_os.mso.machine_operator_adapter import _gateway_execute_url
 
-        with patch("assistant_os.mso.machine_operator_adapter.config.OPENCLAW_GATEWAY_URL", "ws://127.0.0.1:18789/base/"):
+        with patch("assistant_os.mso.machine_operator_adapter.config.OPENCLAW_GATEWAY_URL", "ws://127.0.0.1:18790/base/"):
             self.assertEqual(
                 _gateway_execute_url(),
-                "http://127.0.0.1:18789/base/v1/machine-operator/execute",
+                "http://127.0.0.1:18790/base/v1/machine-operator/execute",
             )
+
+    def test_gateway_default_port_matches_openclaw_backend_default(self):
+        from assistant_os.mso.machine_operator_adapter import _gateway_execute_url
+        from assistant_os.openclaw_backend.config import OPENCLAW_BACKEND_PORT
+
+        execute_url = _gateway_execute_url()
+        self.assertEqual(urlparse(execute_url).port, OPENCLAW_BACKEND_PORT)
 
 
 if __name__ == "__main__":

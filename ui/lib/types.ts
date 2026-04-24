@@ -281,7 +281,16 @@ export interface GovernanceTrace {
 /** System event for the event log */
 export interface SystemEvent {
   id: string
-  type: 'execution_started' | 'execution_completed' | 'execution_failed' | 'system_frozen' | 'system_degraded' | 'system_normal' | 'kill_switch_activated'
+  type:
+    | 'execution_started'
+    | 'execution_completed'
+    | 'execution_failed'
+    | 'system_frozen'
+    | 'system_degraded'
+    | 'system_normal'
+    | 'kill_switch_activated'
+    | 'task_transition'
+    | 'governance'
   message: string
   timestamp: string
   metadata?: Record<string, unknown>
