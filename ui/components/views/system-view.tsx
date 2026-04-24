@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { useUIStore }       from '@/stores/ui-store'
 import { useSystemPolling } from '@/hooks/use-system-polling'
 import { StatusBadge }      from '@/components/shared/status-badge'
-import { freezeSystem }     from '@/lib/api'
+import { FREEZE_CONTROL, RUNTIME_ENDPOINTS, freezeSystem } from '@/lib/api'
 import type { HealthStatus, OperationalMode, SystemEvent } from '@/lib/types'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -14,6 +14,17 @@ function fmtTimestamp(iso: string | null): string {
   return new Date(iso).toLocaleTimeString('es', {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   })
+}
+
+function fmtEndpoint(url: string): string {
+  try {
+    const parsed = new URL(url, 'http://localhost')
+    return parsed.origin === 'http://localhost' && url.startsWith('/')
+      ? parsed.pathname
+      : `${parsed.host} · ${parsed.pathname}`
+  } catch {
+    return url
+  }
 }
 
 const STATUS_LABEL: Record<HealthStatus, string> = {
@@ -50,6 +61,8 @@ const EVENT_TYPE_STYLES: Record<string, { icon: string; color: string }> = {
   system_degraded:      { icon: '⚠',  color: 'text-warn' },
   system_normal:        { icon: '●',  color: 'text-ok' },
   kill_switch_activated: { icon: '⛔', color: 'text-err' },
+  task_transition:      { icon: '⇄',  color: 'text-accent' },
+  governance:           { icon: '⚖',  color: 'text-warn' },
 }
 
 // ── ServiceCard ───────────────────────────────────────────────────────────────
@@ -120,6 +133,17 @@ function KillSwitchButton({ onFrozen }: { onFrozen: () => void }) {
   const [showConfirm, setShowConfirm] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
+
+  if (!FREEZE_CONTROL.available) {
+    return (
+      <div className="rounded-lg p-4 border border-warn/30 bg-warn/5">
+        <p className="text-xs font-mono text-warn font-medium mb-1">Freeze Control Unavailable</p>
+        <p className="text-[10px] font-mono text-tx-secondary">
+          {FREEZE_CONTROL.message}
+        </p>
+      </div>
+    )
+  }
 
   async function handleFreeze() {
     setIsLoading(true)
@@ -338,12 +362,12 @@ export function SystemView() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <ServiceCard
                 label="CODE API"
-                subtitle="localhost:8000 · /health"
+                subtitle={fmtEndpoint(RUNTIME_ENDPOINTS.codeApiHealth)}
                 status={apiStatus}
               />
               <ServiceCard
                 label="Assistant / Webhook"
-                subtitle="localhost:8787 · /health"
+                subtitle={fmtEndpoint(RUNTIME_ENDPOINTS.webhookHealth)}
                 status={webhookStatus}
               />
             </div>
@@ -388,9 +412,13 @@ export function SystemView() {
           </p>
           <div className="bg-os-surface border border-os-border rounded-lg divide-y divide-os-border">
             {[
-              { label: 'CODE API health',  url: 'http://localhost:8000/health',         status: apiStatus },
-              { label: 'Webhook health',   url: 'http://localhost:8787/health',         status: webhookStatus },
-              { label: 'Executions list',  url: 'http://localhost:8000/api/code/executions', status: 'ok' as HealthStatus },
+              { label: 'CODE API health',     url: RUNTIME_ENDPOINTS.codeApiHealth,             status: apiStatus },
+              { label: 'Webhook health',      url: RUNTIME_ENDPOINTS.webhookHealth,             status: webhookStatus },
+              { label: 'System state proxy',  url: RUNTIME_ENDPOINTS.systemStateProxy,          status: webhookStatus },
+              { label: 'Webhook MSO state',   url: RUNTIME_ENDPOINTS.webhookMsoState,           status: webhookStatus },
+              { label: 'Capabilities',        url: RUNTIME_ENDPOINTS.webhookSystemCapabilities, status: webhookStatus },
+              { label: 'Agents registry',     url: RUNTIME_ENDPOINTS.webhookAgentsRegistry,     status: webhookStatus },
+              { label: 'Executions list',     url: RUNTIME_ENDPOINTS.codeApiExecutions,         status: apiStatus },
             ].map(row => (
               <div key={row.label} className="flex items-center justify-between px-4 py-2.5">
                 <div>

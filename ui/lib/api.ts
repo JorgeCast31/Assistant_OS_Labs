@@ -14,17 +14,32 @@ import type {
   SystemEvent,
 } from './types'
 
-const API_BASE =
+export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? 'http://localhost:8000'
 
 // Used only for system health checks (no auth required, URL is not sensitive)
-const WEBHOOK_BASE =
+export const WEBHOOK_BASE_URL =
   process.env.NEXT_PUBLIC_WEBHOOK_BASE_URL ?? 'http://localhost:8787'
+
+export const RUNTIME_ENDPOINTS = {
+  codeApiHealth: `${API_BASE_URL}/health`,
+  codeApiExecutions: `${API_BASE_URL}/api/code/executions`,
+  webhookHealth: `${WEBHOOK_BASE_URL}/health`,
+  webhookMsoState: `${WEBHOOK_BASE_URL}/mso/state`,
+  webhookSystemCapabilities: `${WEBHOOK_BASE_URL}/system/capabilities`,
+  webhookAgentsRegistry: `${WEBHOOK_BASE_URL}/agents/registry`,
+  systemStateProxy: '/api/system/runtime-state',
+} as const
+
+export const FREEZE_CONTROL = {
+  available: false,
+  message: 'Freeze control is not wired in the UI. Use the authenticated webhook governance endpoint instead.',
+} as const
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(`${API_BASE_URL}${path}`, {
     headers: { 'Content-Type': 'application/json' },
     cache: 'no-store',
     ...init,
@@ -94,7 +109,7 @@ export async function executeCode(payload: ExecutePayload): Promise<ExecuteRespo
 /** GET /health on the code_api server (port 8000). Returns 'ok' or 'down'. */
 export async function getSystemHealth(): Promise<HealthStatus> {
   try {
-    const res = await fetch(`${API_BASE}/health`, {
+    const res = await fetch(RUNTIME_ENDPOINTS.codeApiHealth, {
       cache: 'no-store',
       signal: AbortSignal.timeout(4000),
     })
@@ -109,7 +124,7 @@ export async function getSystemHealth(): Promise<HealthStatus> {
 /** GET /health on the webhook server (port 8787). Returns 'ok' or 'down'. */
 export async function checkWebhookHealth(): Promise<HealthStatus> {
   try {
-    const res = await fetch(`${WEBHOOK_BASE}/health`, {
+    const res = await fetch(RUNTIME_ENDPOINTS.webhookHealth, {
       cache: 'no-store',
       signal: AbortSignal.timeout(4000),
     })
@@ -130,12 +145,13 @@ interface SystemStateResponse {
 }
 
 /**
- * GET /api/system/state — fetches MSO operational mode and recent events.
- * Fallback to UNKNOWN if endpoint doesn't exist yet.
+ * GET /api/system/runtime-state — internal Next.js proxy to the webhook
+ * operability surface. Fallback to UNKNOWN if the proxy or backend is
+ * unavailable.
  */
 export async function getSystemState(): Promise<{ mode: OperationalMode; events: SystemEvent[] }> {
   try {
-    const res = await fetch(`${API_BASE}/api/system/state`, {
+    const res = await fetch(RUNTIME_ENDPOINTS.systemStateProxy, {
       cache: 'no-store',
       signal: AbortSignal.timeout(4000),
     })
@@ -153,28 +169,13 @@ export async function getSystemState(): Promise<{ mode: OperationalMode; events:
 }
 
 /**
- * POST /api/system/freeze — activates kill switch / freezes the system.
- * Returns success/failure status.
+ * Freeze control is intentionally unavailable in the UI until there is a
+ * canonical operator-safe route and token flow for it.
  */
 export async function freezeSystem(): Promise<{ ok: boolean; message: string }> {
-  try {
-    const res = await fetch(`${API_BASE}/api/system/freeze`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      cache: 'no-store',
-      signal: AbortSignal.timeout(10000),
-      body: JSON.stringify({}),
-    })
-    const json = await res.json()
-    return {
-      ok: res.ok && json.ok !== false,
-      message: json.message ?? (res.ok ? 'System frozen' : 'Failed to freeze system'),
-    }
-  } catch (err) {
-    return {
-      ok: false,
-      message: err instanceof Error ? err.message : 'Failed to freeze system',
-    }
+  return {
+    ok: false,
+    message: FREEZE_CONTROL.message,
   }
 }
 
