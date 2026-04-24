@@ -2491,6 +2491,64 @@ class WebhookHandler(BaseHTTPRequestHandler):
             })
             return
 
+        # Surface behavior layer: short-circuit pure conversational inputs.
+        # Runs AFTER identity guard (security must pass) but BEFORE the governance
+        # gate and orchestrator dispatch. Conversational responses carry no execution,
+        # so they bypass governance intentionally — small talk must not be blocked.
+        from .surface_behavior import get_surface_behavior_response as _get_surf_resp
+        _surface_resp = _get_surf_resp(
+            surface=surface,
+            text=text,
+            context_id=_context_id,
+            identity=request_identity,
+            guard_result=guard_result,
+        )
+        if _surface_resp is not None:
+            self._send_json_response(200, _surface_resp)
+            if conversation_id:
+                _log_chat_message(
+                    remote=remote,
+                    conversation_id=conversation_id,
+                    text=text,
+                    context_id=_context_id,
+                    surface=surface,
+                )
+            if session_id:
+                import uuid as _uuid_surf
+                try:
+                    chat_db.append_message(session_id, "user", {
+                        "id":        str(_uuid_surf.uuid4()),
+                        "role":      "user",
+                        "content":   text,
+                        "status":    "sent",
+                        "createdAt": now_iso(),
+                    })
+                    chat_db.append_message(session_id, "assistant", {
+                        "id":        str(_uuid_surf.uuid4()),
+                        "role":      "assistant",
+                        "content":   _surface_resp["message"],
+                        "status":    "sent",
+                        "createdAt": now_iso(),
+                        "uiActions": [],
+                        "plan":      [],
+                        "meta": {
+                            "domain":            _surface_resp["domain"],
+                            "intent":            _surface_resp["intent"],
+                            "mode":              "chat",
+                            "traceId":           _context_id,
+                            "needsConfirmation": False,
+                        },
+                        "kind":    "normal",
+                        "handled": False,
+                    })
+                    chat_db.update_session(session_id, context_id=_context_id)
+                except Exception as _surf_persist_exc:
+                    _log.warning(
+                        "[surface_behavior] session persist failed %s: %s",
+                        session_id, _surf_persist_exc,
+                    )
+            return
+
         # ALFA governance gate — checked before ANY kernel dispatch.
         #
         # FROZEN  → absolute block; operator must explicitly clear the freeze.
