@@ -99,10 +99,11 @@ export const useSovereignStore = create<SovereignState>((set) => ({
   
   // Navigation actions
   setActiveView: (view) => set({ activeView: view }),
-  setActiveAgent: (agent) => set({ 
+  setActiveAgent: (agent) => set((state) => ({ 
     activeAgent: agent,
-    activeView: agent ? 'agents' : 'system',
-  }),
+    // Only switch to 'agents' when selecting an agent; don't change view when clearing agent
+    activeView: agent ? 'agents' : state.activeView,
+  })),
   
   // Message actions
   addSystemChatMessage: (msg) => set((state) => ({
