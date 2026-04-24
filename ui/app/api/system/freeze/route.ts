@@ -7,7 +7,14 @@ export const dynamic = 'force-dynamic'
  * POST /api/system/freeze
  * 
  * Proxies the freeze request to the webhook backend's governance endpoint.
- * The backend endpoint is expected at POST /mso/freeze or /governance/freeze.
+ * 
+ * IMPORTANT: This is a FAIL-CLOSED placeholder.
+ * The backend endpoint (/mso/freeze) has NOT been confirmed to exist.
+ * This proxy route exists so the wiring is ready, but calling it will
+ * return a clear error until the backend implements the endpoint.
+ * 
+ * TODO: Confirm backend endpoint exists before marking FREEZE_CONTROL.available = true
+ * TODO: Verify exact endpoint path with backend team (/mso/freeze vs /governance/freeze)
  * 
  * This route handles authentication server-side so the ASSISTANT_TOKEN
  * never reaches the browser.

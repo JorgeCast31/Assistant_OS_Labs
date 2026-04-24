@@ -31,10 +31,18 @@ export const RUNTIME_ENDPOINTS = {
   systemStateProxy: '/api/system/runtime-state',
 } as const
 
+/**
+ * FREEZE_CONTROL: Governance kill-switch configuration.
+ * 
+ * TODO: Backend endpoint must be confirmed before enabling.
+ * The proxy route exists at /api/system/freeze but the webhook
+ * endpoint (/mso/freeze or similar) has NOT been verified to exist.
+ * Do not set available=true until backend confirms the endpoint.
+ */
 export const FREEZE_CONTROL = {
-  available: true,
+  available: false,
   endpoint: '/api/system/freeze',
-  message: 'Freeze control is available through the authenticated proxy.',
+  message: 'Freeze control requires a confirmed backend endpoint. Contact system administrator.',
 } as const
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -171,9 +179,23 @@ export async function getSystemState(): Promise<{ mode: OperationalMode; events:
 
 /**
  * POST /api/system/freeze — calls the authenticated proxy which forwards
- * to the webhook governance endpoint. Returns actual success/error from backend.
+ * to the webhook governance endpoint.
+ * 
+ * IMPORTANT: This function fails-closed. If FREEZE_CONTROL.available is false,
+ * the call returns an error immediately without attempting the request.
+ * The proxy route exists but the backend endpoint is NOT confirmed.
+ * 
+ * TODO: Enable only after backend endpoint is verified to exist.
  */
 export async function freezeSystem(): Promise<{ ok: boolean; message: string }> {
+  // Fail-closed: refuse to attempt if not marked available
+  if (!FREEZE_CONTROL.available) {
+    return {
+      ok: false,
+      message: FREEZE_CONTROL.message,
+    }
+  }
+
   try {
     const res = await fetch(FREEZE_CONTROL.endpoint, {
       method: 'POST',
