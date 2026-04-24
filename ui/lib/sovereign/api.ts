@@ -48,9 +48,15 @@ export async function sendSovereignMessage(
       domain: data.domain,
       intent: data.intent,
       mode: data.mode,
-      needs_confirmation: data.needs_confirmation || false,
+      needs_confirmation: data.needs_confirmation || data.pending_confirmation != null || false,
       plan: data.plan,
       governance_trace: data.governance_trace,
+      // Extended MSO response fields
+      execution_mode: data.execution_mode,
+      policy_decision: data.policy_decision,
+      authority_artifact: data.authority_artifact,
+      pending_confirmation: data.pending_confirmation,
+      confirmation: data.confirmation,
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Network error'

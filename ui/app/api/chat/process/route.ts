@@ -44,6 +44,7 @@ export async function POST(req: NextRequest) {
   if (body.conversation_id)  payload.conversation_id  = body.conversation_id
   if (body.action)           payload.action           = body.action   // M12+ structured actions
   if (body.session_id)       payload.session_id       = body.session_id  // M17 persistence
+  if (body.surface)          payload.surface          = body.surface  // Sovereign surface context
 
   // ── Call upstream webhook (auth resolved at call time) ────────────────────
   const base    = getWebhookBaseUrl()

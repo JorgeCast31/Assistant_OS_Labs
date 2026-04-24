@@ -32,6 +32,11 @@ export interface SovereignMessage {
   requiresConfirmation?: boolean
   executionState?: ExecutionState
   governanceTrace?: GovernanceTrace
+  // Extended MSO fields
+  executionMode?: 'direct' | 'plan' | 'confirm' | 'blocked'
+  policyDecision?: PolicyDecision
+  authorityArtifact?: AuthorityArtifact
+  pendingConfirmation?: PendingConfirmation
 }
 
 export interface GovernanceTrace {
@@ -127,6 +132,42 @@ export interface SovereignChatResponse {
   plan?: MSOPlanItem[]
   governance_trace?: GovernanceTrace
   error?: string
+  // Extended MSO response fields
+  execution_mode?: 'direct' | 'plan' | 'confirm' | 'blocked'
+  policy_decision?: PolicyDecision
+  authority_artifact?: AuthorityArtifact
+  pending_confirmation?: PendingConfirmation
+  confirmation?: ConfirmationResult
+}
+
+export interface PolicyDecision {
+  decision: 'ALLOW' | 'BLOCK' | 'REQUIRE_CONFIRMATION' | 'ESCALATE'
+  reason: string
+  policy_id?: string
+  risk_level?: 'low' | 'medium' | 'high' | 'critical'
+}
+
+export interface AuthorityArtifact {
+  artifact_id: string
+  type: 'plan' | 'command' | 'script' | 'action'
+  summary: string
+  details?: Record<string, unknown>
+  requires_auth: boolean
+  timestamp: string
+}
+
+export interface PendingConfirmation {
+  confirmation_id: string
+  prompt: string
+  artifact?: AuthorityArtifact
+  expires_at?: string
+}
+
+export interface ConfirmationResult {
+  confirmed: boolean
+  confirmed_at?: string
+  cancelled_at?: string
+  reason?: string
 }
 
 // ── Agent Command Request ─────────────────────────────────────────────────────

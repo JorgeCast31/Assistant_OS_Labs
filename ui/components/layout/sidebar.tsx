@@ -1,7 +1,18 @@
 'use client'
 
+import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import { useUIStore } from '@/stores/ui-store'
 import type { ViewId } from '@/lib/types'
+
+function IconSovereign() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <path d="M8 1.5L2 5v6l6 3.5 6-3.5V5L8 1.5z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      <path d="M8 8v6.5M2 5l6 3 6-3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
 
 interface NavItem {
   id: ViewId
@@ -57,6 +68,8 @@ const NAV_ITEMS: NavItem[] = [
 
 export function Sidebar() {
   const { activeView, setView } = useUIStore()
+  const pathname = usePathname()
+  const isSovereignActive = pathname === '/sovereign'
 
   return (
     <aside className="flex flex-col w-56 bg-os-base border-r border-os-border h-full flex-shrink-0">
@@ -75,6 +88,28 @@ export function Sidebar() {
         <p className="px-2 pb-2 text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest">
           Navigation
         </p>
+
+        {/* Sovereign Link - above other nav items */}
+        <Link
+          href="/sovereign"
+          className={`
+            w-full flex items-center gap-2.5 px-2.5 py-2 rounded text-sm font-mono
+            transition-colors duration-100 text-left
+            ${isSovereignActive
+              ? 'bg-accent/15 text-accent border border-accent/25'
+              : 'text-tx-secondary hover:bg-os-surface hover:text-tx-primary border border-transparent'
+            }
+          `}
+        >
+          <span className={isSovereignActive ? 'text-accent' : 'text-tx-muted'}>
+            <IconSovereign />
+          </span>
+          Sovereign
+          {isSovereignActive && (
+            <span className="ml-auto w-1 h-1 rounded-full bg-accent" />
+          )}
+        </Link>
+
         {NAV_ITEMS.map((item) => {
           const isActive = activeView === item.id
           return (

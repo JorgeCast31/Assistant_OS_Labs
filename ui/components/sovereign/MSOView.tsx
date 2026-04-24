@@ -6,6 +6,9 @@ import { sendSovereignMessage, sendMSOConfirmation } from '@/lib/sovereign/api'
 import { PlanCard } from './PlanCard'
 import { ConfirmationCard } from './ConfirmationCard'
 import { AuthorityBadge } from './AuthorityBadge'
+import { PolicyDecisionCard } from './PolicyDecisionCard'
+import { AuthorityArtifactCard } from './AuthorityArtifactCard'
+import { PendingConfirmationCard } from './PendingConfirmationCard'
 import type { SovereignMessage, MSOPlanItem } from '@/lib/sovereign/types'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -127,6 +130,7 @@ interface MessageBubbleProps {
 function MessageBubble({ message, onConfirm, onCancel, isLatest }: MessageBubbleProps) {
   const isUser = message.role === 'user'
   const showConfirmation = isLatest && message.requiresConfirmation && message.role === 'assistant'
+  const hasPendingConfirmation = isLatest && message.pendingConfirmation && message.role === 'assistant'
   
   return (
     <div className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -147,6 +151,34 @@ function MessageBubble({ message, onConfirm, onCancel, isLatest }: MessageBubble
           }
         `}>
           <RichText content={message.content} />
+          
+          {/* Execution Mode Badge */}
+          {message.executionMode && (
+            <div className="mt-2">
+              <span className={`text-[9px] font-mono px-2 py-1 rounded uppercase tracking-wider ${
+                message.executionMode === 'direct' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
+                message.executionMode === 'plan' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' :
+                message.executionMode === 'confirm' ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' :
+                'bg-red-500/20 text-red-400 border border-red-500/30'
+              }`}>
+                Mode: {message.executionMode}
+              </span>
+            </div>
+          )}
+
+          {/* Policy Decision Card */}
+          {message.policyDecision && (
+            <div className="mt-3">
+              <PolicyDecisionCard decision={message.policyDecision} />
+            </div>
+          )}
+
+          {/* Authority Artifact Card */}
+          {message.authorityArtifact && (
+            <div className="mt-3">
+              <AuthorityArtifactCard artifact={message.authorityArtifact} />
+            </div>
+          )}
           
           {/* Plan Display */}
           {message.plan && message.plan.length > 0 && (
@@ -183,8 +215,17 @@ function MessageBubble({ message, onConfirm, onCancel, isLatest }: MessageBubble
           </div>
         </div>
 
-        {/* Confirmation Card */}
-        {showConfirmation && onConfirm && onCancel && (
+        {/* Pending Confirmation Card (from API) */}
+        {hasPendingConfirmation && message.pendingConfirmation && onConfirm && onCancel && (
+          <PendingConfirmationCard
+            confirmation={message.pendingConfirmation}
+            onConfirm={onConfirm}
+            onCancel={onCancel}
+          />
+        )}
+
+        {/* Legacy Confirmation Card (fallback) */}
+        {showConfirmation && !hasPendingConfirmation && onConfirm && onCancel && (
           <ConfirmationCard
             message="Do you authorize this execution plan?"
             plan={message.plan}
@@ -255,7 +296,7 @@ export function MSOView() {
     // Send to API
     const response = await sendSovereignMessage(text, 'mso_direct')
 
-    // Add assistant response
+    // Add assistant response with all extended fields
     const assistantMsg: SovereignMessage = {
       id: genId(),
       role: 'assistant',
@@ -266,6 +307,11 @@ export function MSOView() {
       requiresConfirmation: response.needs_confirmation,
       executionState: response.needs_confirmation ? 'awaiting_confirmation' : 'idle',
       governanceTrace: response.governance_trace,
+      // Extended MSO fields from API
+      executionMode: response.execution_mode,
+      policyDecision: response.policy_decision,
+      authorityArtifact: response.authority_artifact,
+      pendingConfirmation: response.pending_confirmation,
     }
     addMSOMessage(assistantMsg)
 
