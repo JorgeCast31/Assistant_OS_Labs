@@ -31,9 +31,18 @@ export const RUNTIME_ENDPOINTS = {
   systemStateProxy: '/api/system/runtime-state',
 } as const
 
+/**
+ * FREEZE_CONTROL: Governance kill-switch configuration.
+ * 
+ * TODO: Backend endpoint must be confirmed before enabling.
+ * The proxy route exists at /api/system/freeze but the webhook
+ * endpoint (/mso/freeze or similar) has NOT been verified to exist.
+ * Do not set available=true until backend confirms the endpoint.
+ */
 export const FREEZE_CONTROL = {
   available: false,
-  message: 'Freeze control is not wired in the UI. Use the authenticated webhook governance endpoint instead.',
+  endpoint: '/api/system/freeze',
+  message: 'Freeze control requires a confirmed backend endpoint. Contact system administrator.',
 } as const
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -169,13 +178,50 @@ export async function getSystemState(): Promise<{ mode: OperationalMode; events:
 }
 
 /**
- * Freeze control is intentionally unavailable in the UI until there is a
- * canonical operator-safe route and token flow for it.
+ * POST /api/system/freeze — calls the authenticated proxy which forwards
+ * to the webhook governance endpoint.
+ * 
+ * IMPORTANT: This function fails-closed. If FREEZE_CONTROL.available is false,
+ * the call returns an error immediately without attempting the request.
+ * The proxy route exists but the backend endpoint is NOT confirmed.
+ * 
+ * TODO: Enable only after backend endpoint is verified to exist.
  */
 export async function freezeSystem(): Promise<{ ok: boolean; message: string }> {
-  return {
-    ok: false,
-    message: FREEZE_CONTROL.message,
+  // Fail-closed: refuse to attempt if not marked available
+  if (!FREEZE_CONTROL.available) {
+    return {
+      ok: false,
+      message: FREEZE_CONTROL.message,
+    }
+  }
+
+  try {
+    const res = await fetch(FREEZE_CONTROL.endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(15000),
+    })
+
+    const json = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }))
+
+    if (!res.ok || !json.ok) {
+      return {
+        ok: false,
+        message: json.error ?? json.message ?? `Freeze failed (${res.status})`,
+      }
+    }
+
+    return {
+      ok: true,
+      message: json.message ?? 'System freeze initiated',
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : 'Freeze request failed',
+    }
   }
 }
 

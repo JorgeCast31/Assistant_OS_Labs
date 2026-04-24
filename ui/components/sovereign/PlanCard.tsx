@@ -101,7 +101,7 @@ export function PlanCard({ items, title = 'Execution Plan' }: PlanCardProps) {
       {/* Items */}
       <div className="p-3 space-y-2">
         {items.map((item, i) => (
-          <PlanItemRow key={item.id} item={item} index={i} />
+          <PlanItemRow key={item.id ?? `${item.action ?? 'plan-item'}-${i}`} item={item} index={i} />
         ))}
       </div>
     </div>
