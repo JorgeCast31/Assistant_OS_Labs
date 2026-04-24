@@ -32,8 +32,9 @@ export const RUNTIME_ENDPOINTS = {
 } as const
 
 export const FREEZE_CONTROL = {
-  available: false,
-  message: 'Freeze control is not wired in the UI. Use the authenticated webhook governance endpoint instead.',
+  available: true,
+  endpoint: '/api/system/freeze',
+  message: 'Freeze control is available through the authenticated proxy.',
 } as const
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -169,13 +170,36 @@ export async function getSystemState(): Promise<{ mode: OperationalMode; events:
 }
 
 /**
- * Freeze control is intentionally unavailable in the UI until there is a
- * canonical operator-safe route and token flow for it.
+ * POST /api/system/freeze — calls the authenticated proxy which forwards
+ * to the webhook governance endpoint. Returns actual success/error from backend.
  */
 export async function freezeSystem(): Promise<{ ok: boolean; message: string }> {
-  return {
-    ok: false,
-    message: FREEZE_CONTROL.message,
+  try {
+    const res = await fetch(FREEZE_CONTROL.endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(15000),
+    })
+
+    const json = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }))
+
+    if (!res.ok || !json.ok) {
+      return {
+        ok: false,
+        message: json.error ?? json.message ?? `Freeze failed (${res.status})`,
+      }
+    }
+
+    return {
+      ok: true,
+      message: json.message ?? 'System freeze initiated',
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : 'Freeze request failed',
+    }
   }
 }
 
