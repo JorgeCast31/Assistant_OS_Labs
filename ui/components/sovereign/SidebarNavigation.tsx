@@ -1,8 +1,18 @@
 'use client'
 
+import Link from 'next/link'
 import { useSovereignStore } from '@/stores/sovereign-store'
 import { StatusIndicator } from './StatusIndicator'
 import type { SovereignViewId } from '@/lib/sovereign/types'
+
+function IconHome() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+      <path d="M2 6L7 2l5 4v6a1 1 0 01-1 1H3a1 1 0 01-1-1V6z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+      <path d="M5 13V8h4v5" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round" />
+    </svg>
+  )
+}
 
 // ── Zone Configuration ────────────────────────────────────────────────────────
 
@@ -131,8 +141,19 @@ export function SidebarNavigation() {
         </div>
       </div>
 
+      {/* Home Link */}
+      <div className="px-3 pt-3 pb-1">
+        <Link
+          href="/"
+          className="flex items-center gap-2 px-3 py-2 rounded-lg text-slate-500 hover:text-tx-secondary hover:bg-os-surface transition-colors duration-100 border border-transparent"
+        >
+          <IconHome />
+          <span className="text-xs font-mono font-medium">Home</span>
+        </Link>
+      </div>
+
       {/* Zones */}
-      <nav className="flex-1 px-3 py-4 space-y-1">
+      <nav className="flex-1 px-3 py-3 space-y-1">
         {ZONES.map((zone) => {
           const isActive = activeView === zone.id
           const color = zone.color
