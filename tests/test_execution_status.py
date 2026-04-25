@@ -81,21 +81,27 @@ class TestWorkPipelineExecutionStatus:
     def test_work_execute_sets_execution_status_real(self):
         from assistant_os.pipelines.work_pipeline import execute
         from assistant_os.contracts import EXECUTION_STATUS_REAL
+        from assistant_os.tools.base.tool_result import ToolResult
 
-        mock_result = [{"id": "1", "title": "Task 1"}]
-        with patch("assistant_os.pipelines.work_pipeline._query_work", return_value=mock_result):
+        mock_items = [{"notion_page_id": "p1", "title": "Task 1"}]
+        mock_tool_result = ToolResult(ok=True, data={"items": mock_items, "total": 1}, error=None)
+        with patch("assistant_os.integrations.work_gateway.check_notion_available", return_value=True), \
+             patch("assistant_os.tools.notion.query_database_tool.QueryDatabaseTool.execute",
+                   return_value=mock_tool_result), \
+             patch("assistant_os.integrations.work_gateway.format_work_query_response",
+                   return_value="1 task found"):
             result = execute(self._plan(), "ctx-work-1")
 
         assert result.get("execution_status") == EXECUTION_STATUS_REAL
 
-    def test_work_execute_error_still_sets_execution_status_real(self):
+    def test_work_execute_error_still_sets_execution_status(self):
         from assistant_os.pipelines.work_pipeline import execute
-        from assistant_os.contracts import EXECUTION_STATUS_REAL
 
-        with patch("assistant_os.pipelines.work_pipeline._query_work", side_effect=RuntimeError("db down")):
+        with patch("assistant_os.integrations.work_gateway.check_notion_available",
+                   side_effect=RuntimeError("db down")):
             result = execute(self._plan(), "ctx-work-2")
 
-        # Even on pipeline error, execution_status is present
+        # Exception caught by try/except — execution_status is always present
         assert "execution_status" in result
 
 
@@ -144,11 +150,7 @@ class TestHostPipelineExecutionStatus:
 
     def test_host_execute_sets_execution_status_real(self):
         from assistant_os.pipelines.host_pipeline import execute
-        from assistant_os.agents.host_agent import HOST_AGENT_ID
-        from assistant_os.agents.registry import activate_agent
         from assistant_os.contracts import EXECUTION_STATUS_REAL
-
-        activate_agent(HOST_AGENT_ID)
 
         mock_result = MagicMock()
         mock_result.ok = True
@@ -188,6 +190,7 @@ class TestCodePipelineStubStatus:
             "action": action,
             "target_file": "test_file.py",
             "code_context": "def foo(): pass",
+            "workspace": "/tmp",
         }
         return plan
 
@@ -260,15 +263,15 @@ class TestCodePipelineLiveStatus:
             "action": action,
             "target_file": "test_file.py",
             "code_context": "def foo(): pass",
+            "workspace": "/tmp",
         }
         return plan
 
     def _make_live_review_executor(self):
         mock = MagicMock()
         mock.return_value = {
-            "summary": "This function does foo.",
-            "findings": [],
-            "raw": "",
+            "ok": True,
+            "analysis": "This function does foo.",
         }
         return mock
 
@@ -325,7 +328,7 @@ class TestMachineOperatorPipelineExecutionStatus:
                 "execution_mode":      "auto",
                 "approval_mode":       "none",
                 "constraints":         [],
-                "allowlist_refs":      [],
+                "allowlist_refs":      ["system:browser_read_only"],
                 "secret_refs":         [],
             },
             "budget": {
@@ -356,17 +359,24 @@ class TestMachineOperatorPipelineExecutionStatus:
         from assistant_os.mso.machine_operator_adapter import reset_machine_operator_backend_health
         from assistant_os.pipelines.machine_operator_pipeline import execute
         from assistant_os.contracts import EXECUTION_STATUS_REAL
-        from assistant_os.mso.contracts import MACHINE_OPERATOR_OUTCOME_SUCCESS
 
         reset_machine_operator_backend_health()
 
         response_body = {
             "status": "ok",
             "final_url": "https://example.test/",
-            "dom_snapshot": "<html/>",
-            "screenshot_b64": None,
-            "visible_text": None,
-            "error": None,
+            "observation": {
+                "summary": "DOM snapshot captured.",
+                "detail": "",
+                "structured_data": {},
+            },
+            "evidence_refs": [
+                {
+                    "ref_id": "snap_1",
+                    "evidence_type": "dom_snapshot",
+                    "uri": "data:text/html;charset=utf-8,%3Chtml%2F%3E",
+                }
+            ],
         }
         with patch("requests.post") as mock_post:
             mock_resp = MagicMock()
@@ -401,5 +411,197 @@ class TestMachineOperatorPipelineExecutionStatus:
         # Use a disallowed capability to trigger policy rejection
         bad_request = self._request(capability_name="browser.click_button")
         result = execute(self._plan(bad_request), "ctx-mo-3")
+
+        assert result.get("execution_status") == EXECUTION_STATUS_UNAVAILABLE
+
+
+# ---------------------------------------------------------------------------
+# H. _chat_wire_from_domain_result — execution_status forwarding
+# ---------------------------------------------------------------------------
+
+class TestChatWireExecutionStatusPropagation:
+    def _identity(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {}
+        return m
+
+    def _guard(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {}
+        return m
+
+    def test_chat_wire_forwards_execution_status_real(self):
+        from assistant_os.webhook_server import _chat_wire_from_domain_result
+        from assistant_os.contracts import EXECUTION_STATUS_REAL, make_domain_result
+
+        dr = make_domain_result(
+            ok=True,
+            result_type="test_action",
+            domain="TEST",
+            message="ok",
+            data={},
+            execution_status=EXECUTION_STATUS_REAL,
+        )
+        wire = _chat_wire_from_domain_result(
+            dr,
+            context_id="ctx-wire-1",
+            action_raw=None,
+            identity=self._identity(),
+            guard_result=self._guard(),
+        )
+
+        assert wire.get("execution_status") == EXECUTION_STATUS_REAL
+
+    def test_chat_wire_forwards_execution_status_stub(self):
+        from assistant_os.webhook_server import _chat_wire_from_domain_result
+        from assistant_os.contracts import EXECUTION_STATUS_STUB, make_domain_result
+
+        dr = make_domain_result(
+            ok=True,
+            result_type="test_action",
+            domain="TEST",
+            message="stub",
+            data={},
+            execution_status=EXECUTION_STATUS_STUB,
+        )
+        wire = _chat_wire_from_domain_result(
+            dr,
+            context_id="ctx-wire-2",
+            action_raw=None,
+            identity=self._identity(),
+            guard_result=self._guard(),
+        )
+
+        assert wire.get("execution_status") == EXECUTION_STATUS_STUB
+
+    def test_chat_wire_omits_execution_status_when_absent(self):
+        from assistant_os.webhook_server import _chat_wire_from_domain_result
+        from assistant_os.contracts import make_domain_result
+
+        dr = make_domain_result(
+            ok=True,
+            result_type="test_action",
+            domain="TEST",
+            message="ok",
+            data={},
+        )
+        wire = _chat_wire_from_domain_result(
+            dr,
+            context_id="ctx-wire-3",
+            action_raw=None,
+            identity=self._identity(),
+            guard_result=self._guard(),
+        )
+
+        assert "execution_status" not in wire
+
+
+# ---------------------------------------------------------------------------
+# I. Machine Operator endpoint — system:browser_read_only allowlist
+# ---------------------------------------------------------------------------
+
+class TestMachineOperatorAllowlistPolicy:
+    """Verify the allowlist gate: system:browser_read_only passes N0 caps,
+    empty allowlist still blocks, and navigate is never auto-executable."""
+
+    def _request(self, capability="browser.snapshot", allowlist=None):
+        from assistant_os.contracts import ACTION_MACHINE_OPERATOR_EXECUTE, RISK_LOW, make_plan
+        if allowlist is None:
+            allowlist = ["system:browser_read_only"]
+        plan = make_plan(
+            domain="MACHINE_OPERATOR",
+            action=ACTION_MACHINE_OPERATOR_EXECUTE,
+            target=capability,
+            risk_level=RISK_LOW,
+            requires_confirmation=False,
+        )
+        plan["domain_payload"] = {
+            "machine_operator_request": {
+                "intent_id":      "intent-al-001",
+                "correlation_id": "corr-al-001",
+                "capability_name": capability,
+                "capability_tier": "read_only",
+                "arguments":      {"url": "https://example.test"},
+                "policy_context": {
+                    "policy_decision_ref": "auto:al-001",
+                    "governance_ref":      "governance://test",
+                    "execution_mode":      "auto",
+                    "approval_mode":       "none",
+                    "constraints":         [],
+                    "allowlist_refs":      allowlist,
+                    "secret_refs":         [],
+                },
+                "budget": {
+                    "max_steps":        1,
+                    "max_duration_ms":  8000,
+                    "max_output_bytes": 4096,
+                    "max_side_effects": 0,
+                },
+                "requested_side_effects": [],
+                "approval": None,
+            }
+        }
+        return plan
+
+    def test_system_allowlist_allows_snapshot_through_to_backend(self):
+        """system:browser_read_only satisfies allowlist gate for N0 read-only caps."""
+        from assistant_os.mso.machine_operator_adapter import reset_machine_operator_backend_health
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+        from assistant_os.contracts import EXECUTION_STATUS_REAL
+
+        reset_machine_operator_backend_health()
+
+        response_body = {
+            "status": "ok",
+            "final_url": "https://example.test/",
+            "observation": {
+                "summary": "DOM snapshot captured.",
+                "detail": "",
+                "structured_data": {},
+            },
+            "evidence_refs": [
+                {
+                    "ref_id": "snap_1",
+                    "evidence_type": "dom_snapshot",
+                    "uri": "data:text/html;charset=utf-8,%3Chtml%2F%3E",
+                }
+            ],
+        }
+        with patch("requests.post") as mock_post:
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = response_body
+            mock_post.return_value = mock_resp
+
+            result = execute(self._request("browser.snapshot"), "ctx-al-1")
+
+        assert result.get("execution_status") == EXECUTION_STATUS_REAL
+
+    def test_empty_allowlist_blocks_read_only_cap(self):
+        """Empty allowlist_refs still blocks even a read-only capability."""
+        from assistant_os.mso.machine_operator_adapter import reset_machine_operator_backend_health
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+        from assistant_os.contracts import EXECUTION_STATUS_UNAVAILABLE
+
+        reset_machine_operator_backend_health()
+
+        result = execute(self._request("browser.snapshot", allowlist=[]), "ctx-al-2")
+
+        assert result.get("execution_status") == EXECUTION_STATUS_UNAVAILABLE
+
+    def test_system_allowlist_blocks_interactive_navigate(self):
+        """system:browser_read_only must NOT satisfy allowlist for browser.navigate (N1)."""
+        from assistant_os.mso.machine_operator_adapter import reset_machine_operator_backend_health
+        from assistant_os.pipelines.machine_operator_pipeline import execute
+        from assistant_os.contracts import EXECUTION_STATUS_UNAVAILABLE
+
+        reset_machine_operator_backend_health()
+
+        # Override tier to interactive for navigate
+        plan = self._request("browser.navigate", allowlist=["system:browser_read_only"])
+        plan["domain_payload"]["machine_operator_request"]["capability_tier"] = "interactive"
+        plan["domain_payload"]["machine_operator_request"]["policy_context"]["approval_mode"] = "required"
+
+        result = execute(plan, "ctx-al-3")
 
         assert result.get("execution_status") == EXECUTION_STATUS_UNAVAILABLE

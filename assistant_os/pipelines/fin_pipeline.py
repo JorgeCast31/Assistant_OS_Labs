@@ -34,6 +34,7 @@ from ..contracts import (
     RESULT_TYPE_FIN_CONFIRM,
     RESULT_TYPE_FIN_CHAPERON,
     EXECUTION_STATUS_REAL,
+    EXECUTION_STATUS_UNAVAILABLE,
 )
 from ..core.context import get_context
 
@@ -49,9 +50,20 @@ def execute(plan: dict, context_id: str) -> DomainResult:
     Returns:
         DomainResult — no transport wrapping.
     """
-    result = _dispatch(plan, context_id)
-    result["execution_status"] = EXECUTION_STATUS_REAL
-    return result
+    try:
+        result = _dispatch(plan, context_id)
+        result["execution_status"] = EXECUTION_STATUS_REAL
+        return result
+    except Exception as exc:  # pragma: no cover
+        return make_domain_result(
+            ok=False,
+            result_type=RESULT_TYPE_FIN_EXPENSE,
+            domain="FIN",
+            message="Unexpected error in FIN pipeline",
+            data={},
+            error={"type": "FinPipelineError", "message": str(exc)},
+            execution_status=EXECUTION_STATUS_UNAVAILABLE,
+        )
 
 
 def _dispatch(plan: dict, context_id: str) -> DomainResult:

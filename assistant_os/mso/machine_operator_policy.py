@@ -97,6 +97,30 @@ _DENY_BY_DEFAULT_POLICY = MachineOperatorCapabilityPolicy(
     allowed_by_default=False,
 )
 
+# System-issued allowlist ref for endpoint-originated read-only browser calls.
+# Only satisfies N0 read_only capabilities — never interactive or mutating.
+_SYSTEM_BROWSER_READ_ONLY_ALLOWLIST = "system:browser_read_only"
+
+
+def _allowlist_satisfied(
+    workflow_policy: MachineOperatorCapabilityPolicy,
+    policy_context: dict,
+) -> bool:
+    """Return True if the allowlist requirement for this workflow is satisfied.
+
+    "system:browser_read_only" is accepted only for read_only-tier capabilities
+    (N0: snapshot, screenshot, read_visible_text).  Interactive and mutating
+    tiers require a real (non-system) allowlist ref from the caller.
+    """
+    if not workflow_policy.requires_allowlist:
+        return True
+    allowlist_refs: list = list(policy_context.get("allowlist_refs") or [])
+    if not allowlist_refs:
+        return False
+    if allowlist_refs == [_SYSTEM_BROWSER_READ_ONLY_ALLOWLIST]:
+        return workflow_policy.capability_tier == "read_only"
+    return True
+
 
 @dataclass(slots=True)
 class MachineOperatorEnforcementDecision:
@@ -393,7 +417,7 @@ def enforce_machine_operator_request(
                 policy=workflow_policy,
             )
 
-    if workflow_policy.requires_allowlist and not policy_context.get("allowlist_refs"):
+    if not _allowlist_satisfied(workflow_policy, policy_context):
         return MachineOperatorEnforcementDecision(
             allowed=False,
             reason_code="missing_allowlist_context",

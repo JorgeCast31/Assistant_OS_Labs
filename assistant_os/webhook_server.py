@@ -597,7 +597,7 @@ def _chat_wire_from_domain_result(
     if surface:
         base_audit["surface"] = surface
 
-    return {
+    wire: dict = {
         "ok": bool(dr.get("ok", True)),
         "message": dr.get("message", ""),
         "trace_id": context_id,
@@ -613,6 +613,9 @@ def _chat_wire_from_domain_result(
         "identity": identity.to_audit_dict(),
         "guard": guard_result.to_audit_dict(),
     }
+    if "execution_status" in dr:
+        wire["execution_status"] = dr["execution_status"]
+    return wire
 
 
 # ---------------------------------------------------------------------------
@@ -4802,8 +4805,30 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._send_json_response(status, error)
             return
 
-        # Derive capability_tier: navigate changes browser state; all others are read-only.
-        capability_tier = "interactive" if capability == "browser.navigate" else "read_only"
+        # browser.navigate is interactive and requires approval_mode=required.
+        # This endpoint operates in auto/none mode — reject navigate explicitly.
+        if capability == "browser.navigate":
+            self._send_json_response(200, {
+                "ok": False,
+                "domain": "MACHINE_OPERATOR",
+                "result_type": "machine_operator_action",
+                "execution_status": "unavailable",
+                "message": (
+                    "browser.navigate requires approval_mode=required and cannot be "
+                    "auto-executed through this endpoint. Submit a supervised request "
+                    "with an explicit approval token."
+                ),
+                "data": {},
+                "error": {
+                    "type": "PolicyViolation",
+                    "reason_code": "approval_mode_mismatch",
+                    "message": "navigate requires approval_mode=required",
+                },
+            })
+            return
+
+        # All remaining capabilities are read-only (N0, approval_mode=none).
+        capability_tier = "read_only"
 
         intent_id      = str(_uuid.uuid4())
         correlation_id = str(_uuid.uuid4())
@@ -4820,7 +4845,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "execution_mode":      "auto",
                 "approval_mode":       "none",
                 "constraints":         [],
-                "allowlist_refs":      [],
+                "allowlist_refs":      ["system:browser_read_only"],
                 "secret_refs":         [],
             },
             "budget": {

@@ -84,6 +84,7 @@ def execute(plan: dict, context_id: str) -> DomainResult:
             message="Unexpected error in MACHINE_OPERATOR pipeline",
             data={"plan": dict(plan)},
             error={"type": "MachineOperatorPipelineError", "message": str(exc)},
+            execution_status=EXECUTION_STATUS_UNAVAILABLE,
             trace_id=plan.get("trace_id"),
             plan_id=plan.get("plan_id"),
         )
