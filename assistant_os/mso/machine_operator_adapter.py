@@ -2275,7 +2275,8 @@ def _is_allowlisted_url(url: _CanonicalUrl, allowlist_refs: Any) -> bool:
             continue
         if url.scheme not in rule.schemes:
             continue
-        if url.hostname != rule.hostname:
+        # hostname="*" means any hostname is allowed (used by system:browser_read_only)
+        if rule.hostname != "*" and url.hostname != rule.hostname:
             continue
         if url.port not in rule.ports:
             continue
@@ -2290,6 +2291,15 @@ def _parse_allowlist_rule(ref: Any) -> _AllowlistRule | None:
     ref = ref.strip()
     if not ref:
         return None
+    if ref == "system:browser_read_only":
+        # System-issued rule for authenticated endpoint read-only access.
+        # Allows any HTTPS (or HTTP) URL — scoped to read-only capabilities only.
+        return _AllowlistRule(
+            schemes=frozenset(_SUPPORTED_URL_SCHEMES),
+            hostname="*",
+            ports=frozenset({80, 443, 8080, 8443}),
+            path_prefix="/",
+        )
     if ref == "allowlist:web-safe":
         return _AllowlistRule(
             schemes=frozenset({"https"}),

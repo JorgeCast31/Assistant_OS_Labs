@@ -597,7 +597,7 @@ def _chat_wire_from_domain_result(
     if surface:
         base_audit["surface"] = surface
 
-    return {
+    wire: dict = {
         "ok": bool(dr.get("ok", True)),
         "message": dr.get("message", ""),
         "trace_id": context_id,
@@ -613,6 +613,9 @@ def _chat_wire_from_domain_result(
         "identity": identity.to_audit_dict(),
         "guard": guard_result.to_audit_dict(),
     }
+    if "execution_status" in dr:
+        wire["execution_status"] = dr["execution_status"]
+    return wire
 
 
 # ---------------------------------------------------------------------------
@@ -1434,6 +1437,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # FROZEN blocks ALL execution across every path including /chat/process.
         if path == "/admin/governance/mode":
             self._handle_governance_mode(remote)
+            return
+
+        # Route: /machine_operator/execute (execute a bounded browser capability)
+        if path == "/machine_operator/execute":
+            self._handle_machine_operator_execute(remote)
             return
 
         # 404 for unknown paths
@@ -4716,6 +4724,156 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         # --- Adapt DomainResult → canonical HOST response shape ---
         self._send_json_response(_host_http_status(dr), _host_dr_to_response(dr))
+
+    def _handle_machine_operator_execute(self, remote: str) -> None:
+        """Handle POST /machine_operator/execute — run a bounded browser capability.
+
+        API contract
+        ------------
+        Request body:
+          {
+            "capability": str  — required; one of: browser.navigate | browser.snapshot |
+                                 browser.screenshot | browser.read_visible_text
+            "arguments":  dict — optional; capability-specific arguments (default: {})
+          }
+
+        Response: raw DomainResult JSON
+          { "ok": bool, "domain": "MACHINE_OPERATOR", "result_type": str,
+            "data": dict, "execution_status": str, "error": dict | null, ... }
+
+        HTTP status:
+          200  ok=True (real execution completed)
+          200  ok=False (policy/contract/backend failure — error details in body)
+          400  missing/invalid fields
+          401  missing or invalid auth token
+        """
+        import uuid as _uuid
+
+        # --- Auth ---
+        auth_error = self._check_auth()
+        if auth_error:
+            http_s, raw = auth_error
+            self._send_json_response(http_s, raw)
+            return
+
+        # --- Content-Type ---
+        if "application/json" not in self.headers.get("Content-Type", ""):
+            status, error = _make_json_error(400, "Content-Type must be application/json", "BadRequest")
+            self._send_json_response(status, error)
+            return
+
+        # --- Read body ---
+        body_result = self._read_body()
+        if body_result[1] is not None:
+            status, error = body_result[1]
+            self._send_json_response(status, error)
+            return
+        body = body_result[0]
+
+        # --- Parse JSON ---
+        try:
+            req_data = json.loads(body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            status, error = _make_json_error(400, f"Invalid JSON: {exc}", "BadRequest")
+            self._send_json_response(status, error)
+            return
+
+        if not isinstance(req_data, dict):
+            status, error = _make_json_error(400, "Request body must be a JSON object", "BadRequest")
+            self._send_json_response(status, error)
+            return
+
+        # --- Validate: capability ---
+        from .mso.contracts import MACHINE_OPERATOR_ALLOWED_CAPABILITIES
+        capability = req_data.get("capability")
+        if not capability or not isinstance(capability, str):
+            status, error = _make_json_error(400, 'Missing required field: "capability"', "BadRequest")
+            self._send_json_response(status, error)
+            return
+        if capability not in MACHINE_OPERATOR_ALLOWED_CAPABILITIES:
+            known = ", ".join(sorted(MACHINE_OPERATOR_ALLOWED_CAPABILITIES))
+            status, error = _make_json_error(
+                400, f'Unknown capability {capability!r}. Allowed: {known}', "BadRequest"
+            )
+            self._send_json_response(status, error)
+            return
+
+        # --- Validate: arguments (optional, must be dict if present) ---
+        arguments = req_data.get("arguments", {})
+        if not isinstance(arguments, dict):
+            status, error = _make_json_error(400, '"arguments" must be a JSON object', "BadRequest")
+            self._send_json_response(status, error)
+            return
+
+        # browser.navigate is interactive and requires approval_mode=required.
+        # This endpoint operates in auto/none mode — reject navigate explicitly.
+        if capability == "browser.navigate":
+            self._send_json_response(200, {
+                "ok": False,
+                "domain": "MACHINE_OPERATOR",
+                "result_type": "machine_operator_action",
+                "execution_status": "unavailable",
+                "message": (
+                    "browser.navigate requires approval_mode=required and cannot be "
+                    "auto-executed through this endpoint. Submit a supervised request "
+                    "with an explicit approval token."
+                ),
+                "data": {},
+                "error": {
+                    "type": "PolicyViolation",
+                    "reason_code": "approval_mode_mismatch",
+                    "message": "navigate requires approval_mode=required",
+                },
+            })
+            return
+
+        # All remaining capabilities are read-only (N0, approval_mode=none).
+        capability_tier = "read_only"
+
+        intent_id      = str(_uuid.uuid4())
+        correlation_id = str(_uuid.uuid4())
+
+        machine_operator_request = {
+            "intent_id":      intent_id,
+            "correlation_id": correlation_id,
+            "capability_name": capability,
+            "capability_tier": capability_tier,
+            "arguments":      arguments,
+            "policy_context": {
+                "policy_decision_ref": f"auto:{intent_id}",
+                "governance_ref":      "governance://machine_operator/execute",
+                "execution_mode":      "auto",
+                "approval_mode":       "none",
+                "constraints":         [],
+                "allowlist_refs":      ["system:browser_read_only"],
+                "secret_refs":         [],
+            },
+            "budget": {
+                "max_steps":        1,
+                "max_duration_ms":  30000,
+                "max_output_bytes": 131072,
+                "max_side_effects": 0,
+            },
+            "requested_side_effects": [],
+        }
+
+        from .contracts import normalize_request, ACTION_MACHINE_OPERATOR_EXECUTE, RISK_LOW
+        from .core.orchestrator import handle_request as _handle_request
+
+        req = normalize_request(
+            text="",
+            metadata={
+                "action":                ACTION_MACHINE_OPERATOR_EXECUTE,
+                "domain":                "MACHINE_OPERATOR",
+                "risk_level":            RISK_LOW,
+                "requires_confirmation": False,
+                "domain_payload": {
+                    "machine_operator_request": machine_operator_request,
+                },
+            },
+        )
+        dr = _handle_request(req)
+        self._send_json_response(200, dict(dr))
 
 
 # ---------------------------------------------------------------------------

@@ -58,6 +58,8 @@ from ..contracts import (
     ACTION_HOST_APPEND_TEXT_FILE,  # Phase 5A/5B
     ACTION_HOST_CREATE_DIRECTORY,  # Phase 5A/5B
     RESULT_TYPE_HOST_ACTION,
+    EXECUTION_STATUS_REAL,
+    EXECUTION_STATUS_UNAVAILABLE,
 )
 from ..agents.host_agent import HostActionRequest, execute_host_action
 
@@ -112,7 +114,9 @@ def execute(plan: dict, context_id: str) -> DomainResult:
     Never raises — all error paths produce a DomainResult with ok=False.
     """
     try:
-        return _dispatch(plan, context_id)
+        result = _dispatch(plan, context_id)
+        result["execution_status"] = EXECUTION_STATUS_REAL
+        return result
     except Exception as exc:  # pragma: no cover — belt-and-suspenders
         return make_domain_result(
             ok=False,
@@ -121,6 +125,7 @@ def execute(plan: dict, context_id: str) -> DomainResult:
             message="Unexpected error in HOST pipeline",
             data={},
             error={"type": "HostPipelineError", "message": str(exc)},
+            execution_status=EXECUTION_STATUS_UNAVAILABLE,
         )
 
 

@@ -76,7 +76,11 @@ from ..contracts import (
     RISK_LOW,
     RISK_MEDIUM,
     RISK_HIGH,
+    EXECUTION_STATUS_REAL,
+    EXECUTION_STATUS_STUB,
 )
+
+_STUB_PREFIX = "[STUB — no real execution] "
 from ..core.context import get_context
 from ..runners.metadata_utils import patch_execution_metadata
 
@@ -300,21 +304,27 @@ def _execute_read_only(plan: dict, context_id: str, result_type: str) -> DomainR
     analysis = tool_result.data.get("analysis", "")
     target = tool_result.data.get("target_file", "")
     action_label = "Explicación" if result_type == RESULT_TYPE_CODE_EXPLAIN else "Revisión"
+    executor_live = _review_executor is not None
+    exec_status = EXECUTION_STATUS_REAL if executor_live else EXECUTION_STATUS_STUB
+
+    base_message = f"CODE · {action_label.lower()}\n\n{analysis}"
+    message = base_message if executor_live else f"{_STUB_PREFIX}{base_message}"
 
     return make_domain_result(
         ok=True,
         result_type=result_type,
         domain="CODE",
-        message=f"CODE · {action_label.lower()}\n\n{analysis}",
+        message=message,
         data={
             "type": result_type,
             "analysis": analysis,
             "target_file": target,
             "action": action,
-            "executor_live": _review_executor is not None,
+            "executor_live": executor_live,
         },
         trace_id=plan.get("trace_id"),
         plan_id=plan.get("plan_id"),
+        execution_status=exec_status,
     )
 
 
@@ -473,8 +483,12 @@ def _build_code_preview(plan: dict, payload: dict) -> DomainResult:
         w in _NON_APPLICABLE_WARNINGS for w in preview_warnings
     )
 
+    propose_executor_live = _propose_executor is not None
+    exec_status = EXECUTION_STATUS_REAL if propose_executor_live else EXECUTION_STATUS_STUB
+    stub_prefix = "" if propose_executor_live else _STUB_PREFIX
+
     lines = [
-        f"CODE · vista previa — {action_label}",
+        f"{stub_prefix}CODE · vista previa — {action_label}",
         f"Objetivo: {envelope.get('summary', plan.get('raw_text', ''))}",
         f"Archivos afectados: {files_str}",
         f"Tipo: {op_str}",
@@ -557,10 +571,11 @@ def _build_code_preview(plan: dict, payload: dict) -> DomainResult:
             "preview_reviewable": preview_reviewable,
             "preview_applicable": preview_applicable,
             # Executor status
-            "propose_executor_live": _propose_executor is not None,
+            "propose_executor_live": propose_executor_live,
         },
         trace_id=plan.get("trace_id"),
         plan_id=plan.get("plan_id"),
+        execution_status=exec_status,
     )
 
 

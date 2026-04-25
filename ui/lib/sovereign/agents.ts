@@ -1,200 +1,156 @@
-// ── Agent Mock Adapter ────────────────────────────────────────────────────────
-// Mock implementation for Machine Operator agent until /api/agents/* exists
+// ── Agent Adapter ─────────────────────────────────────────────────────────────
+// Real HTTP adapter for the Machine Operator agent.
+// Replaces all mock logic — every call goes to /api/agent/execute → webhook.
 
 import type {
-  AgentCommand,
   AgentCommandRequest,
   AgentCommandResponse,
   AgentState,
-  EscalationRequest,
   AgentId,
 } from './types'
 
-// ── Mock State ────────────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
 
-const MOCK_AGENT_STATE: AgentState = {
-  id: 'machine_operator',
-  name: 'Machine Operator',
-  status: 'idle',
-  commandHistory: [],
-  pendingEscalations: [],
+const ALLOWED_CAPABILITIES = [
+  'browser.navigate',
+  'browser.snapshot',
+  'browser.screenshot',
+  'browser.read_visible_text',
+] as const
+
+// Short aliases → full capability names
+const CAPABILITY_ALIASES: Record<string, string> = {
+  navigate:   'browser.navigate',
+  snapshot:   'browser.snapshot',
+  screenshot: 'browser.screenshot',
+  read:       'browser.read_visible_text',
 }
 
-// Commands that require authority escalation
-const AUTHORITY_COMMANDS = [
-  'deploy',
-  'execute',
-  'run',
-  'delete',
-  'remove',
-  'modify',
-  'update',
-  'restart',
-  'shutdown',
-  'kill',
-]
+const HELP_TEXT = `Machine Operator — browser capabilities
+────────────────────────────────────────
+browser.snapshot              DOM snapshot of the current page
+browser.screenshot            Screenshot of the current page
+browser.read_visible_text     Readable text from the current page
+browser.navigate <url>        Navigate to URL
+
+Aliases: snapshot, screenshot, read, navigate`
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function genId(): string {
-  return `cmd_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+function formatDomainResult(
+  capability: string,
+  executionStatus: string,
+  data: Record<string, unknown>,
+  message: string,
+): string {
+  const statusBadge = `[execution_status: ${executionStatus}]`
+  const response = data.machine_operator_response as Record<string, unknown> | undefined
+  const observation = response?.observation as Record<string, unknown> | undefined
+  const summary = observation?.summary ? String(observation.summary) : ''
+  const detail  = observation?.detail  ? String(observation.detail)  : ''
+
+  const lines = [`${statusBadge} ${capability}`]
+  if (message) lines.push(message)
+  if (summary && summary !== message) lines.push(summary)
+  if (detail)  lines.push(detail)
+  return lines.filter(Boolean).join('\n')
 }
 
-function requiresEscalation(command: string): boolean {
-  const cmd = command.toLowerCase().trim()
-  return AUTHORITY_COMMANDS.some(auth => cmd.startsWith(auth))
-}
-
-function generateMockOutput(command: string): string {
-  const cmd = command.toLowerCase().trim()
-  
-  if (cmd.startsWith('status')) {
-    return `[Machine Operator] System Status Report
-────────────────────────────────────
-Core Services:    OPERATIONAL
-Memory Usage:     42.3%
-CPU Load:         18.7%
-Active Processes: 127
-Last Health Check: ${new Date().toISOString()}
-────────────────────────────────────
-All systems nominal.`
-  }
-  
-  if (cmd.startsWith('ls') || cmd.startsWith('list')) {
-    return `[Machine Operator] Directory Listing
-────────────────────────────────────
-drwxr-xr-x  system/
-drwxr-xr-x  agents/
-drwxr-xr-x  policies/
--rw-r--r--  config.yaml
--rw-r--r--  state.json
-────────────────────────────────────
-5 items total`
-  }
-  
-  if (cmd.startsWith('health') || cmd.startsWith('check')) {
-    return `[Machine Operator] Health Check
-────────────────────────────────────
-API Gateway:     OK (12ms)
-Database:        OK (8ms)
-Cache Layer:     OK (3ms)
-Message Queue:   OK (5ms)
-MSO Authority:   ACTIVE
-────────────────────────────────────
-All endpoints responding.`
-  }
-  
-  if (cmd.startsWith('logs') || cmd.startsWith('log')) {
-    return `[Machine Operator] Recent Logs
-────────────────────────────────────
-[${new Date(Date.now() - 5000).toISOString()}] INFO  Request processed
-[${new Date(Date.now() - 3000).toISOString()}] INFO  Cache refreshed
-[${new Date(Date.now() - 1000).toISOString()}] INFO  Health check passed
-[${new Date().toISOString()}] INFO  Command received
-────────────────────────────────────`
-  }
-  
-  if (cmd.startsWith('help')) {
-    return `[Machine Operator] Available Commands
-────────────────────────────────────
-status    - System status overview
-health    - Health check all services
-list      - List directory contents
-logs      - View recent log entries
-info      - Agent information
-
-Commands requiring MSO authorization:
-  deploy, execute, run, delete, modify,
-  update, restart, shutdown
-────────────────────────────────────`
-  }
-  
-  if (cmd.startsWith('info')) {
-    return `[Machine Operator] Agent Information
-────────────────────────────────────
-Agent ID:     machine_operator
-Version:      1.0.0-alpha
-Uptime:       4h 23m 17s
-Authority:    DELEGATED (MSO)
-Capabilities: read, query, monitor
-────────────────────────────────────`
-  }
-  
-  return `[Machine Operator] Command executed: ${command}
-Output: Operation completed successfully.`
-}
-
-function generateEscalation(command: string): EscalationRequest {
-  const cmd = command.toLowerCase().trim()
-  const action = cmd.split(' ')[0]
-  
-  let riskLevel: EscalationRequest['riskLevel'] = 'medium'
-  if (['delete', 'remove', 'shutdown', 'kill'].some(r => cmd.includes(r))) {
-    riskLevel = 'high'
-  } else if (['deploy', 'execute', 'run'].some(r => cmd.includes(r))) {
-    riskLevel = 'medium'
-  }
-  
-  return {
-    id: genId(),
-    agentId: 'machine_operator',
-    reason: `Command "${action}" requires MSO authorization to proceed.`,
-    suggestedCommand: `authorize agent:machine_operator action:${action} ${command.slice(action.length).trim()}`,
-    riskLevel,
-    timestamp: new Date().toISOString(),
-  }
-}
-
-// ── Mock API ──────────────────────────────────────────────────────────────────
+// ── Public API ────────────────────────────────────────────────────────────────
 
 /**
- * Execute a command on the Machine Operator agent (mock)
+ * Execute a command on the Machine Operator agent via the real webhook backend.
+ * Accepts full capability names (browser.*) or short aliases (snapshot, navigate…).
  */
 export async function executeAgentCommand(
-  request: AgentCommandRequest
+  request: AgentCommandRequest,
 ): Promise<AgentCommandResponse> {
-  // Simulate network delay
-  await new Promise(resolve => setTimeout(resolve, 300 + Math.random() * 400))
-  
-  const { command } = request
-  
-  // Check if command requires escalation
-  if (requiresEscalation(command)) {
-    const escalation = generateEscalation(command)
+  const cmd = request.command.trim()
+
+  // Local meta-commands — not fake execution, just UI help
+  if (!cmd || cmd === 'help') {
+    return { ok: true, output: HELP_TEXT, status: 'completed' }
+  }
+
+  // Parse: first token is capability/alias; remainder is inline argument
+  const [rawCapability, ...rest] = cmd.split(/\s+/)
+  const capability = CAPABILITY_ALIASES[rawCapability] ?? rawCapability
+
+  if (!ALLOWED_CAPABILITIES.includes(capability as typeof ALLOWED_CAPABILITIES[number])) {
+    const known = ALLOWED_CAPABILITIES.join(', ')
     return {
-      ok: true,
-      output: `[Machine Operator] Authorization required.
-This command requires MSO approval before execution.`,
-      status: 'escalated',
-      escalation,
+      ok: false,
+      output: `Unknown capability: ${rawCapability}\nAllowed: ${known}\nType 'help' for usage.`,
+      status: 'failed',
+      error: `Unknown capability: ${rawCapability}`,
     }
   }
-  
-  // Execute mock command
-  const output = generateMockOutput(command)
-  
+
+  const args: Record<string, string> = {}
+  if (rest.length > 0 && capability === 'browser.navigate') {
+    args.url = rest.join(' ')
+  }
+
+  let data: Record<string, unknown>
+  try {
+    const res = await fetch('/api/agent/execute', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ capability, arguments: args }),
+    })
+    data = (await res.json()) as Record<string, unknown>
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return {
+      ok:     false,
+      output: `[execution_status: unavailable] Network error: ${msg}`,
+      status: 'failed',
+      error:  `Network error: ${msg}`,
+    }
+  }
+
+  const executionStatus = String(data.execution_status ?? 'unavailable')
+  const domainData      = (data.data && typeof data.data === 'object')
+    ? (data.data as Record<string, unknown>)
+    : {}
+  const message = String(data.message ?? '')
+
+  if (!data.ok) {
+    const rawErr = data.error
+    const errMsg = (rawErr && typeof rawErr === 'object' && 'message' in rawErr)
+      ? String((rawErr as Record<string, unknown>).message)
+      : message || 'Execution failed'
+    return {
+      ok:     false,
+      output: formatDomainResult(capability, executionStatus, domainData, errMsg),
+      status: 'failed',
+      error:  errMsg,
+    }
+  }
+
   return {
-    ok: true,
-    output,
+    ok:     true,
+    output: formatDomainResult(capability, executionStatus, domainData, message),
     status: 'completed',
   }
 }
 
 /**
- * Get current agent state (mock)
+ * Return a snapshot of the agent state (non-reactive; for display only).
  */
 export function getAgentState(agentId: AgentId): AgentState {
-  if (agentId === 'machine_operator') {
-    return { ...MOCK_AGENT_STATE }
+  return {
+    id:                 agentId,
+    name:               'Machine Operator',
+    status:             'idle',
+    commandHistory:     [],
+    pendingEscalations: [],
   }
-  throw new Error(`Unknown agent: ${agentId}`)
 }
 
 /**
- * Get list of available agents (mock)
+ * List available agents.
  */
 export function getAvailableAgents(): Array<{ id: AgentId; name: string; status: string }> {
-  return [
-    { id: 'machine_operator', name: 'Machine Operator', status: 'idle' },
-  ]
+  return [{ id: 'machine_operator', name: 'Machine Operator', status: 'idle' }]
 }

@@ -199,10 +199,10 @@ export function MachineOperatorConsole() {
         {/* Initial message */}
         {commandHistory.length === 0 && !pendingEscalation && (
           <div className="space-y-2 text-tx-muted">
-            <p className="text-xs">Machine Operator v1.0.0-alpha</p>
-            <p className="text-xs">Type &apos;help&apos; for available commands</p>
-            <p className="text-xs text-amber-400/60">
-              Note: Commands requiring authority will escalate to MSO
+            <p className="text-xs">Machine Operator — browser execution lane</p>
+            <p className="text-xs">Type &apos;help&apos; for available capabilities</p>
+            <p className="text-xs text-slate-500/70">
+              Each response includes [execution_status: real|unavailable]
             </p>
             <div className="h-px bg-os-border my-3" />
           </div>

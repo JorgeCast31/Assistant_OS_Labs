@@ -680,6 +680,20 @@ def determine_execution_mode(
 #   - plan, context_id, ts, agent do NOT belong here (transport concerns).
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Execution status constants — carried in DomainResult.execution_status
+# to signal the truthfulness of the response to both UI and callers.
+#
+# "real"        → execution reached a live backend (Notion, Sheets, OS, OpenClaw)
+# "stub"        → executor not configured; response is synthetic / non-authoritative
+# "unavailable" → backend unreachable or capability not implemented
+# "partial"     → some steps succeeded, others failed
+# ---------------------------------------------------------------------------
+EXECUTION_STATUS_REAL        = "real"
+EXECUTION_STATUS_STUB        = "stub"
+EXECUTION_STATUS_UNAVAILABLE = "unavailable"
+EXECUTION_STATUS_PARTIAL     = "partial"
+
 # Canonical result_type strings for WORK domain.
 # These are stable identifiers for domain outputs — distinct from the legacy
 # "type" strings kept in output dicts for backward transport compatibility.
@@ -763,6 +777,7 @@ class DomainResult(TypedDict, total=False):
     warnings: Optional[list]      # Non-fatal issues during execution
     trace_id: Optional[str]        # Propagated from ExecutionPlan for end-to-end tracing
     plan_id: Optional[str]         # plan_id from ExecutionPlan (audit link, not embedded plan)
+    execution_status: Optional[str]  # EXECUTION_STATUS_* — truthfulness signal for UI and callers
 
 
 def make_domain_result(
@@ -775,6 +790,7 @@ def make_domain_result(
     warnings: Optional[list] = None,
     trace_id: Optional[str] = None,
     plan_id: Optional[str] = None,
+    execution_status: Optional[str] = None,
 ) -> "DomainResult":
     """
     Factory for DomainResult with enforced invariants.
@@ -785,15 +801,16 @@ def make_domain_result(
     - data normalized to {} if None
 
     Args:
-        ok:          True if operation completed its primary intent.
-        result_type: RESULT_TYPE_* constant.
-        domain:      Domain string ("WORK", "FIN", ...).
-        message:     Human-readable outcome description (non-empty).
-        data:        Domain-specific payload dict. None → {}.
-        error:       ErrorDetail on failure. Must be provided when ok=False.
-        warnings:    Optional list of non-fatal issue strings.
-        trace_id:    Optional trace ID from ExecutionPlan.
-        plan_id:     Optional plan_id from ExecutionPlan (audit link).
+        ok:               True if operation completed its primary intent.
+        result_type:      RESULT_TYPE_* constant.
+        domain:           Domain string ("WORK", "FIN", ...).
+        message:          Human-readable outcome description (non-empty).
+        data:             Domain-specific payload dict. None → {}.
+        error:            ErrorDetail on failure. Must be provided when ok=False.
+        warnings:         Optional list of non-fatal issue strings.
+        trace_id:         Optional trace ID from ExecutionPlan.
+        plan_id:          Optional plan_id from ExecutionPlan (audit link).
+        execution_status: Optional EXECUTION_STATUS_* truthfulness signal.
 
     Returns:
         DomainResult with all required fields populated and invariants satisfied.
@@ -823,6 +840,8 @@ def make_domain_result(
         dr["trace_id"] = trace_id
     if plan_id is not None:
         dr["plan_id"] = plan_id
+    if execution_status is not None:
+        dr["execution_status"] = execution_status
     return dr
 
 
