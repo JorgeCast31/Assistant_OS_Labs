@@ -33,6 +33,7 @@ from ..contracts import (
     RESULT_TYPE_FIN_COMMIT,
     RESULT_TYPE_FIN_CONFIRM,
     RESULT_TYPE_FIN_CHAPERON,
+    EXECUTION_STATUS_REAL,
 )
 from ..core.context import get_context
 
@@ -48,6 +49,12 @@ def execute(plan: dict, context_id: str) -> DomainResult:
     Returns:
         DomainResult — no transport wrapping.
     """
+    result = _dispatch(plan, context_id)
+    result["execution_status"] = EXECUTION_STATUS_REAL
+    return result
+
+
+def _dispatch(plan: dict, context_id: str) -> DomainResult:
     _context = get_context(context_id)  # noqa: F841 — reserved for future use
 
     action = plan.get("action", "")

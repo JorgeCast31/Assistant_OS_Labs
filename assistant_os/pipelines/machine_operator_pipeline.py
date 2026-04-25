@@ -28,6 +28,9 @@ from typing import Any
 from ..contracts import (
     ACTION_MACHINE_OPERATOR_EXECUTE,
     DomainResult,
+    EXECUTION_STATUS_PARTIAL,
+    EXECUTION_STATUS_REAL,
+    EXECUTION_STATUS_UNAVAILABLE,
     RESULT_TYPE_MACHINE_OPERATOR_ACTION,
     make_domain_result,
 )
@@ -64,7 +67,15 @@ from ..mso.machine_operator_policy import enforce_machine_operator_request
 def execute(plan: dict, context_id: str) -> DomainResult:
     """Execute a MACHINE_OPERATOR domain plan and return a canonical lane result."""
     try:
-        return _dispatch(plan, context_id)
+        result = _dispatch(plan, context_id)
+        lane_outcome = result.get("data", {}).get("lane_outcome", "")
+        if lane_outcome == MACHINE_OPERATOR_OUTCOME_SUCCESS:
+            result["execution_status"] = EXECUTION_STATUS_REAL
+        elif lane_outcome == MACHINE_OPERATOR_OUTCOME_EXECUTION_PARTIAL:
+            result["execution_status"] = EXECUTION_STATUS_PARTIAL
+        else:
+            result["execution_status"] = EXECUTION_STATUS_UNAVAILABLE
+        return result
     except Exception as exc:  # pragma: no cover - defensive boundary
         return make_domain_result(
             ok=False,

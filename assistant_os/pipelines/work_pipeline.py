@@ -31,6 +31,7 @@ from ..contracts import (
     RESULT_TYPE_WORK_UPDATE_BULK,
     RESULT_TYPE_WORK_DELETE,
     OP_WORK_UPDATE,
+    EXECUTION_STATUS_REAL,
 )
 
 
@@ -45,6 +46,12 @@ def execute(plan: dict, context_id: str) -> DomainResult:
     Returns:
         DomainResult — no transport wrapping.
     """
+    result = _dispatch(plan, context_id)
+    result["execution_status"] = EXECUTION_STATUS_REAL
+    return result
+
+
+def _dispatch(plan: dict, context_id: str) -> DomainResult:
     action = plan.get("action", "")
 
     if action == ACTION_WORK_QUERY:
