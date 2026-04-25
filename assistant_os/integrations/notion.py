@@ -921,7 +921,7 @@ def query_work_items_by_keywords(
     
     try:
         url = f"{NOTION_API_BASE}/databases/{db_id}/query"
-        response = requests.post(url, headers=_get_headers(), json=filter_body)
+        response = requests.post(url, headers=_get_headers(), json=filter_body, timeout=15)
         
         if response.status_code != 200:
             return []
@@ -968,7 +968,8 @@ def archive_pages(page_ids: list[str]) -> int:
             response = requests.patch(
                 url,
                 headers=_get_headers(),
-                json={"archived": True}
+                json={"archived": True},
+                timeout=15,
             )
             
             if response.status_code == 200:
@@ -1007,7 +1008,7 @@ def move_pages_to_db(
         try:
             # 1. Get original page
             get_url = f"{NOTION_API_BASE}/pages/{page_id}"
-            get_response = requests.get(get_url, headers=_get_headers())
+            get_response = requests.get(get_url, headers=_get_headers(), timeout=15)
             
             if get_response.status_code != 200:
                 continue
@@ -1028,7 +1029,8 @@ def move_pages_to_db(
             create_response = requests.post(
                 create_url,
                 headers=_get_headers(),
-                json=create_body
+                json=create_body,
+                timeout=15,
             )
             
             if create_response.status_code not in (200, 201):
@@ -1039,7 +1041,8 @@ def move_pages_to_db(
             requests.patch(
                 archive_url,
                 headers=_get_headers(),
-                json={"archived": True}
+                json={"archived": True},
+                timeout=15,
             )
             
             moved_count += 1

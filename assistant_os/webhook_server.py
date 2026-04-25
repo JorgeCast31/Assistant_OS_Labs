@@ -11,6 +11,7 @@ import re
 import threading
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from typing import Any, Optional
 
 from .config import (
@@ -4880,11 +4881,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
 # Server
 # ---------------------------------------------------------------------------
 
-class WebhookHTTPServer(HTTPServer):
-    """HTTP Server with clean shutdown support."""
-    
+class WebhookHTTPServer(ThreadingMixIn, HTTPServer):
+    """HTTP Server with threaded request handling and clean shutdown support."""
+
+    daemon_threads = True
     allow_reuse_address = True
-    
+
     def __init__(self, host: str, port: int):
         super().__init__((host, port), WebhookHandler)
         self._shutdown_flag = False
