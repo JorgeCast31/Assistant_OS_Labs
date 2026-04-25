@@ -330,5 +330,254 @@ class TestSurfaceBehaviorHTTP(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# v2 tests — expanded patterns (all observed failing phrases)
+# ---------------------------------------------------------------------------
+
+class TestNormalizeV2(unittest.TestCase):
+    """_normalize must collapse internal ?!¿¡ so multi-clause inputs match cleanly."""
+
+    def test_internal_question_mark_collapsed(self):
+        self.assertEqual(_normalize("Machine operator? Cuéntame más."), "machine operator cuentame mas")
+
+    def test_internal_exclamation_collapsed(self):
+        self.assertEqual(_normalize("Hola! cómo estás"), "hola como estas")
+
+    def test_trailing_period_stripped(self):
+        self.assertEqual(_normalize("Conversemos."), "conversemos")
+
+    def test_trailing_question_stripped(self):
+        self.assertEqual(_normalize("Está activo?"), "esta activo")
+
+    def test_multiple_internal_marks(self):
+        # "hola? que tal!" -> "hola que tal"
+        result = _normalize("hola? que tal!")
+        self.assertEqual(result, "hola que tal")
+
+
+class TestIsExecutiveV2(unittest.TestCase):
+    def test_corre_is_executive(self):
+        self.assertTrue(_is_executive(_normalize("Corre código")))
+
+    def test_corre_codigo_is_executive(self):
+        self.assertTrue(_is_executive("corre codigo"))
+
+    def test_correr_is_executive(self):
+        self.assertTrue(_is_executive(_normalize("Correr el script")))
+
+    def test_non_executive_machine_operator(self):
+        self.assertFalse(_is_executive(_normalize("Tienes machine operator?")))
+
+    def test_non_executive_esta_activo(self):
+        self.assertFalse(_is_executive(_normalize("Está activo?")))
+
+
+class TestPatternSetsV2(unittest.TestCase):
+    """All observed failing phrases must be in the correct pattern set after normalization."""
+
+    SYSTEM_CHAT_REQUIRED = [
+        "como funciona el sistema",
+        "tienes machine operator",
+        "machine operator cuentame mas",
+        "esta activo",
+        "que capacidades tienes ahora",
+        "que esta corriendo",
+        "analiza tus capacidades",
+        "conversemos",
+        # existing patterns still present
+        "hola",
+        "que eres",
+        "que puedes hacer",
+        "que agentes tienes",
+        "estado del sistema",
+        "como uso el mso",
+    ]
+
+    MSO_DIRECT_REQUIRED = [
+        "tienes machine operator",
+        "esta activo",
+        "tienes acceso a las ultimas acciones del sistema",
+        "puedes leer esta conversacion",
+        "que agentes estan disponibles",
+        "que puedes delegar",
+        # existing patterns still present
+        "hola",
+        "quien eres",
+        "que puedes hacer",
+    ]
+
+    def test_system_chat_v2_patterns_present(self):
+        for pattern in self.SYSTEM_CHAT_REQUIRED:
+            with self.subTest(pattern=pattern):
+                self.assertIn(pattern, _SYSTEM_CHAT_CONVERSATIONAL, msg=f"missing: {pattern}")
+
+    def test_mso_direct_v2_patterns_present(self):
+        for pattern in self.MSO_DIRECT_REQUIRED:
+            with self.subTest(pattern=pattern):
+                self.assertIn(pattern, _MSO_DIRECT_CONVERSATIONAL, msg=f"missing: {pattern}")
+
+
+class TestSystemChatV2(unittest.TestCase):
+    """Every observed failing phrase for system_chat must now return a surface response."""
+
+    def _mock_identity(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {"principal": "anon"}
+        return m
+
+    def _mock_guard(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {"decision": "allow"}
+        return m
+
+    def _call(self, text):
+        return get_surface_behavior_response(
+            surface="system_chat",
+            text=text,
+            context_id="ctx-v2-sys",
+            identity=self._mock_identity(),
+            guard_result=self._mock_guard(),
+        )
+
+    def _assert_informational(self, text, *, contains=None):
+        resp = self._call(text)
+        self.assertIsNotNone(resp, msg=f"'{text}' should be handled as surface_response")
+        self.assertTrue(resp["ok"])
+        self.assertEqual(resp["domain"], "SYSTEM")
+        self.assertEqual(resp["plan"], [])
+        self.assertFalse(resp["needs_confirmation"])
+        self.assertEqual(resp["audit"]["result_type"], "surface_response")
+        self.assertIsInstance(resp["message"], str)
+        self.assertGreater(len(resp["message"]), 5)
+        if contains:
+            self.assertIn(contains, resp["message"].lower(),
+                          msg=f"'{text}' response should contain '{contains}'")
+        return resp
+
+    def test_como_funciona_el_sistema(self):
+        self._assert_informational("Cómo funciona el sistema?")
+
+    def test_tienes_machine_operator(self):
+        resp = self._assert_informational("Tienes machine operator?")
+        self.assertIn("machine operator", resp["message"].lower())
+
+    def test_machine_operator_cuentame_mas(self):
+        resp = self._assert_informational("Machine operator? Cuéntame más.")
+        self.assertIn("machine operator", resp["message"].lower())
+
+    def test_esta_activo(self):
+        self._assert_informational("Está activo?")
+
+    def test_que_capacidades_tienes_ahora(self):
+        self._assert_informational("Qué capacidades tienes ahora?")
+
+    def test_que_esta_corriendo(self):
+        self._assert_informational("Qué está corriendo?")
+
+    def test_analiza_tus_capacidades(self):
+        self._assert_informational("Analiza tus capacidades.")
+
+    def test_conversemos(self):
+        self._assert_informational("Conversemos.")
+
+    # Regression: existing phrases still work
+    def test_hola_still_works(self):
+        self._assert_informational("Hola")
+
+    def test_que_puedes_hacer_still_works(self):
+        self._assert_informational("qué puedes hacer")
+
+    def test_que_agentes_tienes_still_works(self):
+        self._assert_informational("qué agentes tienes")
+
+    def test_estado_del_sistema_still_works(self):
+        self._assert_informational("estado del sistema", contains="operacional")
+
+
+class TestMSODirectV2(unittest.TestCase):
+    """Every observed failing phrase for mso_direct must now return a surface response."""
+
+    def _mock_identity(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {"principal": "anon"}
+        return m
+
+    def _mock_guard(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {"decision": "allow"}
+        return m
+
+    def _call(self, text):
+        return get_surface_behavior_response(
+            surface="mso_direct",
+            text=text,
+            context_id="ctx-v2-mso",
+            identity=self._mock_identity(),
+            guard_result=self._mock_guard(),
+        )
+
+    def _assert_informational(self, text, *, contains=None):
+        resp = self._call(text)
+        self.assertIsNotNone(resp, msg=f"'{text}' should be handled as surface_response")
+        self.assertTrue(resp["ok"])
+        self.assertEqual(resp["domain"], "MSO")
+        self.assertEqual(resp["plan"], [])
+        self.assertFalse(resp["needs_confirmation"])
+        self.assertEqual(resp["audit"]["result_type"], "surface_response")
+        self.assertIsInstance(resp["message"], str)
+        self.assertGreater(len(resp["message"]), 5)
+        if contains:
+            self.assertIn(contains, resp["message"].lower(),
+                          msg=f"'{text}' response should contain '{contains}'")
+        return resp
+
+    def test_tienes_machine_operator(self):
+        resp = self._assert_informational("Tienes machine operator?")
+        self.assertIn("machine operator", resp["message"].lower())
+
+    def test_esta_activo(self):
+        self._assert_informational("Está activo?")
+
+    def test_tienes_acceso_ultimas_acciones(self):
+        self._assert_informational("Tienes acceso a las últimas acciones del sistema?")
+
+    def test_puedes_leer_esta_conversacion(self):
+        self._assert_informational("Puedes leer esta conversación?")
+
+    def test_que_agentes_estan_disponibles(self):
+        self._assert_informational("Qué agentes están disponibles?")
+
+    def test_que_puedes_delegar(self):
+        self._assert_informational("Qué puedes delegar?")
+
+    # Regression: existing phrases still work
+    def test_hola_still_works(self):
+        resp = self._assert_informational("Hola")
+        self.assertIn("mso", resp["message"].lower())
+
+    def test_que_puedes_hacer_still_works(self):
+        self._assert_informational("qué puedes hacer")
+
+    def test_quien_eres_still_works(self):
+        resp = self._assert_informational("quién eres")
+        self.assertIn("mso", resp["message"].lower())
+
+    # Executive phrases must still pass through (None)
+    def test_crea_una_tarea_is_executive(self):
+        self.assertIsNone(self._call("Crea una tarea"))
+
+    def test_ejecuta_algo_is_executive(self):
+        self.assertIsNone(self._call("Ejecuta algo"))
+
+    def test_corre_codigo_is_executive(self):
+        self.assertIsNone(self._call("Corre código"))
+
+    def test_abre_navegador_is_executive(self):
+        self.assertIsNone(self._call("Abre navegador"))
+
+    def test_borra_algo_is_executive(self):
+        self.assertIsNone(self._call("Borra algo"))
+
+
 if __name__ == "__main__":
     unittest.main()
