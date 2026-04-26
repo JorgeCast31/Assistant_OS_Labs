@@ -18,8 +18,12 @@ import json
 import time
 import unittest
 
-_STUB_WEBHOOK_TOKEN = "test-stub-webhook-token"
-_STUB_ADMIN_TOKEN   = "test-stub-admin-token"
+# Read the effective tokens from config — same values the server loaded at startup.
+# Never hardcode stubs: if CI sets WEBHOOK_TOKEN to a real value, conftest.py's
+# setdefault has no effect, and the server holds the real token. Reading from
+# config ensures tests always send the token that _check_auth() expects.
+from assistant_os.config import WEBHOOK_TOKEN as _STUB_WEBHOOK_TOKEN
+from assistant_os.config import WEBHOOK_ADMIN_TOKEN as _STUB_ADMIN_TOKEN
 
 
 def _post_governance_mode(

@@ -18,11 +18,14 @@ import time
 import unittest
 from unittest.mock import patch
 
-# conftest.py sets WEBHOOK_TOKEN and WEBHOOK_ADMIN_TOKEN as stubs before import.
-# Tests that need to simulate absent tokens patch the module-level variable.
-
-_STUB_WEBHOOK_TOKEN = "test-stub-webhook-token"
-_STUB_ADMIN_TOKEN   = "test-stub-admin-token"
+# Read the effective tokens from config — same values the server loaded at startup.
+# conftest.py sets env vars via setdefault before any module import, so in
+# isolated test environments this resolves to the stub values. In CI environments
+# where WEBHOOK_TOKEN is already set, this resolves to the real CI token,
+# ensuring tests always send the token that _check_auth() expects.
+# Tests that simulate absent/wrong tokens patch the module-level variable explicitly.
+from assistant_os.config import WEBHOOK_TOKEN as _STUB_WEBHOOK_TOKEN
+from assistant_os.config import WEBHOOK_ADMIN_TOKEN as _STUB_ADMIN_TOKEN
 
 
 # ---------------------------------------------------------------------------
