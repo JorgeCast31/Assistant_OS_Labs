@@ -1272,10 +1272,19 @@ class WebhookHandler(BaseHTTPRequestHandler):
     
     def _check_auth(self) -> AuthErrorResponse:
         """Check authentication headers. Returns error response if invalid.
-        
+
+        Fail-closed: if WEBHOOK_TOKEN is not configured, rejects ALL requests
+        with 503 — the server is misconfigured and must not accept traffic.
+
         Accepts:
         - X-Assistant-Token: standard UI token (WEBHOOK_TOKEN)
         """
+        if not WEBHOOK_TOKEN:
+            return _make_json_error(
+                503,
+                "Server authentication not configured — WEBHOOK_TOKEN is required.",
+                "ServiceUnavailable",
+            )
         token = self.headers.get("X-Assistant-Token", "")
         if token == WEBHOOK_TOKEN:
             return None
@@ -3763,10 +3772,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._send_json_response(status, error)
             return
 
-        # Layer 2: admin token (same guard as schema endpoints)
+        # Layer 2: admin token — fail-closed.
+        # If WEBHOOK_ADMIN_TOKEN is not configured, ALL admin requests are rejected.
+        # An empty or absent WEBHOOK_ADMIN_TOKEN is not a "presence-only" mode.
         from .config import WEBHOOK_ADMIN_TOKEN as _ADMIN_TOKEN
         admin_token = self.headers.get("X-Assistant-Admin-Token", "")
-        if not admin_token or (_ADMIN_TOKEN and admin_token != _ADMIN_TOKEN):
+        if not _ADMIN_TOKEN or not admin_token or admin_token != _ADMIN_TOKEN:
             status, error = _make_json_error(
                 403, "Admin token missing or invalid for governance operations", "Forbidden"
             )
@@ -3956,13 +3967,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 self._send_json_response(status, error)
                 return
 
-            # Layer 2: A2-FIX — validate admin token against configured secret,
-            # not just its presence.
+            # Layer 2: admin token — fail-closed.
+            # If WEBHOOK_ADMIN_TOKEN is not configured, ALL schema requests are rejected.
             from .config import WEBHOOK_ADMIN_TOKEN as _SCHEMA_ADMIN_TOKEN
             admin_token = self.headers.get("X-Assistant-Admin-Token", "")
-            if not admin_token or (
-                _SCHEMA_ADMIN_TOKEN and admin_token != _SCHEMA_ADMIN_TOKEN
-            ):
+            if not _SCHEMA_ADMIN_TOKEN or not admin_token or admin_token != _SCHEMA_ADMIN_TOKEN:
                 status, error = _make_json_error(
                     403, "Admin token missing or invalid for schema operations", "Forbidden"
                 )
@@ -4047,13 +4056,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 self._send_json_response(status, error)
                 return
 
-            # Layer 2: A2-FIX — validate admin token against configured secret,
-            # not just its presence.
+            # Layer 2: admin token — fail-closed.
+            # If WEBHOOK_ADMIN_TOKEN is not configured, ALL schema requests are rejected.
             from .config import WEBHOOK_ADMIN_TOKEN as _SCHEMA_ADMIN_TOKEN
             admin_token = self.headers.get("X-Assistant-Admin-Token", "")
-            if not admin_token or (
-                _SCHEMA_ADMIN_TOKEN and admin_token != _SCHEMA_ADMIN_TOKEN
-            ):
+            if not _SCHEMA_ADMIN_TOKEN or not admin_token or admin_token != _SCHEMA_ADMIN_TOKEN:
                 status, error = _make_json_error(
                     403, "Admin token missing or invalid for schema operations", "Forbidden"
                 )
@@ -4937,10 +4944,15 @@ def run_server(host: str = WEBHOOK_HOST, port: int = WEBHOOK_PORT) -> None:
     """
     Start the webhook HTTP server.
 
+    Raises RuntimeError before binding if WEBHOOK_TOKEN is not configured.
+
     Args:
         host: Bind address (default: 127.0.0.1)
         port: Port number (default: 8787)
     """
+    from .config import validate_startup_config
+    validate_startup_config()
+
     from .executors.startup import setup_all_code_executors
     setup_all_code_executors()
 

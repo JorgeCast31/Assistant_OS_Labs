@@ -33,16 +33,15 @@ export const RUNTIME_ENDPOINTS = {
 
 /**
  * FREEZE_CONTROL: Governance kill-switch configuration.
- * 
- * TODO: Backend endpoint must be confirmed before enabling.
- * The proxy route exists at /api/system/freeze but the webhook
- * endpoint (/mso/freeze or similar) has NOT been verified to exist.
- * Do not set available=true until backend confirms the endpoint.
+ *
+ * Proxy route: /api/system/freeze → POST /admin/governance/mode on the webhook server.
+ * Requires ASSISTANT_ADMIN_TOKEN env var to be set server-side. The UI button renders
+ * "Unavailable" when that env var is absent (fail-closed at the proxy layer).
  */
 export const FREEZE_CONTROL = {
-  available: false,
+  available: true,
   endpoint: '/api/system/freeze',
-  message: 'Freeze control requires a confirmed backend endpoint. Contact system administrator.',
+  message: 'Freeze control is not available. Set ASSISTANT_ADMIN_TOKEN to enable.',
 } as const
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -178,14 +177,10 @@ export async function getSystemState(): Promise<{ mode: OperationalMode; events:
 }
 
 /**
- * POST /api/system/freeze — calls the authenticated proxy which forwards
- * to the webhook governance endpoint.
- * 
- * IMPORTANT: This function fails-closed. If FREEZE_CONTROL.available is false,
- * the call returns an error immediately without attempting the request.
- * The proxy route exists but the backend endpoint is NOT confirmed.
- * 
- * TODO: Enable only after backend endpoint is verified to exist.
+ * POST /api/system/freeze — calls the authenticated Next.js proxy which forwards
+ * to POST /admin/governance/mode on the webhook server with mode=FROZEN.
+ * Fails-closed if FREEZE_CONTROL.available is false (or if ASSISTANT_ADMIN_TOKEN
+ * is absent on the server — the proxy returns 503 in that case).
  */
 export async function freezeSystem(): Promise<{ ok: boolean; message: string }> {
   // Fail-closed: refuse to attempt if not marked available

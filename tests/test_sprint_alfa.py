@@ -457,17 +457,17 @@ class TestGovernanceModeEndpoint(unittest.TestCase):
     def test_set_frozen_and_clear(self):
         """Endpoint sets FROZEN and returns mode; NORMAL clears it.
 
-        When WEBHOOK_ADMIN_TOKEN is empty in config, any non-empty admin token
-        passes Layer 2 (permissive fallback — same as schema endpoints).
+        S-02 hardening: WEBHOOK_ADMIN_TOKEN is now required and fail-closed.
+        Must send the exact configured token to pass Layer 2.
         """
+        from assistant_os.config import WEBHOOK_ADMIN_TOKEN as _ADMIN_TOKEN
         from assistant_os.mso.system_state import clear_operational_mode_override
         server, port = self._make_server()
         try:
-            # Set FROZEN — pass any non-empty token (WEBHOOK_ADMIN_TOKEN="" → permissive)
             status, data = self._request(
                 port,
                 {"mode": "FROZEN", "reason": "alfa kill-switch test"},
-                admin_token="any-token-when-not-configured",
+                admin_token=_ADMIN_TOKEN,
             )
             self.assertEqual(status, 200, data)
             self.assertTrue(data["ok"])
@@ -478,7 +478,7 @@ class TestGovernanceModeEndpoint(unittest.TestCase):
             status2, data2 = self._request(
                 port,
                 {"mode": "NORMAL", "reason": ""},
-                admin_token="any-token-when-not-configured",
+                admin_token=_ADMIN_TOKEN,
             )
             self.assertEqual(status2, 200, data2)
             self.assertTrue(data2["cleared"])
@@ -488,27 +488,28 @@ class TestGovernanceModeEndpoint(unittest.TestCase):
 
     def test_invalid_mode_returns_400(self):
         """Unknown mode value returns 400."""
+        from assistant_os.config import WEBHOOK_ADMIN_TOKEN as _ADMIN_TOKEN
         server, port = self._make_server()
         try:
             status, data = self._request(
                 port,
                 {"mode": "APOCALYPSE", "reason": "test"},
-                admin_token="any-token-when-not-configured",
+                admin_token=_ADMIN_TOKEN,
             )
             self.assertEqual(status, 400)
-            # _make_json_error returns {"status": "error", ...} shape
             self.assertIn(data.get("status"), ("error",))
         finally:
             server.shutdown()
 
     def test_non_normal_requires_reason(self):
         """Setting a non-NORMAL mode without a reason returns 400."""
+        from assistant_os.config import WEBHOOK_ADMIN_TOKEN as _ADMIN_TOKEN
         server, port = self._make_server()
         try:
             status, data = self._request(
                 port,
                 {"mode": "FROZEN"},  # no reason
-                admin_token="any-token-when-not-configured",
+                admin_token=_ADMIN_TOKEN,
             )
             self.assertEqual(status, 400)
         finally:

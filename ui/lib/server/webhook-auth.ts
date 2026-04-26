@@ -32,3 +32,16 @@ export function getWebhookHeaders(): { 'Content-Type': string; 'X-Assistant-Toke
   }
 }
 
+/**
+ * Admin token for privileged operations (governance mode, schema ops).
+ * Must match WEBHOOK_ADMIN_TOKEN on the backend.
+ *
+ * Returns null if ASSISTANT_ADMIN_TOKEN is not configured.
+ * Callers must fail-closed when null — never attempt admin ops without it.
+ * This value is never exposed to the browser.
+ */
+export function getWebhookAdminToken(): string | null {
+  const token = process.env.ASSISTANT_ADMIN_TOKEN
+  return token && token.trim() ? token.trim() : null
+}
+

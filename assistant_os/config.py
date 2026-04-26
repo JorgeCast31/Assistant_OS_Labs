@@ -30,13 +30,36 @@ MAX_ITERATIONS: int = 10
 # ---------------------------------------------------------------------------
 # Webhook Server Configuration
 # ---------------------------------------------------------------------------
-# WEBHOOK_TOKEN: Required for production. Falls back to test token only for development.
-# In production, ALWAYS set WEBHOOK_TOKEN environment variable!
-_WEBHOOK_TOKEN_FALLBACK = "TEST_TOKEN_NOT_FOR_PRODUCTION_USE"
-WEBHOOK_TOKEN: str = os.environ.get("WEBHOOK_TOKEN", _WEBHOOK_TOKEN_FALLBACK)
-# A2-FIX: Admin token for schema operations. When set, X-Assistant-Admin-Token
-# header must match this value exactly. Empty = presence-only check (dev mode).
-WEBHOOK_ADMIN_TOKEN: str = os.environ.get("WEBHOOK_ADMIN_TOKEN", "")
+# WEBHOOK_TOKEN: Required. No fallback exists — must be set before starting.
+# validate_startup_config() raises RuntimeError if absent at server start.
+# Fail-closed: _check_auth() rejects ALL requests when this is None.
+WEBHOOK_TOKEN: str | None = os.environ.get("WEBHOOK_TOKEN") or None
+
+# WEBHOOK_ADMIN_TOKEN: Required for admin endpoints (/admin/governance/mode,
+# /work/schema/plan, /work/schema/commit). Fail-closed: admin endpoints
+# reject ALL requests when this is None — no presence-only bypass.
+WEBHOOK_ADMIN_TOKEN: str | None = os.environ.get("WEBHOOK_ADMIN_TOKEN") or None
+
+# Startup security logging — emitted at import time so the operator sees the
+# state before any request is accepted.
+if not WEBHOOK_TOKEN:
+    print(
+        "[CONFIG] [CRITICAL] WEBHOOK_TOKEN not set — "
+        "server will reject ALL requests (fail-closed). "
+        "Set WEBHOOK_TOKEN before starting.",
+        flush=True,
+    )
+else:
+    print("[CONFIG] WEBHOOK_TOKEN: configured.", flush=True)
+
+if not WEBHOOK_ADMIN_TOKEN:
+    print(
+        "[CONFIG] [WARNING] WEBHOOK_ADMIN_TOKEN not set — "
+        "admin endpoints will reject all requests.",
+        flush=True,
+    )
+else:
+    print("[CONFIG] WEBHOOK_ADMIN_TOKEN: configured.", flush=True)
 WEBHOOK_HOST: str = os.environ.get("WEBHOOK_HOST", "0.0.0.0")
 WEBHOOK_PORT: int = int(os.environ.get("WEBHOOK_PORT", "8787"))
 CONTROL_PLANE_HOST: str = os.environ.get("CONTROL_PLANE_HOST", "127.0.0.1")
@@ -49,6 +72,26 @@ CONTROL_PLANE_MAX_ACTIVE_TOKENS_PER_OPERATOR: int = int(os.environ.get("CONTROL_
 WEBHOOK_MAX_BYTES: int = 16384  # 16KB for text endpoints
 WEBHOOK_MAX_BYTES_RECEIPT: int = 3145728  # 3MB for receipt uploads
 WEBHOOK_INCLUDE_RAW_DEFAULT: bool = False  # Include raw response in /command/summary
+
+
+def validate_startup_config() -> None:
+    """Raise RuntimeError if critical security tokens are missing.
+
+    Call from run_server() before accepting connections.
+    Do NOT call at module import time — that breaks unit tests that patch
+    the tokens or run without a real server.
+
+    Raises:
+        RuntimeError: If WEBHOOK_TOKEN is not set.
+    """
+    if not WEBHOOK_TOKEN:
+        raise RuntimeError(
+            "[STARTUP BLOCKED] WEBHOOK_TOKEN is required. "
+            "Set the WEBHOOK_TOKEN environment variable before starting the server. "
+            "No fallback token exists — this is intentional. "
+            "The server cannot start without authentication configured."
+        )
+
 
 # Admin API token for localhost access (from .env)
 ASSISTANT_API_TOKEN: str | None = os.environ.get("ASSISTANT_API_TOKEN")
