@@ -17,11 +17,16 @@ import pytest
 # These values are intentionally invalid — tests must mock any real I/O.
 # ---------------------------------------------------------------------------
 
-# Only the two variables that config._validate_env() treats as required.
+# Only the variables that the server requires at startup.
 # Do NOT stub optional credentials (GITHUB_TOKEN, ANTHROPIC_API_KEY, etc.)
 # because some tests explicitly assert behavior when those are absent.
-os.environ.setdefault("NOTION_TOKEN",      "test-stub-notion-token")
-os.environ.setdefault("NOTION_WORK_DB_ID", "test-stub-notion-db-id")
+os.environ.setdefault("NOTION_TOKEN",        "test-stub-notion-token")
+os.environ.setdefault("NOTION_WORK_DB_ID",   "test-stub-notion-db-id")
+# Webhook auth stubs: required so _check_auth() does not fail-closed during
+# unit tests.  Tests that exercise auth edge cases (token absent, token wrong)
+# must patch assistant_os.webhook_server.WEBHOOK_TOKEN explicitly.
+os.environ.setdefault("WEBHOOK_TOKEN",       "test-stub-webhook-token")
+os.environ.setdefault("WEBHOOK_ADMIN_TOKEN", "test-stub-admin-token")
 
 
 def _reset_runtime_state_for_test_session() -> None:
