@@ -46,6 +46,9 @@ from ..contracts import (
     ACTION_HOST_LIST_DIRECTORY,
     ACTION_HOST_OPEN_FILE,
     ACTION_HOST_READ_TEXT_FILE,
+    ACTION_HOST_WRITE_TEXT_FILE,
+    ACTION_HOST_APPEND_TEXT_FILE,
+    ACTION_HOST_CREATE_DIRECTORY,
 )
 
 _CAPABILITIES: dict[str, CapabilityRecord] = {
@@ -80,6 +83,10 @@ _CAPABILITIES: dict[str, CapabilityRecord] = {
     ACTION_HOST_OPEN_DIRECTORY: CapabilityRecord(ACTION_HOST_OPEN_DIRECTORY, "HOST", "confirm_only"),
     ACTION_HOST_OPEN_FILE:      CapabilityRecord(ACTION_HOST_OPEN_FILE,      "HOST", "confirm_only"),
     ACTION_HOST_CLOSE_PID:      CapabilityRecord(ACTION_HOST_CLOSE_PID,      "HOST", "confirm_only"),
+    # HOST domain — sandboxed write actions (confirmation required)
+    ACTION_HOST_WRITE_TEXT_FILE:  CapabilityRecord(ACTION_HOST_WRITE_TEXT_FILE,  "HOST", "confirm_only"),
+    ACTION_HOST_APPEND_TEXT_FILE: CapabilityRecord(ACTION_HOST_APPEND_TEXT_FILE, "HOST", "confirm_only"),
+    ACTION_HOST_CREATE_DIRECTORY: CapabilityRecord(ACTION_HOST_CREATE_DIRECTORY, "HOST", "confirm_only"),
 }
 
 _lock = RLock()
