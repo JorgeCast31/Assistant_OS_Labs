@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
+from pathlib import Path
 from threading import RLock
 
 from ..contracts import now_iso
@@ -17,6 +19,39 @@ _lock = RLock()
 _operational_mode_override: OperationalMode | None = None
 _operational_mode_reason = ""
 
+# Persisted state file — written atomically, read on startup.
+_STATE_FILE = Path(".assistant_os_state.json")
+
+_PERSIST_MODES = {"FROZEN", "DEGRADED", "RESTRICTED"}
+
+
+def _persist_state(mode: OperationalMode | None, reason: str) -> None:
+    """Atomically write current mode override to disk."""
+    payload = {"operational_mode": mode, "reason": reason}
+    tmp = Path(str(_STATE_FILE) + ".tmp")
+    try:
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        tmp.replace(_STATE_FILE)
+    except OSError:
+        pass  # Persistence is best-effort; in-memory state is authoritative
+
+
+def _load_persisted_state() -> None:
+    """Read persisted mode from disk on startup and apply to in-memory state."""
+    global _operational_mode_override, _operational_mode_reason
+    if not _STATE_FILE.exists():
+        return
+    try:
+        data = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
+        mode = data.get("operational_mode")
+        reason = str(data.get("reason", ""))
+        if mode in _PERSIST_MODES:
+            with _lock:
+                _operational_mode_override = mode  # type: ignore[assignment]
+                _operational_mode_reason = reason
+    except (OSError, json.JSONDecodeError):
+        pass
+
 
 def set_operational_mode(mode: OperationalMode, *, reason: str = "") -> None:
     """Force a system-wide operational mode until cleared."""
@@ -24,6 +59,7 @@ def set_operational_mode(mode: OperationalMode, *, reason: str = "") -> None:
     with _lock:
         _operational_mode_override = mode
         _operational_mode_reason = reason
+    _persist_state(mode, reason)
 
 
 def clear_operational_mode_override() -> None:
@@ -31,11 +67,16 @@ def clear_operational_mode_override() -> None:
     with _lock:
         _operational_mode_override = None
         _operational_mode_reason = ""
+    _persist_state(None, "")
 
 
 def get_operational_mode_override() -> tuple[OperationalMode | None, str]:
     with _lock:
         return _operational_mode_override, _operational_mode_reason
+
+
+# Apply any persisted mode override immediately on module load.
+_load_persisted_state()
 
 
 def build_system_state_snapshot(*, transition_limit: int = 20, decision_limit: int = 20) -> SystemStateSnapshot:
