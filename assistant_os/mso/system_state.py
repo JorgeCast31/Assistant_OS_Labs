@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import defaultdict
 from pathlib import Path
 from threading import RLock
@@ -20,7 +21,13 @@ _operational_mode_override: OperationalMode | None = None
 _operational_mode_reason = ""
 
 # Persisted state file — written atomically, read on startup.
-_STATE_FILE = Path(".assistant_os_state.json")
+# Resolved to absolute at import time so CWD changes after startup don't affect
+# file location. Override with ASSISTANT_OS_STATE_PATH for CI or Docker.
+_STATE_FILE: Path = (
+    Path(os.environ["ASSISTANT_OS_STATE_PATH"])
+    if os.environ.get("ASSISTANT_OS_STATE_PATH")
+    else Path(".assistant_os_state.json").resolve()
+)
 
 _PERSIST_MODES = {"FROZEN", "DEGRADED", "RESTRICTED"}
 
@@ -59,7 +66,6 @@ def set_operational_mode(mode: OperationalMode, *, reason: str = "") -> None:
     with _lock:
         _operational_mode_override = mode
         _operational_mode_reason = reason
-    _persist_state(mode, reason)
 
 
 def clear_operational_mode_override() -> None:
@@ -67,16 +73,23 @@ def clear_operational_mode_override() -> None:
     with _lock:
         _operational_mode_override = None
         _operational_mode_reason = ""
-    _persist_state(None, "")
+
+
+def persist_current_mode() -> None:
+    """Persist the current in-memory mode override to disk.
+
+    Called explicitly by HTTP endpoint handlers after mode changes so that
+    test code that calls set_operational_mode does not pollute the state file.
+    """
+    with _lock:
+        mode = _operational_mode_override
+        reason = _operational_mode_reason
+    _persist_state(mode, reason)
 
 
 def get_operational_mode_override() -> tuple[OperationalMode | None, str]:
     with _lock:
         return _operational_mode_override, _operational_mode_reason
-
-
-# Apply any persisted mode override immediately on module load.
-_load_persisted_state()
 
 
 def build_system_state_snapshot(*, transition_limit: int = 20, decision_limit: int = 20) -> SystemStateSnapshot:
