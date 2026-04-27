@@ -1440,6 +1440,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_governance_mode(remote)
             return
 
+        # UI operator freeze/restore — proxied from ui/app/api/system/freeze/route.ts
+        if path == "/mso/freeze":
+            self._handle_mso_freeze(remote)
+            return
+
         # Route: /machine_operator/execute (execute a bounded browser capability)
         if path == "/machine_operator/execute":
             self._handle_machine_operator_execute(remote)
@@ -2575,6 +2580,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 self._send_json_response(503, {
                     "ok": False,
                     "error": "governance_blocked",
+                    "execution_status": "unavailable",
                     "operational_mode": _chat_mode,
                     "reason": (
                         "System is FROZEN. All chat execution blocked until operator clears the freeze."
@@ -2588,6 +2594,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._send_json_response(503, {
                 "ok": False,
                 "error": "governance_check_failed",
+                "execution_status": "unavailable",
                 "reason": "Governance check failed. Request blocked for safety.",
             })
             return
@@ -3720,6 +3727,80 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self.server.shutdown()
 
         threading.Thread(target=shutdown, daemon=True).start()
+
+    def _handle_mso_freeze(self, remote: str) -> None:
+        """POST /mso/freeze — operator freeze or restore the system from the UI.
+
+        Body: { "action": "freeze"|"restore", "source": str, "reason": str }
+        Response: { "ok": true, "operational_mode": str, "message": str }
+
+        Auth: shared-secret only (same as all other authenticated endpoints).
+        This endpoint is the UI proxy target for ui/app/api/system/freeze/route.ts.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        result = self._read_body()
+        if result[1] is not None:
+            status, error = result[1]
+            self._send_json_response(status, error)
+            return
+        body = result[0]
+        try:
+            data = json.loads(body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            status, error = _make_json_error(400, f"Invalid JSON: {exc}", "BadRequest")
+            self._send_json_response(status, error)
+            return
+        if not isinstance(data, dict):
+            status, error = _make_json_error(400, "Request body must be a JSON object", "BadRequest")
+            self._send_json_response(status, error)
+            return
+
+        action = str(data.get("action", "freeze")).strip().lower()
+        source = str(data.get("source", "unknown")).strip()
+        reason = str(data.get("reason", f"Operator {action} via UI (source={source})")).strip()
+
+        from .mso.governance_surface import (
+            set_operational_mode_override as _set_mode,
+            clear_operational_mode as _clear_mode,
+            get_operational_mode as _get_mode,
+        )
+
+        if action == "freeze":
+            _set_mode("FROZEN", reason=reason)
+            _log_webhook_event(
+                "/mso/freeze", remote, ok=True,
+                event_type="governance_freeze", context_id="FROZEN",
+            )
+        elif action in ("restore", "unfreeze"):
+            _clear_mode()
+            _log_webhook_event(
+                "/mso/freeze", remote, ok=True,
+                event_type="governance_restore", context_id="NORMAL",
+            )
+        else:
+            status, error = _make_json_error(
+                400, f"Unknown action '{action}'. Use 'freeze' or 'restore'.", "BadRequest"
+            )
+            self._send_json_response(status, error)
+            return
+
+        current_mode, current_reason, _ = _get_mode()
+        message = (
+            "System frozen. All execution blocked until operator restores."
+            if current_mode == "FROZEN"
+            else "System restored. Execution resumed."
+        )
+        self._send_json_response(200, {
+            "ok": True,
+            "operational_mode": current_mode,
+            "message": message,
+            "reason": current_reason,
+        })
 
     def _handle_governance_mode(self, remote: str) -> None:
         """

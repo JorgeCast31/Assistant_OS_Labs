@@ -5,7 +5,7 @@
 
 export type SovereignViewId = 'system' | 'mso' | 'agents'
 
-export type AgentId = 'machine_operator'
+export type AgentId = string
 
 // ── Status Types ──────────────────────────────────────────────────────────────
 

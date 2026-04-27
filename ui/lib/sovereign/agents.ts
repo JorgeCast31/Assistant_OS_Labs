@@ -149,8 +149,17 @@ export function getAgentState(agentId: AgentId): AgentState {
 }
 
 /**
- * List available agents.
+ * List available agents from the backend registry.
  */
-export function getAvailableAgents(): Array<{ id: AgentId; name: string; status: string }> {
-  return [{ id: 'machine_operator', name: 'Machine Operator', status: 'idle' }]
+export async function getAvailableAgents(): Promise<Array<{ id: AgentId; name: string; status: string }>> {
+  try {
+    const res = await fetch('/api/agents/registry')
+    const data = (await res.json()) as { ok?: boolean; agents?: Array<{ id: string; name: string; status: string }> }
+    if (data.ok && Array.isArray(data.agents)) {
+      return data.agents.map(a => ({ id: a.id, name: a.name ?? a.id, status: a.status ?? 'unknown' }))
+    }
+  } catch {
+    // Fall through to empty on fetch failure
+  }
+  return []
 }
