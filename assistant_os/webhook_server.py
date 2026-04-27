@@ -3769,15 +3769,18 @@ class WebhookHandler(BaseHTTPRequestHandler):
             clear_operational_mode as _clear_mode,
             get_operational_mode as _get_mode,
         )
+        from .mso.system_state import persist_current_mode as _persist_mode
 
         if action == "freeze":
             _set_mode("FROZEN", reason=reason)
+            _persist_mode()
             _log_webhook_event(
                 "/mso/freeze", remote, ok=True,
                 event_type="governance_freeze", context_id="FROZEN",
             )
         elif action in ("restore", "unfreeze"):
             _clear_mode()
+            _persist_mode()
             _log_webhook_event(
                 "/mso/freeze", remote, ok=True,
                 event_type="governance_restore", context_id="NORMAL",
@@ -3898,10 +3901,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
             clear_operational_mode as _clear_mode,
             get_operational_mode as _get_mode,
         )
+        from .mso.system_state import persist_current_mode as _persist_mode
 
         cleared = False
         if mode == "NORMAL":
             _clear_mode()
+            _persist_mode()
             cleared = True
             _log_webhook_event(
                 "/admin/governance/mode", remote, ok=True,
@@ -3909,6 +3914,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             )
         else:
             _set_mode(mode, reason=reason)  # type: ignore[arg-type]
+            _persist_mode()
             _log_webhook_event(
                 "/admin/governance/mode", remote, ok=True,
                 event_type="governance_mode_set",
@@ -5025,6 +5031,8 @@ def run_server(host: str = WEBHOOK_HOST, port: int = WEBHOOK_PORT) -> None:
         port: Port number (default: 8787)
     """
     from .executors.startup import setup_all_code_executors
+    from .mso.system_state import _load_persisted_state as _apply_persisted_mode
+    _apply_persisted_mode()
     setup_all_code_executors()
 
     server = WebhookHTTPServer(host, port)
