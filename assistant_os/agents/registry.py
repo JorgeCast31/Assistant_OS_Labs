@@ -135,6 +135,28 @@ def _host_launcher_entrypoint(request: Any) -> Any:
     return execute_host_action(request)
 
 
+def _machine_operator_entrypoint(request: Any) -> Any:
+    """Execute a bounded browser capability via the MACHINE_OPERATOR pipeline.
+
+    Contract
+    --------
+    Input : machine_operator_request dict (capability_name, arguments, policy_context, budget, …)
+    Output: DomainResult
+
+    Wraps the raw request into the canonical plan envelope and delegates
+    to the MACHINE_OPERATOR domain pipeline without altering any control logic.
+    Import is deferred to avoid circular imports at load time.
+    """
+    from ..contracts import ACTION_MACHINE_OPERATOR_EXECUTE
+    from ..pipelines.machine_operator_pipeline import execute as _mo_execute
+    plan = {
+        "action": ACTION_MACHINE_OPERATOR_EXECUTE,
+        "domain": "MACHINE_OPERATOR",
+        "domain_payload": {"machine_operator_request": request},
+    }
+    return _mo_execute(plan, context_id="agent_registry")
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
@@ -175,6 +197,32 @@ AGENT_REGISTRY: Dict[str, AgentDefinition] = {
         "capability_scope": ["host_launch_app"],
         # Entrypoint — the only callable surface
         "entrypoint": _host_launcher_entrypoint,
+    },
+    "machine_operator": {
+        # Identity
+        "name":        "machine_operator",
+        "domain":      "MACHINE_OPERATOR",
+        "version":     "1.0.0",
+        "description": (
+            "Executes bounded browser capabilities (snapshot, screenshot, "
+            "read_visible_text, navigate) under strict policy control: "
+            "contract validation, capability-tier enforcement, policy gate, "
+            "and adapter-level execution with full audit trail."
+        ),
+        # Contract — what this agent consumes and produces
+        "input_contract":  "MachineOperatorRequest",
+        "output_contract": "DomainResult",
+        # Review policy — read-only capabilities are auto-approved; navigate requires explicit approval
+        "requires_review": False,
+        # Capability scope — all allowed browser capabilities declared
+        "capability_scope": [
+            "browser.snapshot",
+            "browser.screenshot",
+            "browser.read_visible_text",
+            "browser.navigate",
+        ],
+        # Entrypoint — the only callable surface
+        "entrypoint": _machine_operator_entrypoint,
     },
 }
 
