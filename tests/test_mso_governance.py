@@ -215,6 +215,33 @@ class TestDynamicGovernanceEngine(unittest.TestCase):
         self.assertEqual(decision.effective_execution_mode, "confirm")
 
 
+class TestHostWriteCapabilityRegistry(unittest.TestCase):
+    def setUp(self):
+        from assistant_os.mso.capability_registry import reset_dynamic_capabilities
+
+        reset_dynamic_capabilities()
+
+    def test_host_write_actions_are_registered_confirm_only(self):
+        from assistant_os.contracts import (
+            ACTION_HOST_APPEND_TEXT_FILE,
+            ACTION_HOST_CREATE_DIRECTORY,
+            ACTION_HOST_WRITE_TEXT_FILE,
+        )
+        from assistant_os.mso.capability_registry import check_capability
+
+        for action in (
+            ACTION_HOST_WRITE_TEXT_FILE,
+            ACTION_HOST_APPEND_TEXT_FILE,
+            ACTION_HOST_CREATE_DIRECTORY,
+        ):
+            result = check_capability(action, "HOST")
+
+            self.assertTrue(result.allowed, action)
+            self.assertEqual(result.mode, "confirm_only", action)
+            self.assertTrue(result.requires_confirmation, action)
+            self.assertEqual(result.source, "static", action)
+
+
 class TestGovernanceOrchestratorIntegration(unittest.TestCase):
     def setUp(self):
         from assistant_os.mso.capability_registry import reset_dynamic_capabilities
