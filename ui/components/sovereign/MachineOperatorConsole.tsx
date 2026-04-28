@@ -202,7 +202,7 @@ export function MachineOperatorConsole() {
             <p className="text-xs">Machine Operator — browser execution lane</p>
             <p className="text-xs">Type &apos;help&apos; for available capabilities</p>
             <p className="text-xs text-slate-500/70">
-              Each response includes [execution_status: success|unavailable]
+              Each response includes [execution_status: real|unavailable]
             </p>
             <div className="h-px bg-os-border my-3" />
           </div>

@@ -152,7 +152,7 @@ export interface GetExecutionResponse {
 
 export type ChatRole = 'user' | 'assistant' | 'system'
 export type ChatMessageStatus = 'sent' | 'loading' | 'error'
-export type ExecutionStatus = 'success' | 'stub' | 'unavailable' | 'partial' | 'error'
+export type ExecutionStatus = 'real' | 'success' | 'stub' | 'unavailable' | 'partial' | 'error'
 export type ExecutionStatusSource = 'backend' | 'ui_fallback'
 
 /**
