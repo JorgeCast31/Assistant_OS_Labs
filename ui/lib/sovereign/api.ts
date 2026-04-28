@@ -9,7 +9,7 @@ import type {
   ExecutionStatusSource,
 } from './types'
 
-const EXECUTION_STATUSES: ExecutionStatus[] = ['success', 'stub', 'unavailable', 'partial', 'error']
+const EXECUTION_STATUSES: ExecutionStatus[] = ['real', 'success', 'stub', 'unavailable', 'partial', 'error']
 
 function executionStatusOf(value: unknown): ExecutionStatus | undefined {
   return typeof value === 'string' && EXECUTION_STATUSES.includes(value as ExecutionStatus)

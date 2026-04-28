@@ -13,6 +13,7 @@ function genId(): string {
 
 function executionStatusClass(status: ExecutionStatus): string {
   switch (status) {
+    case 'real':
     case 'success':
       return 'bg-emerald-500/15 text-emerald-400 border-emerald-500/25'
     case 'stub':

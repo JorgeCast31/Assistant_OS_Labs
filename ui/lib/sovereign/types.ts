@@ -14,7 +14,7 @@ export type AuthorityStatus = 'active' | 'blocked' | 'deciding'
 export type AgentStatus = 'idle' | 'active' | 'degraded' | 'dormant' | 'waiting_auth'
 
 export type SystemHealth = 'healthy' | 'degraded' | 'unavailable'
-export type ExecutionStatus = 'success' | 'stub' | 'unavailable' | 'partial' | 'error'
+export type ExecutionStatus = 'real' | 'success' | 'stub' | 'unavailable' | 'partial' | 'error'
 export type ExecutionStatusSource = 'backend' | 'ui_fallback'
 
 // ── Surface Types (for API routing) ───────────────────────────────────────────

@@ -36,7 +36,7 @@ browser.navigate <url>        Navigate to URL
 
 Aliases: snapshot, screenshot, read, navigate`
 
-const EXECUTION_STATUSES: ExecutionStatus[] = ['success', 'stub', 'unavailable', 'partial', 'error']
+const EXECUTION_STATUSES: ExecutionStatus[] = ['real', 'success', 'stub', 'unavailable', 'partial', 'error']
 
 function executionStatusOf(value: unknown, fallback: ExecutionStatus): ExecutionStatus {
   return typeof value === 'string' && EXECUTION_STATUSES.includes(value as ExecutionStatus)
