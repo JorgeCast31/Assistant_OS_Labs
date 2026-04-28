@@ -359,27 +359,42 @@ class TestCodeOpsHandlerCreatePR(unittest.TestCase):
         self.assertIsNotNone(result["error"])
     
     def test_create_pr_valid_spec_returns_structure(self):
-        """create_pr with valid spec should return PRResponse structure."""
+        """create_pr with valid spec returns the full PRResponse structure.
+
+        ALFA invariant: the handler is currently a stub — real PR execution
+        is not wired. The response must therefore be honest (`ok=False`) but
+        still expose every key in the contract so callers/UI can render it.
+        """
         handler = CodeOpsHandler(github_token="test_token")
-        
+
         spec = {"repo": "owner/repo", "goal": "Add tests"}
         result = handler.create_pr(spec)
-        
-        # Check structure (mock returns success)
+
+        # Structure
         self.assertIn("ok", result)
         self.assertIn("pr_number", result)
         self.assertIn("pr_url", result)
         self.assertIn("branch", result)
         self.assertIn("error", result)
-    
+        # Truthfulness — no fake success.
+        self.assertFalse(result["ok"])
+        self.assertIsNone(result["pr_number"])
+        self.assertIsNone(result["pr_url"])
+        self.assertIsNotNone(result["error"])
+
     def test_create_pr_generates_branch_name(self):
-        """create_pr should generate branch name from goal."""
+        """create_pr returns the planned branch name even though no PR runs.
+
+        The stub layer must surface the deterministic branch slug so the UI
+        can show 'planned branch: codeops/...' without lying about execution.
+        """
         handler = CodeOpsHandler(github_token="test_token")
-        
+
         spec = {"repo": "owner/repo", "goal": "Add unit tests for auth"}
         result = handler.create_pr(spec)
-        
-        self.assertTrue(result["ok"])
+
+        # ALFA invariant — stub must NOT claim ok=True.
+        self.assertFalse(result["ok"])
         self.assertIsNotNone(result["branch"])
         self.assertTrue(result["branch"].startswith("codeops/"))
 
@@ -402,14 +417,14 @@ class TestBranchNameGeneration(unittest.TestCase):
         """Branch name should have codeops/ prefix."""
         spec = {"repo": "owner/repo", "goal": "Fix bug"}
         result = self.handler.create_pr(spec)
-        
+
         self.assertTrue(result["branch"].startswith("codeops/"))
-    
+
     def test_branch_name_removes_stop_words(self):
         """Branch name should remove common stop words."""
         spec = {"repo": "owner/repo", "goal": "Add the feature to the module"}
         result = self.handler.create_pr(spec)
-        
+
         # 'the' and 'to' should be removed
         self.assertNotIn("-the-", result["branch"])
         self.assertNotIn("-to-", result["branch"])

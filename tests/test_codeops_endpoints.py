@@ -221,30 +221,45 @@ class TestCodeOpsEndpoints(unittest.TestCase):
     # -------------------------------------------------------------------------
     
     def test_codeops_pr_valid_request(self):
-        """POST /codeops/pr with valid TaskSpec should return 200."""
+        """POST /codeops/pr with valid TaskSpec returns 200 + stub envelope.
+
+        ALFA invariant — when CODEOPS_LIVE_MODE is disabled (the default in
+        tests), the endpoint MUST NOT claim a PR was created. The wire
+        response must carry ok=False, pr_number=None, pr_url=None, and
+        execution_status="stub".
+        """
         status, data = self._post_codeops(
             "/codeops/pr",
             {"repo": "owner/repo", "goal": "Add unit tests"}
         )
-        
+
         self.assertEqual(status, 200)
+        # Contract keys
         self.assertIn("ok", data)
         self.assertIn("pr_number", data)
         self.assertIn("pr_url", data)
         self.assertIn("branch", data)
         self.assertIn("error", data)
-    
+        # Truthfulness
+        self.assertFalse(data["ok"], "fake success leak: ok should be False in stub mode")
+        self.assertIsNone(data["pr_number"])
+        self.assertIsNone(data["pr_url"])
+        self.assertEqual(data.get("execution_status"), "stub")
+        self.assertIsNotNone(data["error"])
+
     def test_codeops_pr_returns_branch_name(self):
-        """POST /codeops/pr should return generated branch name."""
+        """POST /codeops/pr returns the planned branch name (stub envelope)."""
         status, data = self._post_codeops(
             "/codeops/pr",
             {"repo": "owner/repo", "goal": "Fix authentication bug"}
         )
-        
+
         self.assertEqual(status, 200)
-        if data["ok"]:
-            self.assertIsNotNone(data["branch"])
-            self.assertTrue(data["branch"].startswith("codeops/"))
+        # Even in stub mode, the planned branch is exposed for transparency.
+        self.assertFalse(data["ok"])
+        self.assertEqual(data.get("execution_status"), "stub")
+        self.assertIsNotNone(data["branch"])
+        self.assertTrue(data["branch"].startswith("codeops/"))
     
     def test_codeops_pr_missing_repo(self):
         """POST /codeops/pr without repo should return 400."""
@@ -389,20 +404,20 @@ class TestCodeOpsResponseStructure(unittest.TestCase):
             "repo": "owner/repo",
             "goal": "Test"
         })
-        
+
         self.assertIn("ok", data)
         self.assertIn("pr_number", data)
         self.assertIn("pr_url", data)
         self.assertIn("branch", data)
         self.assertIn("error", data)
-    
+
     def test_plan_error_response_structure(self):
         """Error response should have same structure with ok=False."""
         _, data = self._post("/codeops/plan", {
             "repo": "invalid",  # Invalid format
             "goal": "Test"
         })
-        
+
         self.assertFalse(data["ok"])
         self.assertEqual(data["steps"], [])
         self.assertEqual(data["files_to_touch"], [])
