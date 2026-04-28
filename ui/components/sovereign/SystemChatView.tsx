@@ -230,13 +230,49 @@ export function SystemChatView() {
     // Send to API
     const response = await sendSovereignMessage(text, 'system_chat')
 
+    // ALFA-FLIGHT-01.5 informational guard.
+    //
+    // System Chat is the informational layer — its UI contract states
+    // "This surface never executes or authorizes actions." The backend
+    // however is single-source-of-truth and may classify any text into a
+    // plan / confirmation flow (that is correct backend behavior; surface
+    // is never an authority verdict). When the backend response carries
+    // plan / needs_confirmation / executionMode / non-ALLOW governance,
+    // we render it here as an informational redirect to MSO Direct or
+    // Machine Operator instead of leaking spurious action artefacts into
+    // the System Chat surface.
+    const hasPlan       = Array.isArray(response.plan) && response.plan.length > 0
+    const needsConfirm  = response.needs_confirmation === true
+    const hasExecMode   = response.execution_mode != null && response.execution_mode !== 'direct'
+    const govDecision   = response.governance_trace?.decision
+    const govNonAllow   = govDecision != null && govDecision !== 'ALLOW'
+    const isExecutiveResponse = hasPlan || needsConfirm || hasExecMode || govNonAllow
+
+    let content: string
+    if (!response.ok) {
+      content = `Error: ${response.error ?? 'unknown error'}`
+    } else if (isExecutiveResponse) {
+      content =
+        'Blocked:\n' +
+        '  domain=SYSTEM\n' +
+        '  action=surface.system_chat.executive_intent\n' +
+        '  reason=System Chat is the informational layer; it does not render plans or confirmations.\n' +
+        '  suggestion=Switch to MSO Direct or Machine Operator to issue an executive request.'
+    } else {
+      content = response.message
+    }
+
     // Add assistant response
     const assistantMsg: SovereignMessage = {
       id: genId(),
       role: 'assistant',
-      content: response.ok ? response.message : `Error: ${response.error}`,
+      content,
       timestamp: new Date().toISOString(),
       surface: 'system_chat',
+      // We intentionally drop plan/executionMode/pendingConfirmation here
+      // — System Chat does not render those. governanceTrace and
+      // executionStatus stay so the operator still sees backend honesty
+      // signals.
       governanceTrace: response.governance_trace,
       executionStatus: response.execution_status,
       executionStatusSource: response.execution_status_source,

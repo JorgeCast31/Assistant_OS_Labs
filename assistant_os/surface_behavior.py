@@ -379,46 +379,7 @@ def _system_chat_message(normalized: str) -> str:
             "y la procesaré a través del flujo de gobernanza."
         )
 
-    # Default for unknown text on system_chat: never fall through to the
-    # orchestrator. system_chat is the informational layer per UI contract
-    # ("This surface never executes or authorizes actions"). Falling through
-    # would generate spurious action artefacts (domain=ENERGY action=COMMAND
-    # and similar) that the user did not request. Tell the operator where
-    # executive intent belongs instead — the Machine Operator surface (MSO).
-    return _format_blocked_message(
-        domain="SYSTEM",
-        action="surface.system_chat.executive_intent",
-        reason="system_chat is informational only; no plans or actions are generated here",
-        suggestion="Switch to MSO Direct or Machine Operator to issue an executive request.",
-    )
-
-
-# ---------------------------------------------------------------------------
-# Canonical operator-facing block message.
-#
-# Surface code that needs to refuse a request without invoking the orchestrator
-# uses this helper so every block carries the same four fields:
-#   Blocked:
-#     domain=...
-#     action=...
-#     reason=...
-#     suggestion=...
-# ---------------------------------------------------------------------------
-
-def _format_blocked_message(
-    *,
-    domain: str,
-    action: str,
-    reason: str,
-    suggestion: str,
-) -> str:
-    return (
-        "Blocked:\n"
-        f"  domain={domain}\n"
-        f"  action={action}\n"
-        f"  reason={reason}\n"
-        f"  suggestion={suggestion}"
-    )
+    return "Sistema operativo disponible. ¿En qué puedo ayudarte?"
 
 
 # ---------------------------------------------------------------------------
@@ -559,13 +520,13 @@ def get_surface_behavior_response(
         return None
 
     if surface == "system_chat":
-        # system_chat is the informational layer. The UI promises:
-        # "This surface never executes or authorizes actions."
-        # We therefore handle ALL inputs here and never fall through to the
-        # orchestrator. Conversational matches get the curated reply; unknown
-        # text gets a canonical Blocked: message that tells the operator to
-        # use MSO Direct / Machine Operator for executive intent. Either way,
-        # plan=[] and needs_confirmation=False — surface_response only.
+        # surface is conversational influence ONLY — never an authority verdict.
+        # If the input does not match a curated conversational pattern, return
+        # None so the orchestrator handles it. The UI surface (SystemChatView)
+        # is responsible for rendering the orchestrator's response according
+        # to its informational-only contract; the backend stays honest.
+        if normalized not in _SYSTEM_CHAT_CONVERSATIONAL:
+            return None
         return _build_surface_response(
             message=_system_chat_message(normalized),
             domain="SYSTEM",
