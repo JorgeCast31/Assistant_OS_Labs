@@ -31,8 +31,15 @@ export async function POST() {
       {
         ok: false,
         error:
-          'ASSISTANT_ADMIN_TOKEN is not configured. ' +
-          'Set this environment variable to enable freeze control.',
+          'ASSISTANT_ADMIN_TOKEN is not configured on the UI server. ' +
+          'Freeze control is fail-closed at the proxy layer until this is set.',
+        // Operability hints — surfaced verbatim by the system view.
+        domain: 'SYSTEM',
+        action: 'governance.freeze',
+        reason: 'missing_ui_admin_token',
+        suggestion:
+          'Set ASSISTANT_ADMIN_TOKEN in ui/.env.local (must match WEBHOOK_ADMIN_TOKEN ' +
+          'in the backend .env). Restart the UI dev server. See docs/LOCAL_RUNBOOK.md.',
       },
       { status: 503 },
     )

@@ -203,6 +203,41 @@ export async function getSystemState(): Promise<{ mode: OperationalMode; events:
 }
 
 /**
+ * Format a backend/proxy block payload as the canonical operator-facing block.
+ *
+ *   Blocked:
+ *     domain=...
+ *     action=...
+ *     reason=...
+ *     suggestion=...
+ *
+ * Falls back to the raw error/message when no structured fields are present, so
+ * the UI never silently drops a backend error.
+ */
+function formatBlockedMessage(payload: Record<string, unknown>, fallback: string): string {
+  const domain     = typeof payload.domain     === 'string' ? payload.domain     : null
+  const action     = typeof payload.action     === 'string' ? payload.action     : null
+  const reason     = typeof payload.reason     === 'string' ? payload.reason     : null
+  const suggestion = typeof payload.suggestion === 'string' ? payload.suggestion : null
+  const errorText  = typeof payload.error      === 'string' ? payload.error
+                  : typeof payload.message    === 'string' ? payload.message
+                  : null
+
+  const hasStructured = Boolean(domain || action || reason || suggestion)
+  if (!hasStructured) {
+    return errorText ?? fallback
+  }
+
+  const lines = ['Blocked:']
+  if (domain)     lines.push(`  domain=${domain}`)
+  if (action)     lines.push(`  action=${action}`)
+  if (reason)     lines.push(`  reason=${reason}`)
+  if (suggestion) lines.push(`  suggestion=${suggestion}`)
+  if (errorText)  lines.push('', errorText)
+  return lines.join('\n')
+}
+
+/**
  * POST /api/system/freeze — calls the authenticated Next.js proxy which forwards
  * to POST /admin/governance/mode on the webhook server with mode=FROZEN.
  * Fails-closed if FREEZE_CONTROL.available is false (or if ASSISTANT_ADMIN_TOKEN
@@ -225,18 +260,20 @@ export async function freezeSystem(): Promise<{ ok: boolean; message: string }> 
       signal: AbortSignal.timeout(15000),
     })
 
-    const json = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }))
+    const json = (await res.json().catch(
+      () => ({ ok: false, error: `HTTP ${res.status}` }),
+    )) as Record<string, unknown>
 
-    if (!res.ok || !json.ok) {
+    if (!res.ok || json.ok === false) {
       return {
         ok: false,
-        message: json.error ?? json.message ?? `Freeze failed (${res.status})`,
+        message: formatBlockedMessage(json, `Freeze failed (${res.status})`),
       }
     }
 
     return {
       ok: true,
-      message: json.message ?? 'System freeze initiated',
+      message: typeof json.message === 'string' ? json.message : 'System freeze initiated',
     }
   } catch (err) {
     return {

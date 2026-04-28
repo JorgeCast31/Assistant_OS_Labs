@@ -23,11 +23,16 @@ const DOT_COLOR: Record<HealthStatus, string> = {
 
 // ── Operational Mode styling ──────────────────────────────────────────────────
 
+// Operational mode badge styling.
+// NORMAL/DEGRADED/FROZEN are authoritative states from the backend. UNKNOWN
+// is only ever produced by the UI when the operability surface is unreachable;
+// we render it as OFFLINE so operators read a state they can act on instead of
+// a generic "unknown" they have to interpret.
 const MODE_STYLES: Record<OperationalMode, { bg: string; text: string; dot: string; label: string }> = {
   NORMAL:   { bg: 'bg-ok/10',   text: 'text-ok',   dot: 'bg-ok',   label: 'NORMAL' },
   DEGRADED: { bg: 'bg-warn/10', text: 'text-warn', dot: 'bg-warn', label: 'DEGRADED' },
   FROZEN:   { bg: 'bg-err/10',  text: 'text-err',  dot: 'bg-err',  label: 'FROZEN' },
-  UNKNOWN:  { bg: 'bg-idle/10', text: 'text-tx-muted', dot: 'bg-idle', label: 'UNKNOWN' },
+  UNKNOWN:  { bg: 'bg-err/10',  text: 'text-err',  dot: 'bg-err',  label: 'OFFLINE' },
 }
 
 function overallHealth(
@@ -80,11 +85,18 @@ export function TopHUD() {
         {/* M29: Local cognitive engine presence badge */}
         <CognitivePresenceBadge />
 
-        {/* Overall health dot */}
+        {/* Overall health dot.
+            'unknown' can only appear during the first-poll cycle; we surface it
+            as a faint ellipsis ("…") to signal "still checking" without lying.
+            Anything else collapses to ok/down/warn — never an unactionable
+            UNKNOWN label. */}
         <div className="flex items-center gap-1.5" title={`API: ${apiStatus} · Webhook: ${webhookStatus}`}>
           <span className={`w-2 h-2 rounded-full flex-shrink-0 ${dotColor} ${isSystemRefreshing ? 'animate-pulse' : ''} ${isInitializing ? 'opacity-40' : ''}`} />
           <span className="text-[10px] font-mono text-tx-muted hidden sm:inline">
-            {health === 'ok' ? 'online' : health === 'unknown' ? '…' : health}
+            {health === 'ok'      ? 'online'
+              : health === 'down' ? 'offline'
+              : health === 'unknown' ? '…'
+              : health}
           </span>
         </div>
 

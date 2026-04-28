@@ -27,12 +27,17 @@ function fmtEndpoint(url: string): string {
   }
 }
 
+// HealthStatus → label for the System view.
+// "unknown" only appears during the very first poll cycle (before any HTTP
+// roundtrip has completed). Once the user has fetched at least once, status
+// becomes "ok" or "down". The label collapses unknown into a transient
+// "Initializing" state — never the final operator-facing word.
 const STATUS_LABEL: Record<HealthStatus, string> = {
   ok:       'Online',
   warn:     'Warning',
   degraded: 'Degraded',
   down:     'Offline',
-  unknown:  'Unknown',
+  unknown:  'Initializing',
 }
 
 // ── Operational Mode styling ──────────────────────────────────────────────────
@@ -48,7 +53,9 @@ const MODE_DESCRIPTIONS: Record<OperationalMode, string> = {
   NORMAL:   'System operating normally. All capabilities enabled.',
   DEGRADED: 'System operating in degraded mode. Some capabilities may be restricted.',
   FROZEN:   'System is frozen. No new operations will be processed.',
-  UNKNOWN:  'Unable to determine system state. Backend may be unreachable.',
+  // UNKNOWN is rendered only when the operability surface itself is unreachable.
+  // Tell the operator what is offline rather than leaving them to guess.
+  UNKNOWN:  'Operability surface offline. Cannot read operational mode from the webhook server.',
 }
 
 // ── Event type styling ────────────────────────────────────────────────────────
@@ -165,16 +172,18 @@ function KillSwitchButton({ onFrozen }: { onFrozen: () => void }) {
   if (result) {
     return (
       <div className={`rounded-lg p-4 border ${result.ok ? 'bg-err/10 border-err/30' : 'bg-warn/10 border-warn/30'}`}>
-        <div className="flex items-center justify-between">
-          <div>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
             <p className={`text-xs font-mono font-medium ${result.ok ? 'text-err' : 'text-warn'}`}>
               {result.ok ? 'System Frozen' : 'Freeze Failed'}
             </p>
-            <p className="text-[10px] font-mono text-tx-muted mt-0.5">{result.message}</p>
+            <pre className="text-[10px] font-mono text-tx-muted mt-0.5 whitespace-pre-wrap break-words">
+              {result.message}
+            </pre>
           </div>
           <button
             onClick={() => setResult(null)}
-            className="text-[10px] font-mono text-tx-muted hover:text-tx-secondary"
+            className="text-[10px] font-mono text-tx-muted hover:text-tx-secondary flex-shrink-0"
           >
             Dismiss
           </button>

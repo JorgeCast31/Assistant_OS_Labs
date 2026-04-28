@@ -139,10 +139,29 @@ class TestGetSurfaceBehaviorResponse(unittest.TestCase):
         self.assertIsNotNone(resp)
         self.assertIn("mso", resp["message"].lower())
 
-    def test_system_chat_unknown_text_returns_none(self):
-        # Not in conversational set → None (goes to orchestrator)
+    def test_system_chat_unknown_text_returns_block_response(self):
+        # ALFA-FLIGHT-01.5: system_chat is informational-only. Unknown text MUST
+        # NOT fall through to the orchestrator (which would generate spurious
+        # plans / actions). Instead it returns a canonical Blocked: response
+        # that orients the operator to MSO Direct / Machine Operator.
         resp = self._call("system_chat", "necesito que borres todos los archivos")
-        self.assertIsNone(resp)
+        self.assertIsNotNone(resp)
+        self.assertTrue(resp["ok"])
+        self.assertEqual(resp["domain"], "SYSTEM")
+        self.assertEqual(resp["intent"], "informational_response")
+        self.assertEqual(resp["plan"], [])
+        self.assertFalse(resp["needs_confirmation"])
+        self.assertEqual(resp["audit"]["surface"], "system_chat")
+        self.assertEqual(resp["audit"]["result_type"], "surface_response")
+        # Canonical four-field block format.
+        msg = resp["message"]
+        self.assertIn("Blocked:", msg)
+        self.assertIn("domain=SYSTEM", msg)
+        self.assertIn("action=", msg)
+        self.assertIn("reason=", msg)
+        self.assertIn("suggestion=", msg)
+        # Must orient to MSO/Machine Operator — never silently lose intent.
+        self.assertRegex(msg.lower(), r"mso|machine operator")
 
     # --- mso_direct ---
 

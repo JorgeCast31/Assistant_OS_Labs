@@ -1,0 +1,44 @@
+{
+  "task": {
+    "task_id": "auth-api-task",
+    "origin_intent_id": "auth-api-intent",
+    "task_type": "BASIC_COGNITIVE_EXECUTION",
+    "task_goal": "Trigger auth restriction.",
+    "allowed_operations": [
+      "read_system_state"
+    ],
+    "input_refs": [
+      "request:auth-api"
+    ],
+    "scope": {
+      "domain": "COGNITIVE",
+      "timeout_ms": 200,
+      "force_network_attempt": true
+    },
+    "requires_capability": "BASIC_COGNITIVE_EXECUTION",
+    "expected_output_schema": {
+      "required_artifact_keys": [
+        "system_state"
+      ]
+    },
+    "expiry": "2099-01-01T00:00:00+00:00",
+    "trace_id": "trace:auth-api"
+  },
+  "capability": {
+    "capability_id": "auth-api-capability",
+    "task_id": "auth-api-task",
+    "execution_class": "BASIC_COGNITIVE_EXECUTION",
+    "allowed_operations": [
+      "read_system_state"
+    ],
+    "scope": {
+      "domain": "COGNITIVE",
+      "timeout_ms": 200,
+      "force_network_attempt": true
+    },
+    "issued_at": "2026-04-15T00:00:00+00:00",
+    "expires_at": "2099-01-01T00:00:00+00:00",
+    "issued_by": "kernel",
+    "trace_id": "trace:auth-api"
+  }
+}
