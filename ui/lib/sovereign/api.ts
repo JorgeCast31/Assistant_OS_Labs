@@ -5,7 +5,21 @@ import type {
   SovereignChatRequest,
   SovereignChatResponse,
   SurfaceType,
+  ExecutionStatus,
+  ExecutionStatusSource,
 } from './types'
+
+const EXECUTION_STATUSES: ExecutionStatus[] = ['success', 'stub', 'unavailable', 'partial', 'error']
+
+function executionStatusOf(value: unknown): ExecutionStatus | undefined {
+  return typeof value === 'string' && EXECUTION_STATUSES.includes(value as ExecutionStatus)
+    ? value as ExecutionStatus
+    : undefined
+}
+
+function statusSource(status: ExecutionStatus | undefined): ExecutionStatusSource | undefined {
+  return status ? 'backend' : undefined
+}
 
 /**
  * Send a message through the sovereign interface.
@@ -32,23 +46,31 @@ export async function sendSovereignMessage(
     const data = await res.json()
 
     if (!res.ok) {
+      const backendStatus = executionStatusOf(data.execution_status)
       return {
         ok: false,
         message: data.error || `Error ${res.status}`,
         trace_id: '',
         needs_confirmation: false,
         error: data.error || 'Request failed',
+        execution_status: backendStatus ?? 'unavailable',
+        execution_status_source: backendStatus ? 'backend' : 'ui_fallback',
       }
     }
 
+    const ok = data.ok !== false
+    const backendStatus = executionStatusOf(data.execution_status)
+
     return {
-      ok: true,
+      ok,
       message: data.message || '',
       trace_id: data.trace_id || '',
       domain: data.domain,
       intent: data.intent,
       mode: data.mode,
       needs_confirmation: data.needs_confirmation || data.pending_confirmation != null || false,
+      execution_status: backendStatus ?? (ok ? undefined : 'error'),
+      execution_status_source: statusSource(backendStatus) ?? (ok ? undefined : 'ui_fallback'),
       plan: data.plan,
       governance_trace: data.governance_trace,
       // Extended MSO response fields
@@ -66,6 +88,8 @@ export async function sendSovereignMessage(
       trace_id: '',
       needs_confirmation: false,
       error: msg,
+      execution_status: 'unavailable',
+      execution_status_source: 'ui_fallback',
     }
   }
 }
