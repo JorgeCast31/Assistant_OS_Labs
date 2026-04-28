@@ -64,7 +64,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return json as T
 }
 
-const EXECUTION_STATUSES: ExecutionStatus[] = ['real', 'stub', 'unavailable', 'partial', 'error']
+const EXECUTION_STATUSES: ExecutionStatus[] = ['real', 'stub', 'unavailable', 'partial']
 
 function executionStatusOf(value: unknown): ExecutionStatus | undefined {
   return typeof value === 'string' && EXECUTION_STATUSES.includes(value as ExecutionStatus)
@@ -286,7 +286,7 @@ export async function sendChatMessage(
     const backendStatus = executionStatusOf(json.execution_status)
     throw new ChatApiError(
       `Chat API → ok=false: ${json.error ?? 'unknown error'}`,
-      backendStatus ?? 'error',
+      backendStatus ?? 'unavailable',
       backendStatus ? 'backend' : 'ui_fallback',
     )
   }

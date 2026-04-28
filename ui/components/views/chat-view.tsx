@@ -35,8 +35,6 @@ function executionStatusClass(status: ExecutionStatus): string {
       return 'bg-amber-500/15 text-amber-300 border-amber-500/25'
     case 'partial':
       return 'bg-sky-500/15 text-sky-300 border-sky-500/25'
-    case 'error':
-      return 'bg-red-500/15 text-red-300 border-red-500/25'
     case 'unavailable':
       return 'bg-slate-500/15 text-slate-300 border-slate-500/25'
   }
