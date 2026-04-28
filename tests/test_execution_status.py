@@ -309,6 +309,25 @@ class TestCodePipelineLiveStatus:
 
         assert "[STUB — no real execution]" not in result.get("message", "")
 
+    def test_code_preview_live_invalid_workspace_fails_closed_before_executor(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        from assistant_os.contracts import EXECUTION_STATUS_UNAVAILABLE
+
+        executor = self._make_live_propose_executor()
+        plan = self._plan("CODE_FIX")
+        plan["domain_payload"]["workspace"] = "C:\\definitely-missing-assistant-os-workspace"
+
+        original = cp._propose_executor
+        try:
+            cp.register_propose_executor(executor)
+            result = cp.execute(plan, "ctx-code-live-invalid-workspace")
+        finally:
+            cp._propose_executor = original
+
+        assert result.get("ok") is False
+        assert result.get("execution_status") == EXECUTION_STATUS_UNAVAILABLE
+        executor.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # G. MACHINE_OPERATOR pipeline — execution_status by lane_outcome

@@ -78,6 +78,7 @@ from ..contracts import (
     RISK_HIGH,
     EXECUTION_STATUS_REAL,
     EXECUTION_STATUS_STUB,
+    EXECUTION_STATUS_UNAVAILABLE,
 )
 
 _STUB_PREFIX = "[STUB — no real execution] "
@@ -342,24 +343,22 @@ def _execute_mutating(plan: dict, context_id: str) -> DomainResult:
     """
     payload: dict = plan.get("domain_payload") or {}
 
-    # Workspace must be valid before any tool call — validate early so both
-    # preview and apply fail with a clean error before touching the filesystem.
     workspace: str = payload.get("workspace", "")
-    ws_error = _validate_workspace(workspace)
-    if ws_error:
-        return make_domain_result(
-            ok=False,
-            result_type=RESULT_TYPE_CODE_PREVIEW,
-            domain="CODE",
-            message=ws_error,
-            data={"plan": dict(plan)},
-            error={"type": "InvalidWorkspace", "message": ws_error},
-        )
-
     phase = payload.get("phase", "preview")
     proposal = payload.get("proposal")
 
     if phase == "apply":
+        ws_error = _validate_workspace(workspace)
+        if ws_error:
+            return make_domain_result(
+                ok=False,
+                result_type=RESULT_TYPE_CODE_APPLY,
+                domain="CODE",
+                message=ws_error,
+                data={"plan": dict(plan)},
+                error={"type": "InvalidWorkspace", "message": ws_error},
+                execution_status=EXECUTION_STATUS_UNAVAILABLE,
+            )
         if proposal is None:
             return make_domain_result(
                 ok=False,
@@ -369,6 +368,18 @@ def _execute_mutating(plan: dict, context_id: str) -> DomainResult:
                 error={"type": "ExecutionPlanViolation", "message": "apply phase requires proposal"},
             )
         return _apply_code_proposal(plan, proposal, payload)
+    if _propose_executor is not None:
+        ws_error = _validate_workspace(workspace)
+        if ws_error:
+            return make_domain_result(
+                ok=False,
+                result_type=RESULT_TYPE_CODE_PREVIEW,
+                domain="CODE",
+                message=ws_error,
+                data={"plan": dict(plan)},
+                error={"type": "InvalidWorkspace", "message": ws_error},
+                execution_status=EXECUTION_STATUS_UNAVAILABLE,
+            )
     return _build_code_preview(plan, payload)
 
 
