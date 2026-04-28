@@ -27,6 +27,8 @@ export interface PersistedChatMessage {
   meta?: ChatMessage['meta']
   kind?: ChatMessage['kind']
   handled?: boolean
+  executionStatus?: ChatMessage['executionStatus']
+  executionStatusSource?: ChatMessage['executionStatusSource']
 }
 
 export interface ChatSession {
@@ -84,6 +86,8 @@ export function toPersistedMsg(m: ChatMessage): PersistedChatMessage | null {
     meta:      m.meta,
     kind:      m.kind,
     handled:   m.handled,
+    executionStatus: m.executionStatus,
+    executionStatusSource: m.executionStatusSource,
   }
 }
 

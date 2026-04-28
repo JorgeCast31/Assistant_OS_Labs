@@ -14,6 +14,8 @@ export type AuthorityStatus = 'active' | 'blocked' | 'deciding'
 export type AgentStatus = 'idle' | 'active' | 'degraded' | 'dormant' | 'waiting_auth'
 
 export type SystemHealth = 'healthy' | 'degraded' | 'unavailable'
+export type ExecutionStatus = 'success' | 'stub' | 'unavailable' | 'partial' | 'error'
+export type ExecutionStatusSource = 'backend' | 'ui_fallback'
 
 // ── Surface Types (for API routing) ───────────────────────────────────────────
 
@@ -32,6 +34,8 @@ export interface SovereignMessage {
   requiresConfirmation?: boolean
   executionState?: ExecutionState
   governanceTrace?: GovernanceTrace
+  executionStatus?: ExecutionStatus
+  executionStatusSource?: ExecutionStatusSource
   // Extended MSO fields
   executionMode?: 'direct' | 'plan' | 'confirm' | 'blocked'
   policyDecision?: PolicyDecision
@@ -131,6 +135,8 @@ export interface SovereignChatResponse {
   needs_confirmation: boolean
   plan?: MSOPlanItem[]
   governance_trace?: GovernanceTrace
+  execution_status?: ExecutionStatus
+  execution_status_source?: ExecutionStatusSource
   error?: string
   // Extended MSO response fields
   execution_mode?: 'direct' | 'plan' | 'confirm' | 'blocked'

@@ -7,6 +7,7 @@ import type {
   AgentCommandResponse,
   AgentState,
   AgentId,
+  ExecutionStatus,
 } from './types'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -35,11 +36,19 @@ browser.navigate <url>        Navigate to URL
 
 Aliases: snapshot, screenshot, read, navigate`
 
+const EXECUTION_STATUSES: ExecutionStatus[] = ['success', 'stub', 'unavailable', 'partial', 'error']
+
+function executionStatusOf(value: unknown, fallback: ExecutionStatus): ExecutionStatus {
+  return typeof value === 'string' && EXECUTION_STATUSES.includes(value as ExecutionStatus)
+    ? value as ExecutionStatus
+    : fallback
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function formatDomainResult(
   capability: string,
-  executionStatus: string,
+  executionStatus: ExecutionStatus,
   data: Record<string, unknown>,
   message: string,
 ): string {
@@ -109,7 +118,7 @@ export async function executeAgentCommand(
     }
   }
 
-  const executionStatus = String(data.execution_status ?? 'unavailable')
+  const executionStatus = executionStatusOf(data.execution_status, 'unavailable')
   const domainData      = (data.data && typeof data.data === 'object')
     ? (data.data as Record<string, unknown>)
     : {}

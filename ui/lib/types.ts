@@ -152,6 +152,8 @@ export interface GetExecutionResponse {
 
 export type ChatRole = 'user' | 'assistant' | 'system'
 export type ChatMessageStatus = 'sent' | 'loading' | 'error'
+export type ExecutionStatus = 'success' | 'stub' | 'unavailable' | 'partial' | 'error'
+export type ExecutionStatusSource = 'backend' | 'ui_fallback'
 
 /**
  * Action chip / button that the backend asks the UI to render.
@@ -219,6 +221,9 @@ export interface ChatMessage {
   handled?: boolean
   /** MSO governance trace — Phase 0 governance visibility */
   governanceTrace?: GovernanceTrace
+  /** Backend truthfulness signal for operational visibility. */
+  executionStatus?: ExecutionStatus
+  executionStatusSource?: ExecutionStatusSource
 }
 
 export interface SendChatRequest {
@@ -254,6 +259,8 @@ export interface SendChatResponse {
   ui_actions?: ChatUIAction[]
   plan?: unknown[]
   audit?: Record<string, unknown>
+  execution_status?: ExecutionStatus
+  execution_status_source?: ExecutionStatusSource
   /** MSO governance trace — Phase 0 governance visibility */
   governance_trace?: GovernanceTrace
 }

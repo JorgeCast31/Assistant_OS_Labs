@@ -12,6 +12,8 @@ import type {
   ChatAction,
   OperationalMode,
   SystemEvent,
+  ExecutionStatus,
+  ExecutionStatusSource,
 } from './types'
 
 export const API_BASE_URL =
@@ -60,6 +62,30 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(`API ${path} → ok=false: ${json.error ?? 'unknown error'}`)
   }
   return json as T
+}
+
+const EXECUTION_STATUSES: ExecutionStatus[] = ['success', 'stub', 'unavailable', 'partial', 'error']
+
+function executionStatusOf(value: unknown): ExecutionStatus | undefined {
+  return typeof value === 'string' && EXECUTION_STATUSES.includes(value as ExecutionStatus)
+    ? value as ExecutionStatus
+    : undefined
+}
+
+export class ChatApiError extends Error {
+  executionStatus: ExecutionStatus
+  executionStatusSource: ExecutionStatusSource
+
+  constructor(
+    message: string,
+    executionStatus: ExecutionStatus,
+    executionStatusSource: ExecutionStatusSource = 'ui_fallback',
+  ) {
+    super(message)
+    this.name = 'ChatApiError'
+    this.executionStatus = executionStatus
+    this.executionStatusSource = executionStatusSource
+  }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -247,14 +273,30 @@ export async function sendChatMessage(
   })
   if (!res.ok) {
     const json = await res.json().catch(() => ({}))
-    throw new Error(
+    const backendStatus = executionStatusOf((json as Record<string, unknown>).execution_status)
+    throw new ChatApiError(
       (json as Record<string, unknown>).error as string
-        ?? `Chat API → ${res.status} ${res.statusText}`
+        ?? `Chat API → ${res.status} ${res.statusText}`,
+      backendStatus ?? 'unavailable',
+      backendStatus ? 'backend' : 'ui_fallback',
     )
   }
   const json = await res.json()
   if (!json.ok) {
-    throw new Error(`Chat API → ok=false: ${json.error ?? 'unknown error'}`)
+    const backendStatus = executionStatusOf(json.execution_status)
+    throw new ChatApiError(
+      `Chat API → ok=false: ${json.error ?? 'unknown error'}`,
+      backendStatus ?? 'error',
+      backendStatus ? 'backend' : 'ui_fallback',
+    )
+  }
+  const backendStatus = executionStatusOf(json.execution_status)
+  if (backendStatus) {
+    json.execution_status = backendStatus
+    json.execution_status_source = 'backend'
+  } else {
+    delete json.execution_status
+    delete json.execution_status_source
   }
   return json as SendChatResponse
 }

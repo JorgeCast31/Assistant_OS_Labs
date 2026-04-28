@@ -3,12 +3,41 @@
 import { useState, useRef, useEffect, KeyboardEvent, Fragment } from 'react'
 import { useSovereignStore } from '@/stores/sovereign-store'
 import { sendSovereignMessage } from '@/lib/sovereign/api'
-import type { SovereignMessage } from '@/lib/sovereign/types'
+import type { SovereignMessage, ExecutionStatus, ExecutionStatusSource } from '@/lib/sovereign/types'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function genId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+}
+
+function executionStatusClass(status: ExecutionStatus): string {
+  switch (status) {
+    case 'success':
+      return 'bg-emerald-500/15 text-emerald-400 border-emerald-500/25'
+    case 'stub':
+      return 'bg-amber-500/15 text-amber-300 border-amber-500/25'
+    case 'partial':
+      return 'bg-sky-500/15 text-sky-300 border-sky-500/25'
+    case 'error':
+      return 'bg-red-500/15 text-red-300 border-red-500/25'
+    case 'unavailable':
+      return 'bg-slate-500/15 text-slate-300 border-slate-500/25'
+  }
+}
+
+function ExecutionStatusBadge({
+  status,
+  source = 'backend',
+}: {
+  status: ExecutionStatus
+  source?: ExecutionStatusSource
+}) {
+  return (
+    <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider ${executionStatusClass(status)}`}>
+      execution_status: {status}{source === 'ui_fallback' ? ' (ui fallback)' : ''}
+    </span>
+  )
 }
 
 // ── RichText ──────────────────────────────────────────────────────────────────
@@ -137,6 +166,11 @@ function MessageBubble({ message }: MessageBubbleProps) {
         }
       `}>
         <RichText content={message.content} />
+        {!isUser && message.executionStatus && (
+          <div className="mt-2">
+            <ExecutionStatusBadge status={message.executionStatus} source={message.executionStatusSource} />
+          </div>
+        )}
         
         {/* Timestamp */}
         <div className="mt-2 pt-1.5 border-t border-os-border/50">
@@ -206,6 +240,8 @@ export function SystemChatView() {
       timestamp: new Date().toISOString(),
       surface: 'system_chat',
       governanceTrace: response.governance_trace,
+      executionStatus: response.execution_status,
+      executionStatusSource: response.execution_status_source,
     }
     addSystemChatMessage(assistantMsg)
 

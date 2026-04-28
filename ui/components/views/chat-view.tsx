@@ -5,17 +5,55 @@ import React, {
   KeyboardEvent, Fragment,
   type ReactNode,
 } from 'react'
-import { sendChatMessage, apiSearchMessages } from '@/lib/api'
+import { ChatApiError, sendChatMessage, apiSearchMessages } from '@/lib/api'
 import type { MessageSearchResult }           from '@/lib/api'
 import { useUIStore }             from '@/stores/ui-store'
 import { useChatSessionsStore }   from '@/stores/chat-sessions-store'
 import type { ChatSession }       from '@/lib/chat-sessions'
-import type { ChatMessage, ChatUIAction, ChatAction, PlanItem, SendChatRequest, GovernanceTrace } from '@/lib/types'
+import type {
+  ChatMessage,
+  ChatUIAction,
+  ChatAction,
+  PlanItem,
+  SendChatRequest,
+  GovernanceTrace,
+  ExecutionStatus,
+  ExecutionStatusSource,
+} from '@/lib/types'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function genId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+}
+
+function executionStatusClass(status: ExecutionStatus): string {
+  switch (status) {
+    case 'success':
+      return 'bg-emerald-500/15 text-emerald-400 border-emerald-500/25'
+    case 'stub':
+      return 'bg-amber-500/15 text-amber-300 border-amber-500/25'
+    case 'partial':
+      return 'bg-sky-500/15 text-sky-300 border-sky-500/25'
+    case 'error':
+      return 'bg-red-500/15 text-red-300 border-red-500/25'
+    case 'unavailable':
+      return 'bg-slate-500/15 text-slate-300 border-slate-500/25'
+  }
+}
+
+function ExecutionStatusBadge({
+  status,
+  source = 'backend',
+}: {
+  status: ExecutionStatus
+  source?: ExecutionStatusSource
+}) {
+  return (
+    <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider ${executionStatusClass(status)}`}>
+      execution_status: {status}{source === 'ui_fallback' ? ' (ui fallback)' : ''}
+    </span>
+  )
 }
 
 // ── RichText ──────────────────────────────────────────────────────────────────
@@ -596,7 +634,17 @@ function LoadingMessage() {
   )
 }
 
-function ErrorMessage({ content, onRetry }: { content: string; onRetry?: () => void }) {
+function ErrorMessage({
+  content,
+  executionStatus,
+  executionStatusSource,
+  onRetry,
+}: {
+  content: string
+  executionStatus?: ExecutionStatus
+  executionStatusSource?: ExecutionStatusSource
+  onRetry?: () => void
+}) {
   return (
     <div className="flex justify-start items-start gap-2">
       <div className="w-6 h-6 rounded-full bg-err/15 border border-err/30 flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -605,6 +653,11 @@ function ErrorMessage({ content, onRetry }: { content: string; onRetry?: () => v
       <div className="max-w-[75%] px-3.5 py-2.5 rounded-2xl rounded-tl-sm bg-err/8 border border-err/25">
         <p className="text-[10px] font-mono text-err/60 uppercase tracking-widest mb-1">Error de conexión</p>
         <p className="text-xs font-mono text-err/90 break-words">{content}</p>
+        {executionStatus && (
+          <div className="mt-2">
+            <ExecutionStatusBadge status={executionStatus} source={executionStatusSource} />
+          </div>
+        )}
         {onRetry && (
           <button
             onClick={onRetry}
@@ -658,6 +711,12 @@ function AssistantMessage({ msg, onAction, onPlanExecute, isSending }: Assistant
         )}
 
         <RichText content={msg.content} />
+
+        {msg.executionStatus && (
+          <div className="mt-2">
+            <ExecutionStatusBadge status={msg.executionStatus} source={msg.executionStatusSource} />
+          </div>
+        )}
 
         {msg.plan && msg.plan.length > 0 && (
           <PlanPanel
@@ -799,7 +858,12 @@ function ChatThread({
         )
         if (msg.status === 'error') return (
           <div key={msg.id} {...msgAttrs}>
-            <ErrorMessage content={msg.content} onRetry={() => onRetry(msg.id)} />
+            <ErrorMessage
+              content={msg.content}
+              executionStatus={msg.executionStatus}
+              executionStatusSource={msg.executionStatusSource}
+              onRetry={() => onRetry(msg.id)}
+            />
           </div>
         )
         return (
@@ -1447,6 +1511,8 @@ export function ChatView() {
         kind: res.needs_confirmation ? 'confirmation_request' : 'normal',
         // Phase 0: governance trace visibility
         governanceTrace: res.governance_trace,
+        executionStatus: res.execution_status,
+        executionStatusSource: res.execution_status_source,
       }
 
       setMessages(prev => prev.map(m => m.id === loadingId ? assistantMsg : m))
@@ -1456,8 +1522,10 @@ export function ChatView() {
       // Store params so the user can retry with the same message
       lastFailedRef.current = { loadingId, userMsgId, params }
       const errMsg = err instanceof Error ? err.message : String(err)
+      const executionStatus = err instanceof ChatApiError ? err.executionStatus : 'unavailable'
+      const executionStatusSource = err instanceof ChatApiError ? err.executionStatusSource : 'ui_fallback'
       setMessages(prev => prev.map(m =>
-        m.id === loadingId ? { ...m, status: 'error', content: errMsg } : m,
+        m.id === loadingId ? { ...m, status: 'error', content: errMsg, executionStatus, executionStatusSource } : m,
       ))
     } finally {
       setIsSending(false)
