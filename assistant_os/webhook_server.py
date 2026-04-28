@@ -4561,14 +4561,44 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     })
                     return
             
-            # Warn if live mode is disabled (but still return mock response)
-            if not CODEOPS_LIVE_MODE:
-                print(f"[CODEOPS] Live mode disabled - returning mock PR response for {repo}")
-            
-            # Create handler and create PR
+            # ALFA invariant — NO fake success.
+            # When live mode is disabled, the server MUST NOT claim a PR was
+            # created. We return ok=False and execution_status="stub" so
+            # callers (and the UI) can render the truthful state.
             handler = CodeOpsHandler()
+            if not CODEOPS_LIVE_MODE:
+                planned_branch = handler._generate_branch_name(goal)
+                stub_response = {
+                    "ok": False,
+                    "pr_number": None,
+                    "pr_url": None,
+                    "branch": planned_branch,
+                    "execution_status": "stub",
+                    "error": (
+                        "CodeOps live mode disabled — no PR was created. "
+                        "Set CODEOPS_LIVE_MODE=true and provide a valid GITHUB_TOKEN "
+                        "to enable real PR execution."
+                    ),
+                }
+                _log_codeops_event(
+                    remote=remote,
+                    endpoint="/codeops/pr",
+                    ok=False,
+                    repo=repo,
+                    goal=goal,
+                    context_id=context_id,
+                    pr_url="",
+                    error_message="codeops_live_mode_disabled",
+                )
+                self._send_json_response(200, stub_response)
+                return
+
+            # Live mode — delegate to handler (real PR path).
             pr_result: PRResponse = handler.create_pr(data)
-            
+            wire_response = dict(pr_result)
+            # Stamp execution_status so the wire is unambiguous either way.
+            wire_response["execution_status"] = "real" if pr_result["ok"] else "unavailable"
+
             _log_codeops_event(
                 remote=remote,
                 endpoint="/codeops/pr",
@@ -4579,8 +4609,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 pr_url=pr_result.get("pr_url") or "",
                 error_message=pr_result.get("error") or "",
             )
-            
-            self._send_json_response(200, pr_result)
+
+            self._send_json_response(200, wire_response)
             
         except Exception as e:
             _log.error("_handle_codeops_pr exception: %s", e, exc_info=True)
@@ -5073,7 +5103,7 @@ def run_server(host: str = WEBHOOK_HOST, port: int = WEBHOOK_PORT) -> None:
     print(f"  POST /shutdown        - Shutdown server (requires token)")
     print()
     print("Press Ctrl+C to stop.")
-    
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -5085,11 +5115,11 @@ def run_server(host: str = WEBHOOK_HOST, port: int = WEBHOOK_PORT) -> None:
 def start_server_thread(host: str = WEBHOOK_HOST, port: int = 0) -> tuple[WebhookHTTPServer, int]:
     """
     Start server in a background thread (for testing).
-    
+
     Args:
         host: Bind address
         port: Port number (0 = auto-assign)
-    
+
     Returns:
         (server_instance, actual_port)
     """
