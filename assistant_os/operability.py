@@ -31,6 +31,45 @@ def _agent_status_for_domain(domain: str | None, tasks: list[Any]) -> str:
     return "idle"
 
 
+def _last_task_for_domain(domain: str | None, tasks: list[Any]) -> Any | None:
+    if not domain:
+        return None
+    for task in tasks:
+        if getattr(task, "domain", "") == domain:
+            return task
+    return None
+
+
+def _last_execution_at(task: Any | None) -> str | None:
+    if task is None:
+        return None
+    return (
+        getattr(task, "completed_at", "")
+        or getattr(task, "updated_at", "")
+        or getattr(task, "started_at", "")
+        or getattr(task, "created_at", "")
+        or None
+    )
+
+
+def _last_result(task: Any | None) -> dict[str, Any] | None:
+    if task is None:
+        return None
+    return {
+        "task_id": getattr(task, "task_id", ""),
+        "status": getattr(task, "status", "") or None,
+        "result_type": getattr(task, "result_type", "") or None,
+        "error_type": getattr(task, "error_type", "") or None,
+        "error_message": getattr(task, "error_message", "") or None,
+    }
+
+
+def _policy_restricted(domain: str | None, revocations: list[Any]) -> bool:
+    if not domain:
+        return False
+    return any(getattr(item, "domain", "") in {domain, "*"} for item in revocations)
+
+
 def _capability_status(action: str, domain: str) -> str:
     active_revocations = {
         (item.action, item.domain) for item in list_active_revocations(domain=domain, action=action)
@@ -116,6 +155,7 @@ def _recent_event_payloads(snapshot: Any, limit: int = 10) -> list[dict[str, Any
 def build_agents_registry_response() -> dict[str, Any]:
     """Build a stable, read-only projection of the canonical agent registry."""
     tasks = list_tasks()
+    revocations = list_active_revocations()
     agents = []
 
     for agent in list_agents():
@@ -123,6 +163,7 @@ def build_agents_registry_response() -> dict[str, Any]:
         status = _agent_status_for_domain(domain, tasks)
         if status not in _ACTIVE_AGENT_STATUSES:
             status = "unknown"
+        last_task = _last_task_for_domain(domain, tasks)
 
         agents.append(
             {
@@ -132,6 +173,9 @@ def build_agents_registry_response() -> dict[str, Any]:
                 "description": agent.get("description") or None,
                 "status": status,
                 "capabilities": list(agent.get("capability_scope") or []),
+                "last_execution_at": _last_execution_at(last_task),
+                "last_result": _last_result(last_task),
+                "policy_restricted": _policy_restricted(domain, revocations),
                 # Registry entries are governed execution boundaries, so authority is required.
                 "requires_authority": True,
                 "requires_review": bool(agent.get("requires_review", False)),
