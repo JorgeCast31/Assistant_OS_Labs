@@ -4,27 +4,31 @@ import { getWebhookBaseUrl, getWebhookHeaders, getWebhookAdminToken } from '@/li
 export const dynamic = 'force-dynamic'
 
 /**
- * POST /api/system/freeze
+ * POST /api/system/restore
  *
- * Proxies the operator freeze command to the canonical backend governance
- * endpoint: POST /admin/governance/mode.
+ * Sibling of /api/system/freeze. Calls the SAME canonical backend governance
+ * endpoint (POST /admin/governance/mode) with mode=NORMAL, same admin-token
+ * auth, same fail-closed behavior. There is NO new authority — the backend
+ * remains the single source of truth for the operational mode override.
  *
  * Authentication (server-side only — tokens never reach the browser):
  *   X-Assistant-Token       → ASSISTANT_TOKEN env var
  *   X-Assistant-Admin-Token → ASSISTANT_ADMIN_TOKEN env var
  *
- * Fail-closed: if ASSISTANT_ADMIN_TOKEN is not configured, this route
- * returns 503 immediately — no request is sent to the backend.
+ * Fail-closed: if ASSISTANT_ADMIN_TOKEN is not configured, this route returns
+ * 503 immediately — no request is sent to the backend.
  *
  * Backend request:
  *   POST /admin/governance/mode
- *   { "mode": "FROZEN", "reason": "ui_operator_freeze" }
+ *   { "mode": "NORMAL", "reason": "ui_operator_restore" }
+ *   (mode=NORMAL clears the override; reason is optional but we log one
+ *    for audit traceability.)
  *
  * Backend success response:
- *   { "ok": true, "mode": "FROZEN", "cleared": false, ... }
+ *   { "ok": true, "mode": "NORMAL", "cleared": true, ... }
  */
 export async function POST() {
-  // Fail-closed: admin token is required to activate the kill switch.
+  // Fail-closed: admin token is required to clear the kill switch.
   const adminToken = getWebhookAdminToken()
   if (!adminToken) {
     return NextResponse.json(
@@ -32,14 +36,13 @@ export async function POST() {
         ok: false,
         error:
           'ASSISTANT_ADMIN_TOKEN is not configured on the UI server. ' +
-          'Freeze control is fail-closed at the proxy layer until this is set.',
-        // Operability hints — paired with /api/system/restore for symmetry.
+          'Restore control is fail-closed at the proxy layer until this is set.',
         domain: 'SYSTEM',
-        action: 'governance.freeze',
+        action: 'governance.restore',
         reason: 'missing_ui_admin_token',
         suggestion:
           'Set ASSISTANT_ADMIN_TOKEN in ui/.env.local (must match WEBHOOK_ADMIN_TOKEN ' +
-          'in the backend .env). Restart the UI dev server.',
+          'in the backend .env). Restart the UI dev server. See docs/LOCAL_RUNBOOK.md.',
       },
       { status: 503 },
     )
@@ -56,9 +59,11 @@ export async function POST() {
         'X-Assistant-Admin-Token': adminToken,
       },
       cache: 'no-store',
+      // Backend treats mode=NORMAL as "clear override". reason is optional
+      // when mode=NORMAL but we send one anyway for audit log clarity.
       body: JSON.stringify({
-        mode: 'FROZEN',
-        reason: 'ui_operator_freeze',
+        mode: 'NORMAL',
+        reason: 'ui_operator_restore',
       }),
       signal: AbortSignal.timeout(10000),
     })
@@ -111,13 +116,14 @@ export async function POST() {
     )
   }
 
-  // Success — backend returns { ok: true, mode: "FROZEN", cleared: false, ... }
-  const mode = typeof payload.mode === 'string' ? payload.mode : 'FROZEN'
+  // Success — backend returns { ok: true, mode: "NORMAL", cleared: true, ... }
+  const mode = typeof payload.mode === 'string' ? payload.mode : 'NORMAL'
   return NextResponse.json(
     {
       ok: true,
       mode,
-      message: `System is now ${mode}. All new executions are blocked.`,
+      cleared: payload.cleared === true,
+      message: `System mode is now ${mode}. Override cleared; system returns to derived governance.`,
     },
     { status: 200 },
   )

@@ -1,10 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useUIStore }       from '@/stores/ui-store'
 import { useSystemPolling } from '@/hooks/use-system-polling'
 import { StatusBadge }      from '@/components/shared/status-badge'
-import { FREEZE_CONTROL, RUNTIME_ENDPOINTS, freezeSystem } from '@/lib/api'
+import { FREEZE_CONTROL, RUNTIME_ENDPOINTS, freezeSystem, restoreSystem } from '@/lib/api'
 import type { HealthStatus, OperationalMode, SystemEvent } from '@/lib/types'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -127,17 +127,79 @@ function OperationalModeCard({ mode }: { mode: OperationalMode }) {
   )
 }
 
-// ── KillSwitchButton ──────────────────────────────────────────────────────────
+// ── ModeControlButton ─────────────────────────────────────────────────────────
+//
+// One button, two operator-facing actions. Branches on the current operational
+// mode: when mode === 'FROZEN' it renders Restore NORMAL; otherwise it renders
+// Freeze System. Both call the same backend endpoint (/admin/governance/mode)
+// via dedicated proxy routes — there is NO new authority. Every fail-closed
+// path renders a multi-line Blocked: block (whitespace-pre-wrap) so the
+// operator sees domain/action/reason/suggestion verbatim.
 
-function KillSwitchButton({ onFrozen }: { onFrozen: () => void }) {
+type ModeAction = 'freeze' | 'restore'
+
+interface ModeControlConfig {
+  buttonLabel:  string
+  buttonIcon:   string
+  panelTitle:   string
+  panelBody:    string
+  confirmLabel: string
+  loadingLabel: string
+  successLabel: string
+  failureLabel: string
+  tone:         'danger' | 'safe'
+}
+
+const MODE_CONTROL: Record<ModeAction, ModeControlConfig> = {
+  freeze: {
+    buttonLabel:  'Freeze System',
+    buttonIcon:   '⛔',
+    panelTitle:   'Confirm System Freeze',
+    panelBody:    'This will immediately freeze all system operations. No new tasks will be processed until manually restored.',
+    confirmLabel: 'Confirm Freeze',
+    loadingLabel: 'Freezing…',
+    successLabel: 'System Frozen',
+    failureLabel: 'Freeze Failed',
+    tone:         'danger',
+  },
+  restore: {
+    buttonLabel:  'Restore NORMAL',
+    buttonIcon:   '↺',
+    panelTitle:   'Confirm Restore to NORMAL',
+    panelBody:    'This will clear the FROZEN override and return the system to its derived governance mode. Same backend endpoint as Freeze; same admin-token authority.',
+    confirmLabel: 'Confirm Restore',
+    loadingLabel: 'Restoring…',
+    successLabel: 'System Restored',
+    failureLabel: 'Restore Failed',
+    tone:         'safe',
+  },
+}
+
+function ModeControlButton({
+  mode,
+  onAfterAction,
+}: {
+  mode: OperationalMode
+  onAfterAction: () => void
+}) {
+  const action: ModeAction = mode === 'FROZEN' ? 'restore' : 'freeze'
+  const cfg = MODE_CONTROL[action]
+
   const [showConfirm, setShowConfirm] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
 
+  // When the underlying mode flips, drop transient UI state so a stale
+  // "System Frozen" panel doesn't outlive the actual transition.
+  useEffect(() => {
+    setShowConfirm(false)
+    setResult(null)
+  }, [mode])
+
   if (!FREEZE_CONTROL.available) {
     return (
       <div className="rounded-lg p-4 border border-warn/30 bg-warn/5">
-        <p className="text-xs font-mono text-warn font-medium mb-1">Freeze Control Unavailable</p>
+        <p className="text-xs font-mono text-warn font-medium mb-1">Mode Control Unavailable</p>
         <p className="text-[10px] font-mono text-tx-secondary">
           {FREEZE_CONTROL.message}
         </p>
@@ -145,14 +207,14 @@ function KillSwitchButton({ onFrozen }: { onFrozen: () => void }) {
     )
   }
 
-  async function handleFreeze() {
+  async function handleAction() {
     setIsLoading(true)
     setResult(null)
     try {
-      const res = await freezeSystem()
+      const res = action === 'restore' ? await restoreSystem() : await freezeSystem()
       setResult(res)
       if (res.ok) {
-        onFrozen()
+        onAfterAction()
       }
     } catch (err) {
       setResult({ ok: false, message: err instanceof Error ? err.message : 'Unknown error' })
@@ -163,18 +225,25 @@ function KillSwitchButton({ onFrozen }: { onFrozen: () => void }) {
   }
 
   if (result) {
+    const successTone = action === 'freeze'
+      ? 'bg-err/10 border-err/30 text-err'
+      : 'bg-ok/10  border-ok/30  text-ok'
+    const failureTone = 'bg-warn/10 border-warn/30 text-warn'
+    const tone = result.ok ? successTone : failureTone
     return (
-      <div className={`rounded-lg p-4 border ${result.ok ? 'bg-err/10 border-err/30' : 'bg-warn/10 border-warn/30'}`}>
-        <div className="flex items-center justify-between">
-          <div>
-            <p className={`text-xs font-mono font-medium ${result.ok ? 'text-err' : 'text-warn'}`}>
-              {result.ok ? 'System Frozen' : 'Freeze Failed'}
+      <div className={`rounded-lg p-4 border ${tone}`}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs font-mono font-medium">
+              {result.ok ? cfg.successLabel : cfg.failureLabel}
             </p>
-            <p className="text-[10px] font-mono text-tx-muted mt-0.5">{result.message}</p>
+            <pre className="text-[10px] font-mono text-tx-muted mt-0.5 whitespace-pre-wrap break-words">
+              {result.message}
+            </pre>
           </div>
           <button
             onClick={() => setResult(null)}
-            className="text-[10px] font-mono text-tx-muted hover:text-tx-secondary"
+            className="text-[10px] font-mono text-tx-muted hover:text-tx-secondary flex-shrink-0"
           >
             Dismiss
           </button>
@@ -184,24 +253,28 @@ function KillSwitchButton({ onFrozen }: { onFrozen: () => void }) {
   }
 
   if (showConfirm) {
+    const confirmTone = cfg.tone === 'danger'
+      ? 'bg-err/20 border-err/40 text-err hover:bg-err/30'
+      : 'bg-ok/20  border-ok/40  text-ok  hover:bg-ok/30'
+    const panelTone = cfg.tone === 'danger'
+      ? 'border-err/30 bg-err/5'
+      : 'border-ok/30  bg-ok/5'
+    const titleTone = cfg.tone === 'danger' ? 'text-err' : 'text-ok'
     return (
-      <div className="rounded-lg p-4 border border-err/30 bg-err/5">
-        <p className="text-xs font-mono text-err font-medium mb-2">Confirm System Freeze</p>
-        <p className="text-[10px] font-mono text-tx-secondary mb-3">
-          This will immediately freeze all system operations. No new tasks will be processed until manually unfrozen.
-        </p>
+      <div className={`rounded-lg p-4 border ${panelTone}`}>
+        <p className={`text-xs font-mono font-medium mb-2 ${titleTone}`}>{cfg.panelTitle}</p>
+        <p className="text-[10px] font-mono text-tx-secondary mb-3">{cfg.panelBody}</p>
         <div className="flex gap-2">
           <button
-            onClick={handleFreeze}
+            onClick={handleAction}
             disabled={isLoading}
-            className="
-              px-3 py-1.5 text-xs font-mono rounded border
-              bg-err/20 border-err/40 text-err
-              hover:bg-err/30 transition-colors
+            className={`
+              px-3 py-1.5 text-xs font-mono rounded border transition-colors
+              ${confirmTone}
               disabled:opacity-50 disabled:cursor-not-allowed
-            "
+            `}
           >
-            {isLoading ? 'Freezing…' : 'Confirm Freeze'}
+            {isLoading ? cfg.loadingLabel : cfg.confirmLabel}
           </button>
           <button
             onClick={() => setShowConfirm(false)}
@@ -220,18 +293,21 @@ function KillSwitchButton({ onFrozen }: { onFrozen: () => void }) {
     )
   }
 
+  const idleTone = cfg.tone === 'danger'
+    ? 'bg-err/5 border-err/20 text-err hover:bg-err/10 hover:border-err/30'
+    : 'bg-ok/5  border-ok/20  text-ok  hover:bg-ok/10  hover:border-ok/30'
+
   return (
     <button
       onClick={() => setShowConfirm(true)}
-      className="
+      className={`
         w-full px-4 py-3 rounded-lg border
-        bg-err/5 border-err/20 text-err
-        hover:bg-err/10 hover:border-err/30 transition-colors
-        flex items-center justify-center gap-2
-      "
+        ${idleTone}
+        transition-colors flex items-center justify-center gap-2
+      `}
     >
-      <span className="text-sm">⛔</span>
-      <span className="text-xs font-mono font-medium uppercase tracking-wider">Freeze System</span>
+      <span className="text-sm">{cfg.buttonIcon}</span>
+      <span className="text-xs font-mono font-medium uppercase tracking-wider">{cfg.buttonLabel}</span>
     </button>
   )
 }
@@ -343,13 +419,17 @@ export function SystemView() {
           </section>
         )}
 
-        {/* Phase 0: Kill Switch */}
-        {!isInitializing && operationalMode !== 'FROZEN' && (
+        {/* Mode Controls — Freeze when not FROZEN, Restore NORMAL when FROZEN.
+            Both actions reach the same backend endpoint /admin/governance/mode
+            via dedicated proxy routes. There is NO new authority. The button
+            is always visible when the system is initialized so the operator
+            can always exit the frozen state through the UI. */}
+        {!isInitializing && (
           <section>
             <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
-              Emergency Controls
+              {operationalMode === 'FROZEN' ? 'Restore Controls' : 'Emergency Controls'}
             </p>
-            <KillSwitchButton onFrozen={() => void refresh()} />
+            <ModeControlButton mode={operationalMode} onAfterAction={() => void refresh()} />
           </section>
         )}
 

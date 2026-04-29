@@ -230,11 +230,47 @@ export function SystemChatView() {
     // Send to API
     const response = await sendSovereignMessage(text, 'system_chat')
 
-    // Add assistant response
+    // ALFA-FLIGHT-01.6 informational guard.
+    //
+    // System Chat is the informational layer — its UI contract states
+    // "This surface never executes or authorizes actions." The backend
+    // is single-source-of-truth and may classify input into a plan /
+    // confirmation flow (correct backend behavior; surface is never an
+    // authority verdict). When the backend response carries plan /
+    // needs_confirmation / non-direct execution_mode / non-ALLOW
+    // governance, we render it here as a canonical Blocked: block
+    // pointing the operator to MSO Direct or Machine Operator instead
+    // of leaking spurious action artefacts (the "ENERGY/COMMAND
+    // basura" complaint that triggered 01.6).
+    const hasPlan      = Array.isArray(response.plan) && response.plan.length > 0
+    const needsConfirm = response.needs_confirmation === true
+    const hasExecMode  = response.execution_mode != null && response.execution_mode !== 'direct'
+    const govDecision  = response.governance_trace?.decision
+    const govNonAllow  = govDecision != null && govDecision !== 'ALLOW'
+    const isExecutiveResponse = hasPlan || needsConfirm || hasExecMode || govNonAllow
+
+    let content: string
+    if (!response.ok) {
+      content = `Error: ${response.error ?? 'unknown error'}`
+    } else if (isExecutiveResponse) {
+      content =
+        'Blocked:\n' +
+        '  domain=SYSTEM\n' +
+        '  action=surface.system_chat.executive_intent\n' +
+        '  reason=System Chat is the informational layer; it does not render plans or confirmations.\n' +
+        '  suggestion=Switch to MSO Direct or Machine Operator to issue an executive request.'
+    } else {
+      content = response.message
+    }
+
+    // Add assistant response.
+    // We intentionally drop plan / executionMode / pendingConfirmation here
+    // — System Chat does not render those. governanceTrace and
+    // executionStatus stay so the operator still sees backend honesty.
     const assistantMsg: SovereignMessage = {
       id: genId(),
       role: 'assistant',
-      content: response.ok ? response.message : `Error: ${response.error}`,
+      content,
       timestamp: new Date().toISOString(),
       surface: 'system_chat',
       governanceTrace: response.governance_trace,

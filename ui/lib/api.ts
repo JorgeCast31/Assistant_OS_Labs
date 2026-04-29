@@ -36,13 +36,19 @@ export const RUNTIME_ENDPOINTS = {
 /**
  * FREEZE_CONTROL: Governance kill-switch configuration.
  *
- * Proxy route: /api/system/freeze → POST /admin/governance/mode on the webhook server.
- * Requires ASSISTANT_ADMIN_TOKEN env var to be set server-side. The UI button renders
- * "Unavailable" when that env var is absent (fail-closed at the proxy layer).
+ * Proxy routes:
+ *   POST /api/system/freeze   → POST /admin/governance/mode  (mode=FROZEN)
+ *   POST /api/system/restore  → POST /admin/governance/mode  (mode=NORMAL)
+ *
+ * Both proxies share the same backend authority — there is no parallel
+ * authority introduced by adding restore. They require ASSISTANT_ADMIN_TOKEN
+ * server-side; the UI buttons render "Unavailable" when that env var is
+ * absent (fail-closed at the proxy layer).
  */
 export const FREEZE_CONTROL = {
   available: true,
   endpoint: '/api/system/freeze',
+  restoreEndpoint: '/api/system/restore',
   message: 'Freeze control is not available. Set ASSISTANT_ADMIN_TOKEN to enable.',
 } as const
 
@@ -203,6 +209,93 @@ export async function getSystemState(): Promise<{ mode: OperationalMode; events:
 }
 
 /**
+ * Format a backend/proxy block payload as the canonical operator-facing block.
+ *
+ *   Blocked:
+ *     domain=...
+ *     action=...
+ *     reason=...
+ *     suggestion=...
+ *
+ * Falls back to the raw error/message when no structured fields are present, so
+ * the UI never silently drops a backend error.
+ *
+ * (Re-introduced in 01.6 because the 01.5 definition was reverted on this
+ * working tree — see ALFA_FLIGHT_01_6_REPORT.md §Hallazgos.)
+ */
+function formatBlockedMessage(payload: Record<string, unknown>, fallback: string): string {
+  const domain     = typeof payload.domain     === 'string' ? payload.domain     : null
+  const action     = typeof payload.action     === 'string' ? payload.action     : null
+  const reason     = typeof payload.reason     === 'string' ? payload.reason     : null
+  const suggestion = typeof payload.suggestion === 'string' ? payload.suggestion : null
+  const errorText  = typeof payload.error      === 'string' ? payload.error
+                  : typeof payload.message    === 'string' ? payload.message
+                  : null
+
+  const hasStructured = Boolean(domain || action || reason || suggestion)
+  if (!hasStructured) {
+    return errorText ?? fallback
+  }
+
+  const lines = ['Blocked:']
+  if (domain)     lines.push(`  domain=${domain}`)
+  if (action)     lines.push(`  action=${action}`)
+  if (reason)     lines.push(`  reason=${reason}`)
+  if (suggestion) lines.push(`  suggestion=${suggestion}`)
+  if (errorText)  lines.push('', errorText)
+  return lines.join('\n')
+}
+
+/**
+ * POST /api/system/restore — calls the authenticated Next.js proxy which forwards
+ * to POST /admin/governance/mode on the webhook server with mode=NORMAL.
+ *
+ * Symmetric to freezeSystem(). Fails-closed identically: if
+ * ASSISTANT_ADMIN_TOKEN is absent on the server the proxy returns 503 and the
+ * canonical Blocked: block is rendered. There is NO new authority — the
+ * single endpoint /admin/governance/mode handles both freeze (mode=FROZEN)
+ * and restore (mode=NORMAL).
+ */
+export async function restoreSystem(): Promise<{ ok: boolean; message: string }> {
+  if (!FREEZE_CONTROL.available) {
+    return {
+      ok: false,
+      message: FREEZE_CONTROL.message,
+    }
+  }
+
+  try {
+    const res = await fetch(FREEZE_CONTROL.restoreEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      signal: AbortSignal.timeout(15000),
+    })
+
+    const json = (await res.json().catch(
+      () => ({ ok: false, error: `HTTP ${res.status}` }),
+    )) as Record<string, unknown>
+
+    if (!res.ok || json.ok === false) {
+      return {
+        ok: false,
+        message: formatBlockedMessage(json, `Restore failed (${res.status})`),
+      }
+    }
+
+    return {
+      ok: true,
+      message: typeof json.message === 'string' ? json.message : 'System restored to NORMAL',
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : 'Restore request failed',
+    }
+  }
+}
+
+/**
  * POST /api/system/freeze — calls the authenticated Next.js proxy which forwards
  * to POST /admin/governance/mode on the webhook server with mode=FROZEN.
  * Fails-closed if FREEZE_CONTROL.available is false (or if ASSISTANT_ADMIN_TOKEN
@@ -225,18 +318,20 @@ export async function freezeSystem(): Promise<{ ok: boolean; message: string }> 
       signal: AbortSignal.timeout(15000),
     })
 
-    const json = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }))
+    const json = (await res.json().catch(
+      () => ({ ok: false, error: `HTTP ${res.status}` }),
+    )) as Record<string, unknown>
 
-    if (!res.ok || !json.ok) {
+    if (!res.ok || json.ok === false) {
       return {
         ok: false,
-        message: json.error ?? json.message ?? `Freeze failed (${res.status})`,
+        message: formatBlockedMessage(json, `Freeze failed (${res.status})`),
       }
     }
 
     return {
       ok: true,
-      message: json.message ?? 'System freeze initiated',
+      message: typeof json.message === 'string' ? json.message : 'System freeze initiated',
     }
   } catch (err) {
     return {
