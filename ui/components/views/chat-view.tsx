@@ -682,6 +682,24 @@ function AssistantMessage({ msg, onAction, onPlanExecute, isSending }: Assistant
   const isHandled = msg.handled === true
   const isDisabled = isSending || isHandled
 
+  // ALFA-FLIGHT-01.6 — Domain badge surfaces operational metadata (e.g. "ENERGY ·
+  // COMMAND") that is only meaningful when the response is associated with an
+  // actual executive flow. Showing it on pure conversational replies surfaces
+  // misleading classifier artefacts (the user complaint that triggered 01.6).
+  // We only render the domain/intent badge when the message also carries one of:
+  //   - a plan (something to execute or confirm)
+  //   - uiActions (confirm/select/form)
+  //   - confirmation request kind
+  //   - a governance decision other than ALLOW (BLOCK / REQUIRE_CONFIRMATION /
+  //     DEGRADED — these are operationally meaningful)
+  // For ALLOW-with-no-plan responses (i.e. conversation), the badge is hidden.
+  const hasPlan       = Array.isArray(msg.plan) && msg.plan.length > 0
+  const hasActions    = Array.isArray(msg.uiActions) && msg.uiActions.length > 0
+  const hasGovBlock   = msg.governanceTrace != null
+                     && msg.governanceTrace.decision !== 'ALLOW'
+  const isExecutiveResponse = hasPlan || hasActions || isConfirmationRequest || hasGovBlock
+  const showDomainMeta = isExecutiveResponse && msg.meta?.domain != null
+
   return (
     <div className="flex justify-start items-start gap-2">
       <div className="w-6 h-6 rounded-full bg-os-elevated border border-os-border flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -694,7 +712,7 @@ function AssistantMessage({ msg, onAction, onPlanExecute, isSending }: Assistant
           : 'bg-os-surface border border-os-border'
         }
       `}>
-        {msg.meta?.domain && (
+        {showDomainMeta && msg.meta?.domain && (
           <div className="flex items-center gap-1.5 mb-1.5">
             <span className={`text-[9px] font-mono uppercase tracking-widest ${DOMAIN_BADGE_COLORS[msg.meta.domain] ?? 'text-tx-muted'}`}>
               {msg.meta.domain}

@@ -27,14 +27,95 @@ const CAPABILITY_ALIASES: Record<string, string> = {
   read:       'browser.read_visible_text',
 }
 
-const HELP_TEXT = `Machine Operator — browser capabilities
+// Static portion of the help text. The dynamic state line (registered /
+// available / restricted) is prepended at help time after we query the live
+// backend registry. We never fake registration state — if the registry is
+// unreachable we say so rather than print a stale "registered: yes".
+const HELP_TEXT_STATIC = `Machine Operator — browser capabilities
 ────────────────────────────────────────
-browser.snapshot              DOM snapshot of the current page
-browser.screenshot            Screenshot of the current page
-browser.read_visible_text     Readable text from the current page
-browser.navigate <url>        Navigate to URL
+browser.snapshot              DOM snapshot of the current page                 [read-only]
+browser.screenshot            Screenshot of the current page                   [read-only]
+browser.read_visible_text     Readable text from the current page              [read-only]
+browser.navigate <url>        Navigate to URL                                  [requires approval]
 
-Aliases: snapshot, screenshot, read, navigate`
+Aliases: snapshot, screenshot, read, navigate
+
+execution_status legend
+  real         capability ran against the real backend
+  unavailable  capability could not run (gateway down, missing config, blocked)
+  stub         placeholder result; no real action took place
+  partial      partial result (e.g. timeout mid-run)`
+
+interface RegistryAgent {
+  id?: string
+  name?: string
+  status?: string
+  capabilities?: unknown
+  requires_authority?: boolean
+  requires_review?: boolean
+}
+
+/**
+ * Fetch live Machine Operator state from the backend registry via the
+ * /api/agents/registry proxy. Returns a multi-line block describing
+ * registration status, capability count, and restriction reason. On any
+ * failure path (network, non-ok payload) we say so explicitly — never lie
+ * about registration state.
+ */
+async function buildLiveStatusBlock(): Promise<string> {
+  try {
+    const res = await fetch('/api/agents/registry', { cache: 'no-store' })
+    const data = (await res.json()) as { ok?: boolean; agents?: RegistryAgent[]; error?: string }
+    if (!res.ok || data.ok === false) {
+      const reason = typeof data.error === 'string' ? data.error : `HTTP ${res.status}`
+      return [
+        'Machine Operator state — UNKNOWN',
+        `  reason: registry unreachable (${reason})`,
+        '  registered: unknown',
+        '  capabilities: unknown',
+      ].join('\n')
+    }
+    const agents = Array.isArray(data.agents) ? data.agents : []
+    const mo = agents.find(a => a?.id === 'machine_operator')
+    if (!mo) {
+      return [
+        'Machine Operator state — NOT REGISTERED',
+        '  registered: no',
+        '  reason: agent id "machine_operator" missing from /agents/registry response',
+      ].join('\n')
+    }
+    const capList = Array.isArray(mo.capabilities)
+      ? (mo.capabilities as unknown[]).filter(c => typeof c === 'string') as string[]
+      : []
+    const status = typeof mo.status === 'string' ? mo.status : 'unknown'
+    const requiresAuthority = mo.requires_authority === true
+    const requiresReview    = mo.requires_review === true
+    const lines = [
+      `Machine Operator state — ${status.toUpperCase()}`,
+      `  registered: yes (id=machine_operator)`,
+      `  capabilities (${capList.length}): ${capList.length > 0 ? capList.join(', ') : '—'}`,
+    ]
+    if (requiresAuthority) lines.push('  authority: required for write capabilities')
+    if (requiresReview)    lines.push('  review: required after execution')
+    if (status !== 'available' && status !== 'active' && status !== 'ok') {
+      lines.push(`  restriction: status="${status}" — capability gating in effect`)
+    }
+    return lines.join('\n')
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return [
+      'Machine Operator state — UNKNOWN',
+      `  reason: registry fetch failed (${msg})`,
+      '  registered: unknown',
+      '  capabilities: unknown',
+    ].join('\n')
+  }
+}
+
+async function buildHelpText(): Promise<string> {
+  const live = await buildLiveStatusBlock()
+  return `${live}\n\n${HELP_TEXT_STATIC}`
+}
 
 const EXECUTION_STATUSES: ExecutionStatus[] = ['real', 'stub', 'unavailable', 'partial']
 
@@ -76,9 +157,14 @@ export async function executeAgentCommand(
 ): Promise<AgentCommandResponse> {
   const cmd = request.command.trim()
 
-  // Local meta-commands — not fake execution, just UI help
+  // Local meta-commands — not fake execution, just UI help.
+  // The help block now leads with live registry state (registered, capabilities,
+  // restriction reason) fetched from /api/agents/registry, then lists the
+  // static capability table with approval markers. Never fake registration:
+  // if the registry is unreachable, the live block says UNKNOWN explicitly.
   if (!cmd || cmd === 'help') {
-    return { ok: true, output: HELP_TEXT, status: 'completed' }
+    const output = await buildHelpText()
+    return { ok: true, output, status: 'completed' }
   }
 
   // Parse: first token is capability/alias; remainder is inline argument
