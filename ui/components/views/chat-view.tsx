@@ -5,8 +5,15 @@ import React, {
   KeyboardEvent, Fragment,
   type ReactNode,
 } from 'react'
-import { ChatApiError, sendChatMessage, apiSearchMessages } from '@/lib/api'
+import {
+  ChatApiError,
+  sendChatMessage,
+  apiSearchMessages,
+  formatBlockedMessage,
+  redirectsForSurface,
+} from '@/lib/api'
 import type { MessageSearchResult }           from '@/lib/api'
+import { RedirectActions } from '@/components/sovereign/RedirectActions'
 import { useUIStore }             from '@/stores/ui-store'
 import { useChatSessionsStore }   from '@/stores/chat-sessions-store'
 import type { ChatSession }       from '@/lib/chat-sessions'
@@ -19,6 +26,7 @@ import type {
   GovernanceTrace,
   ExecutionStatus,
   ExecutionStatusSource,
+  DecisionSource,
 } from '@/lib/types'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -734,6 +742,23 @@ function AssistantMessage({ msg, onAction, onPlanExecute, isSending }: Assistant
           </div>
         )}
 
+        {/* ALFA-FLIGHT-02 §5 — optional traceability badges (decision_source,
+            confidence_score). Only render when present; never inferred. */}
+        {(msg.decisionSource || typeof msg.confidenceScore === 'number') && (
+          <div className="mt-2 flex items-center gap-2 flex-wrap">
+            {msg.decisionSource && (
+              <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider bg-slate-500/10 text-slate-300 border-slate-500/25">
+                source: {msg.decisionSource}
+              </span>
+            )}
+            {typeof msg.confidenceScore === 'number' && (
+              <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider bg-slate-500/10 text-slate-300 border-slate-500/25">
+                confidence: {msg.confidenceScore.toFixed(2)}
+              </span>
+            )}
+          </div>
+        )}
+
         {msg.plan && msg.plan.length > 0 && (
           <PlanPanel
             items={msg.plan}
@@ -754,6 +779,26 @@ function AssistantMessage({ msg, onAction, onPlanExecute, isSending }: Assistant
         {msg.governanceTrace && (
           <GovernanceBadge trace={msg.governanceTrace} />
         )}
+
+        {/* ALFA-FLIGHT-02 §3 — Redirect chips when the message is in error,
+            unavailable, or blocked (governance non-ALLOW). The chat surface
+            stays informational; redirects navigate to MSO or Machine
+            Operator, where authority decisions actually happen. */}
+        {(() => {
+          const isErrored = msg.status === 'error'
+          const isUnavailable = msg.executionStatus === 'unavailable'
+          const govBlocked = msg.governanceTrace != null && msg.governanceTrace.decision !== 'ALLOW'
+          const offerRedirect = isErrored || isUnavailable || govBlocked
+          if (!offerRedirect) return null
+          const options = redirectsForSurface('chat')
+          return (
+            <RedirectActions
+              options={options}
+              originalText={undefined}
+              variant="compact"
+            />
+          )
+        })()}
       </div>
     </div>
   )
@@ -1509,10 +1554,35 @@ export function ChatView() {
         ? (res.plan as PlanItem[])
         : undefined
 
+      // ALFA-FLIGHT-02 §4 — Guaranteed response.
+      // If the backend returned no message but the response was technically
+      // ok, do not silently render "(sin respuesta)". Render an honest
+      // canonical block that orients the operator to the next step.
+      const fallbackBlock = formatBlockedMessage(
+        {
+          domain:     'CHAT',
+          action:     'response.empty',
+          reason:     'Backend returned ok=true but no message body.',
+          suggestion: 'Try rephrasing, or escalate to MSO Direct or Machine Operator.',
+        },
+        '(sin respuesta)',
+      )
+      const content =
+        typeof res.message === 'string' && res.message.trim().length > 0
+          ? res.message
+          : fallbackBlock
+
+      const decisionSource = (res.decision_source === 'llm' || res.decision_source === 'rule' || res.decision_source === 'hybrid')
+        ? (res.decision_source as DecisionSource)
+        : undefined
+      const confidenceScore = typeof res.confidence_score === 'number' && Number.isFinite(res.confidence_score)
+        ? res.confidence_score
+        : undefined
+
       const assistantMsg: ChatMessage = {
         id:        loadingId,
         role:      'assistant',
-        content:   res.message ?? '(sin respuesta)',
+        content,
         status:    'sent',
         createdAt: new Date().toISOString(),
         uiActions: uiActions.length > 0 ? uiActions : undefined,
@@ -1529,6 +1599,9 @@ export function ChatView() {
         governanceTrace: res.governance_trace,
         executionStatus: res.execution_status,
         executionStatusSource: res.execution_status_source,
+        // ALFA-FLIGHT-02 §5 — optional traceability passthrough.
+        decisionSource,
+        confidenceScore,
       }
 
       setMessages(prev => prev.map(m => m.id === loadingId ? assistantMsg : m))
@@ -1537,11 +1610,28 @@ export function ChatView() {
     } catch (err) {
       // Store params so the user can retry with the same message
       lastFailedRef.current = { loadingId, userMsgId, params }
-      const errMsg = err instanceof Error ? err.message : String(err)
+      const rawErr = err instanceof Error ? err.message : String(err)
       const executionStatus = err instanceof ChatApiError ? err.executionStatus : 'unavailable'
       const executionStatusSource = err instanceof ChatApiError ? err.executionStatusSource : 'ui_fallback'
+
+      // ALFA-FLIGHT-02 §4 — Guaranteed response on the error path too.
+      // Wrap raw transport errors in the canonical Blocked: block so the
+      // operator gets domain/action/reason/suggestion and a redirect, not
+      // a bare exception string.
+      const errContent = formatBlockedMessage(
+        {
+          domain:     'CHAT',
+          action:     'response.error',
+          reason:     rawErr,
+          suggestion: 'Retry, or escalate to MSO Direct or Machine Operator.',
+        },
+        rawErr,
+      )
+
       setMessages(prev => prev.map(m =>
-        m.id === loadingId ? { ...m, status: 'error', content: errMsg, executionStatus, executionStatusSource } : m,
+        m.id === loadingId
+          ? { ...m, status: 'error', content: errContent, executionStatus, executionStatusSource }
+          : m,
       ))
     } finally {
       setIsSending(false)

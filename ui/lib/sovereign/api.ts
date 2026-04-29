@@ -79,6 +79,13 @@ export async function sendSovereignMessage(
       authority_artifact: data.authority_artifact,
       pending_confirmation: data.pending_confirmation,
       confirmation: data.confirmation,
+      // ALFA-FLIGHT-02 §5 — optional traceability passthrough. Absent in
+      // backend response → absent here. Never inferred.
+      decision_source: typeof data.decision_source === 'string' &&
+                       (data.decision_source === 'llm' || data.decision_source === 'rule' || data.decision_source === 'hybrid')
+        ? data.decision_source : undefined,
+      confidence_score: typeof data.confidence_score === 'number' && Number.isFinite(data.confidence_score)
+        ? data.confidence_score : undefined,
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Network error'

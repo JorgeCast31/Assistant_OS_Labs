@@ -17,6 +17,13 @@ export type SystemHealth = 'healthy' | 'degraded' | 'unavailable'
 export type ExecutionStatus = 'real' | 'stub' | 'unavailable' | 'partial'
 export type ExecutionStatusSource = 'backend' | 'ui_fallback'
 
+/**
+ * ALFA-FLIGHT-02 §5 — optional traceability for assistant decisions.
+ * Absence is never inferred as a value; renderers hide the badge when
+ * missing.
+ */
+export type DecisionSource = 'llm' | 'rule' | 'hybrid'
+
 // ── Surface Types (for API routing) ───────────────────────────────────────────
 
 export type SurfaceType = 'system_chat' | 'mso_direct' | 'agent_command'
@@ -41,6 +48,11 @@ export interface SovereignMessage {
   policyDecision?: PolicyDecision
   authorityArtifact?: AuthorityArtifact
   pendingConfirmation?: PendingConfirmation
+  // ALFA-FLIGHT-02 §5 — optional traceability badge data.
+  decisionSource?: DecisionSource
+  confidenceScore?: number
+  // ALFA-FLIGHT-02 §3 — when present, render redirect chips below the message.
+  redirectTargets?: ('mso' | 'machine_operator')[]
 }
 
 export interface GovernanceTrace {
@@ -144,6 +156,9 @@ export interface SovereignChatResponse {
   authority_artifact?: AuthorityArtifact
   pending_confirmation?: PendingConfirmation
   confirmation?: ConfirmationResult
+  // ALFA-FLIGHT-02 §5 — optional traceability. Absent = no signal.
+  decision_source?: DecisionSource
+  confidence_score?: number
 }
 
 export interface PolicyDecision {

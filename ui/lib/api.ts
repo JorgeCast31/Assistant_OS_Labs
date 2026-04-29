@@ -220,10 +220,11 @@ export async function getSystemState(): Promise<{ mode: OperationalMode; events:
  * Falls back to the raw error/message when no structured fields are present, so
  * the UI never silently drops a backend error.
  *
- * (Re-introduced in 01.6 because the 01.5 definition was reverted on this
- * working tree — see ALFA_FLIGHT_01_6_REPORT.md §Hallazgos.)
+ * Exported in 02 so every surface (chat-view error path, MSO Direct error
+ * path, System Chat informational guard, freeze/restore controls) renders
+ * blocks identically — no per-surface drift.
  */
-function formatBlockedMessage(payload: Record<string, unknown>, fallback: string): string {
+export function formatBlockedMessage(payload: Record<string, unknown>, fallback: string): string {
   const domain     = typeof payload.domain     === 'string' ? payload.domain     : null
   const action     = typeof payload.action     === 'string' ? payload.action     : null
   const reason     = typeof payload.reason     === 'string' ? payload.reason     : null
@@ -244,6 +245,59 @@ function formatBlockedMessage(payload: Record<string, unknown>, fallback: string
   if (suggestion) lines.push(`  suggestion=${suggestion}`)
   if (errorText)  lines.push('', errorText)
   return lines.join('\n')
+}
+
+/**
+ * Redirect target catalog. Surface names follow the sovereign-store viewIds.
+ * Mapped to operator-facing labels here so every surface speaks the same
+ * vocabulary when offering an alternative path.
+ */
+export type RedirectTarget = 'mso' | 'machine_operator'
+
+export interface RedirectOption {
+  target: RedirectTarget
+  label:  string
+  hint:   string
+}
+
+/**
+ * Decide which redirect targets to offer for a blocked / informational
+ * response. The decision is intentionally simple and rule-based — no
+ * classifier, no model — so a "what should I do next?" question always
+ * has a deterministic, auditable answer.
+ *
+ *   - If the source surface is informational (System Chat, Chat principal),
+ *     offer both Plan (MSO) and Execute (Machine Operator). The operator
+ *     picks intent.
+ *   - If the source surface is MSO and we are blocking, offer Machine
+ *     Operator only — MSO already owns planning.
+ *   - If the source surface is Machine Operator, offer MSO only — MO
+ *     does not plan.
+ *
+ * The catalog is always non-empty: every block carries at least one
+ * actionable next step. This is the §3 / §4 invariant from the brief
+ * ("Nunca silencio ni bloqueo plano").
+ */
+export function redirectsForSurface(
+  surface: 'chat' | 'system_chat' | 'mso' | 'machine_operator',
+): RedirectOption[] {
+  switch (surface) {
+    case 'mso':
+      return [
+        { target: 'machine_operator', label: 'Ejecutar con Machine Operator', hint: 'Operational lane (real execution)' },
+      ]
+    case 'machine_operator':
+      return [
+        { target: 'mso',              label: 'Planificar con MSO',           hint: 'Sovereign planning + confirmation' },
+      ]
+    case 'chat':
+    case 'system_chat':
+    default:
+      return [
+        { target: 'mso',              label: 'Planificar con MSO',           hint: 'Sovereign planning + confirmation' },
+        { target: 'machine_operator', label: 'Ejecutar con Machine Operator', hint: 'Operational lane (real execution)' },
+      ]
+  }
 }
 
 /**

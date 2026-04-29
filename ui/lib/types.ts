@@ -224,6 +224,9 @@ export interface ChatMessage {
   /** Backend truthfulness signal for operational visibility. */
   executionStatus?: ExecutionStatus
   executionStatusSource?: ExecutionStatusSource
+  /** ALFA-FLIGHT-02 §5 — optional traceability surfaced as a subtle badge. */
+  decisionSource?: DecisionSource
+  confidenceScore?: number
 }
 
 export interface SendChatRequest {
@@ -241,6 +244,22 @@ export interface SendChatRequest {
   /** M17: backend session id for persistent history. */
   session_id?: string
 }
+
+/**
+ * Lightweight traceability — ALFA-FLIGHT-02 §5.
+ *
+ * decision_source: where the assistant message came from. "rule" means a
+ * deterministic backend handler answered; "llm" means a generative model
+ * shaped the reply; "hybrid" means classifier + rule pipeline.
+ *
+ * confidence_score: 0..1, only populated when the backend is willing to
+ * commit to a number. Renderers must treat absence as "no signal" — never
+ * fabricate a confidence.
+ *
+ * Both fields are OPTIONAL. The UI MUST work when they are missing —
+ * absence is never inferred as a value.
+ */
+export type DecisionSource = 'llm' | 'rule' | 'hybrid'
 
 export interface SendChatResponse {
   ok: boolean
@@ -263,6 +282,9 @@ export interface SendChatResponse {
   execution_status_source?: ExecutionStatusSource
   /** MSO governance trace — Phase 0 governance visibility */
   governance_trace?: GovernanceTrace
+  /** ALFA-FLIGHT-02 §5 — optional traceability. Absent = no signal. */
+  decision_source?: DecisionSource
+  confidence_score?: number
 }
 
 // ── System ───────────────────────────────────────────────────────────────────

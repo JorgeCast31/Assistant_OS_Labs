@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, KeyboardEvent, Fragment } from 'react'
 import { useSovereignStore } from '@/stores/sovereign-store'
 import { sendSovereignMessage, sendMSOConfirmation } from '@/lib/sovereign/api'
+import { formatBlockedMessage } from '@/lib/api'
 import { PlanCard } from './PlanCard'
 import { ConfirmationCard } from './ConfirmationCard'
 import { AuthorityBadge } from './AuthorityBadge'
@@ -183,7 +184,23 @@ function MessageBubble({ message, onConfirm, onCancel, isLatest }: MessageBubble
               <ExecutionStatusBadge status={message.executionStatus} source={message.executionStatusSource} />
             </div>
           )}
-          
+
+          {/* ALFA-FLIGHT-02 §5 — optional decision-source / confidence badges */}
+          {!isUser && (message.decisionSource || typeof message.confidenceScore === 'number') && (
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              {message.decisionSource && (
+                <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider bg-slate-500/10 text-slate-300 border-slate-500/25">
+                  source: {message.decisionSource}
+                </span>
+              )}
+              {typeof message.confidenceScore === 'number' && (
+                <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider bg-slate-500/10 text-slate-300 border-slate-500/25">
+                  confidence: {message.confidenceScore.toFixed(2)}
+                </span>
+              )}
+            </div>
+          )}
+
           {/* Execution Mode Badge */}
           {message.executionMode && (
             <div className="mt-2">
@@ -328,11 +345,37 @@ export function MSOView() {
     // Send to API
     const response = await sendSovereignMessage(text, 'mso_direct')
 
-    // Add assistant response with all extended fields
+    // ALFA-FLIGHT-02 §4 — Guaranteed response, even on error.
+    // Wrap raw errors in the canonical Blocked: block so the operator
+    // gets domain/action/reason/suggestion instead of a bare string.
+    const content = response.ok
+      ? (response.message && response.message.trim().length > 0
+          ? response.message
+          : formatBlockedMessage(
+              {
+                domain:     'MSO',
+                action:     'response.empty',
+                reason:     'Backend returned ok=true but no message body.',
+                suggestion: 'Try rephrasing the request or check governance trace.',
+              },
+              '(sin respuesta)',
+            ))
+      : formatBlockedMessage(
+          {
+            domain:     'MSO',
+            action:     'response.error',
+            reason:     response.error ?? 'Unknown error from MSO surface.',
+            suggestion: 'Retry, or escalate via Machine Operator if this persists.',
+          },
+          response.error ?? 'Unknown error',
+        )
+
+    // Add assistant response with all extended fields.
+    // ALFA-FLIGHT-02 §5 — passthrough optional traceability.
     const assistantMsg: SovereignMessage = {
       id: genId(),
       role: 'assistant',
-      content: response.ok ? response.message : `Error: ${response.error}`,
+      content,
       timestamp: new Date().toISOString(),
       surface: 'mso_direct',
       plan: response.plan as MSOPlanItem[] | undefined,
@@ -346,6 +389,8 @@ export function MSOView() {
       pendingConfirmation: response.pending_confirmation,
       executionStatus: response.execution_status,
       executionStatusSource: response.execution_status_source,
+      decisionSource: response.decision_source,
+      confidenceScore: response.confidence_score,
     }
     addMSOMessage(assistantMsg)
 
@@ -375,16 +420,31 @@ export function MSOView() {
       lastDecision: new Date().toISOString(),
     })
 
-    // Add result message
+    // Add result message — canonical block on failure (ALFA-FLIGHT-02 §4).
+    const resultContent = response.ok
+      ? (response.message && response.message.trim().length > 0
+          ? response.message
+          : 'Execution completed (no further detail from backend).')
+      : formatBlockedMessage(
+          {
+            domain:     'MSO',
+            action:     'execution.failed',
+            reason:     response.error ?? 'Backend returned ok=false on confirm.',
+            suggestion: 'Re-issue the plan or escalate via Machine Operator.',
+          },
+          `Execution failed: ${response.error ?? 'unknown'}`,
+        )
     const resultMsg: SovereignMessage = {
       id: genId(),
       role: 'assistant',
-      content: response.ok ? response.message : `Execution failed: ${response.error}`,
+      content: resultContent,
       timestamp: new Date().toISOString(),
       surface: 'mso_direct',
       executionState: response.ok ? 'completed' : 'failed',
       executionStatus: response.execution_status,
       executionStatusSource: response.execution_status_source,
+      decisionSource: response.decision_source,
+      confidenceScore: response.confidence_score,
     }
     addMSOMessage(resultMsg)
   }

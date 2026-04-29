@@ -3,6 +3,8 @@
 import { useState, useRef, useEffect, KeyboardEvent, Fragment } from 'react'
 import { useSovereignStore } from '@/stores/sovereign-store'
 import { sendSovereignMessage } from '@/lib/sovereign/api'
+import { redirectsForSurface } from '@/lib/api'
+import { RedirectActions } from './RedirectActions'
 import type { SovereignMessage, ExecutionStatus, ExecutionStatusSource } from '@/lib/sovereign/types'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -143,11 +145,22 @@ function RichText({ content }: { content: string }) {
 
 interface MessageBubbleProps {
   message: SovereignMessage
+  /**
+   * Original operator text — captured at send time and passed through so
+   * RedirectActions can stash it for the destination surface to pre-load.
+   * Optional: when undefined, the redirect still navigates but does not
+   * pre-fill anything.
+   */
+  originalText?: string
 }
 
-function MessageBubble({ message }: MessageBubbleProps) {
+function MessageBubble({ message, originalText }: MessageBubbleProps) {
   const isUser = message.role === 'user'
-  
+  const targets = message.redirectTargets ?? []
+  const redirectOptions = targets.length > 0
+    ? redirectsForSurface('system_chat').filter(o => targets.includes(o.target))
+    : []
+
   return (
     <div className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
       {!isUser && (
@@ -155,11 +168,11 @@ function MessageBubble({ message }: MessageBubbleProps) {
           <span className="text-teal-400 text-[10px] font-mono font-bold">S</span>
         </div>
       )}
-      
+
       <div className={`
         max-w-[75%] px-4 py-3 rounded-xl
-        ${isUser 
-          ? 'bg-teal-500/10 border border-teal-500/20 text-tx-primary' 
+        ${isUser
+          ? 'bg-teal-500/10 border border-teal-500/20 text-tx-primary'
           : 'bg-os-elevated border border-os-border text-tx-primary'
         }
       `}>
@@ -169,7 +182,35 @@ function MessageBubble({ message }: MessageBubbleProps) {
             <ExecutionStatusBadge status={message.executionStatus} source={message.executionStatusSource} />
           </div>
         )}
-        
+
+        {/* ALFA-FLIGHT-02 §5 — optional decision-source / confidence badge.
+            Only renders when the backend sent the field. Never inferred. */}
+        {!isUser && (message.decisionSource || typeof message.confidenceScore === 'number') && (
+          <div className="mt-2 flex items-center gap-2 flex-wrap">
+            {message.decisionSource && (
+              <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider bg-slate-500/10 text-slate-300 border-slate-500/25">
+                source: {message.decisionSource}
+              </span>
+            )}
+            {typeof message.confidenceScore === 'number' && (
+              <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider bg-slate-500/10 text-slate-300 border-slate-500/25">
+                confidence: {message.confidenceScore.toFixed(2)}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* ALFA-FLIGHT-02 §3 — actionable next step when the surface blocked
+            or is informational-only. RedirectActions handles store mutation
+            and view navigation; this surface stays informational. */}
+        {!isUser && redirectOptions.length > 0 && (
+          <RedirectActions
+            options={redirectOptions}
+            originalText={originalText}
+            variant="compact"
+          />
+        )}
+
         {/* Timestamp */}
         <div className="mt-2 pt-1.5 border-t border-os-border/50">
           <span className="text-[9px] font-mono text-tx-muted">
@@ -181,7 +222,7 @@ function MessageBubble({ message }: MessageBubbleProps) {
           </span>
         </div>
       </div>
-      
+
       {isUser && (
         <div className="w-7 h-7 rounded-lg bg-slate-600/30 border border-slate-500/30 flex items-center justify-center flex-shrink-0">
           <span className="text-slate-400 text-[10px] font-mono">U</span>
@@ -250,8 +291,11 @@ export function SystemChatView() {
     const isExecutiveResponse = hasPlan || needsConfirm || hasExecMode || govNonAllow
 
     let content: string
+    let redirectTargets: ('mso' | 'machine_operator')[] | undefined
     if (!response.ok) {
       content = `Error: ${response.error ?? 'unknown error'}`
+      // Even on error, offer a path forward — never silence.
+      redirectTargets = ['mso', 'machine_operator']
     } else if (isExecutiveResponse) {
       content =
         'Blocked:\n' +
@@ -259,6 +303,7 @@ export function SystemChatView() {
         '  action=surface.system_chat.executive_intent\n' +
         '  reason=System Chat is the informational layer; it does not render plans or confirmations.\n' +
         '  suggestion=Switch to MSO Direct or Machine Operator to issue an executive request.'
+      redirectTargets = ['mso', 'machine_operator']
     } else {
       content = response.message
     }
@@ -267,6 +312,9 @@ export function SystemChatView() {
     // We intentionally drop plan / executionMode / pendingConfirmation here
     // — System Chat does not render those. governanceTrace and
     // executionStatus stay so the operator still sees backend honesty.
+    // ALFA-FLIGHT-02 §3 — when a redirect is offered, attach the targets
+    // to the message so the bubble renders RedirectActions chips beneath.
+    // ALFA-FLIGHT-02 §5 — passthrough optional traceability if backend sent it.
     const assistantMsg: SovereignMessage = {
       id: genId(),
       role: 'assistant',
@@ -276,6 +324,9 @@ export function SystemChatView() {
       governanceTrace: response.governance_trace,
       executionStatus: response.execution_status,
       executionStatusSource: response.execution_status_source,
+      decisionSource: response.decision_source,
+      confidenceScore: response.confidence_score,
+      redirectTargets,
     }
     addSystemChatMessage(assistantMsg)
 
@@ -330,9 +381,21 @@ export function SystemChatView() {
           </div>
         )}
 
-        {systemChatMessages.map((msg) => (
-          <MessageBubble key={msg.id} message={msg} />
-        ))}
+        {systemChatMessages.map((msg: SovereignMessage, idx: number) => {
+          // For assistant messages with redirect chips, surface the original
+          // user input so the destination surface can pre-fill its composer.
+          // We walk backward to the closest user message.
+          let originalText: string | undefined
+          if (msg.role === 'assistant' && (msg.redirectTargets?.length ?? 0) > 0) {
+            for (let i = idx - 1; i >= 0; i--) {
+              if (systemChatMessages[i].role === 'user') {
+                originalText = systemChatMessages[i].content
+                break
+              }
+            }
+          }
+          return <MessageBubble key={msg.id} message={msg} originalText={originalText} />
+        })}
 
         {isLoading && (
           <div className="flex gap-3 justify-start">
