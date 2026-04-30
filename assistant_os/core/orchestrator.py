@@ -284,6 +284,40 @@ def _attach_governance_result_metadata(result: DomainResult, governance_trace: d
     return result
 
 
+def _safe_compute_enrichment(req: dict, intent: dict) -> "dict | None":
+    """Compute RouteDecision enrichment without affecting the execution path.
+
+    Fail-quiet: if compute_enrichment raises for any reason, returns None
+    so the caller can proceed without route_decision.
+    """
+    try:
+        from .enrichment import compute_enrichment
+        return compute_enrichment(req, intent)
+    except Exception as exc:
+        _log.debug("route_decision enrichment failed non-fatally: %s", exc)
+        return None
+
+
+def _attach_route_decision_data(result: DomainResult, route_decision: "dict | None") -> None:
+    """Attach route_decision to result.data["route_decision"] non-fatally.
+
+    Mutates result["data"] in place. Never raises — any failure is logged and
+    ignored. Must be called only AFTER the pipeline result has been built so
+    that it does not influence any execution decision.
+    """
+    if not route_decision:
+        return
+    try:
+        data = result.get("data")
+        if isinstance(data, dict):
+            data["route_decision"] = route_decision
+        elif data is None:
+            result["data"] = {"route_decision": route_decision}
+        # If data is a non-dict (unexpected), skip silently.
+    except Exception as exc:
+        _log.debug("_attach_route_decision_data failed non-fatally: %s", exc)
+
+
 def _is_cognitive_execution(plan: dict) -> bool:
     return plan.get("action") == ACTION_BASIC_COGNITIVE_EXECUTION
 
@@ -351,6 +385,7 @@ def _publish_mso_observation(
     governance_trace: dict | None,
     result: DomainResult,
     executed: bool,
+    route_decision: "dict | None" = None,
 ) -> DomainResult:
     """Publish additive MSO state without affecting canonical execution."""
     try:
@@ -472,6 +507,11 @@ def _publish_mso_observation(
         # This is additive and non-breaking — only set when advisory was consulted.
         if advisory_trace:
             _inject_cognitive_trace(result, advisory_trace)
+
+        # S-K18: Attach non-authoritative RouteDecision enrichment signal.
+        # Must be last — route_decision is a read-only signal and must never
+        # influence any field set above (execution_mode, governance, etc.).
+        _attach_route_decision_data(result, route_decision)
 
         return result
     except Exception as exc:
@@ -678,6 +718,8 @@ def handle_request(
             "confidence": 1.0,
             "reason": "structured_path",
         }
+        # S-K18: Compute non-authoritative enrichment signal. Fail-quiet.
+        route_decision = _safe_compute_enrichment(req, structured_intent)
         policy = build_policy(req, structured_intent, structured_plan)
         policy_execution_mode = policy.get("execution_mode", EXECUTION_MODE_AUTO)
         execution_mode = policy_execution_mode
@@ -722,6 +764,7 @@ def handle_request(
                     governance_trace=governance_trace,
                     result=result,
                     executed=True,
+                    route_decision=route_decision,
                 )
             pipeline = get_pipeline(derived_domain)
             if pipeline:
@@ -736,6 +779,7 @@ def handle_request(
                     governance_trace=governance_trace,
                     result=result,
                     executed=True,
+                    route_decision=route_decision,
                 )
 
         if execution_mode in (EXECUTION_MODE_CONFIRM, EXECUTION_MODE_CLARIFY):
@@ -772,6 +816,7 @@ def handle_request(
                 governance_trace=governance_trace,
                 result=result,
                 executed=False,
+                route_decision=route_decision,
             )
 
         domain = structured_plan.get("domain", "UNKNOWN")
@@ -805,6 +850,7 @@ def handle_request(
             governance_trace=governance_trace,
             result=result,
             executed=False,
+            route_decision=route_decision,
         )
 
     # ---------------------------------------------------------------------------
@@ -815,6 +861,8 @@ def handle_request(
 
     # Stage 1 — Semantic: classify text and apply routing hint.
     intent = classify(req, forced_operation)
+    # S-K18: Compute non-authoritative enrichment signal. Fail-quiet.
+    route_decision = _safe_compute_enrichment(req, intent)
 
     # Stage 2 — Planning: build structural ExecutionPlan.
     plan = build_plan(req, intent)
@@ -871,6 +919,7 @@ def handle_request(
                 governance_trace=governance_trace,
                 result=result,
                 executed=True,
+                route_decision=route_decision,
             )
         pipeline = get_pipeline(action_domain(action))
         if pipeline:
@@ -885,6 +934,7 @@ def handle_request(
                 governance_trace=governance_trace,
                 result=result,
                 executed=True,
+                route_decision=route_decision,
             )
         # Defensive: whitelisted action but no registered pipeline → fall through.
 
@@ -925,6 +975,7 @@ def handle_request(
             governance_trace=governance_trace,
             result=result,
             executed=False,
+            route_decision=route_decision,
         )
 
     # execution_mode == "blocked" (or auto with no pipeline): unregistered domain
@@ -968,6 +1019,7 @@ def handle_request(
         governance_trace=governance_trace,
         result=result,
         executed=False,
+        route_decision=route_decision,
     )
 
 
