@@ -16,6 +16,7 @@ H. make_domain_result — accepts and passes through execution_status
 from __future__ import annotations
 
 import io
+import tempfile
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -190,7 +191,7 @@ class TestCodePipelineStubStatus:
             "action": action,
             "target_file": "test_file.py",
             "code_context": "def foo(): pass",
-            "workspace": "/tmp",
+            "workspace": tempfile.gettempdir(),
         }
         return plan
 
@@ -263,7 +264,7 @@ class TestCodePipelineLiveStatus:
             "action": action,
             "target_file": "test_file.py",
             "code_context": "def foo(): pass",
-            "workspace": "/tmp",
+            "workspace": tempfile.gettempdir(),
         }
         return plan
 

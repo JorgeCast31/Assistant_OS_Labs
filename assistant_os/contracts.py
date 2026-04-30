@@ -996,3 +996,91 @@ def build_policy_decision(
     }
     return pd
 
+
+# ---------------------------------------------------------------------------
+# RouteDecision v1
+#
+# Non-authoritative enrichment artifact produced by the Kernel routing step.
+# Carries semantic signals derived from intent classification.
+#
+# INVARIANT: RouteDecision fields are signals only.
+# They MUST NOT affect execution_mode, PolicyDecision, GovernanceVerdict,
+# capability grants, or pipeline dispatch legality. Any consumer that needs
+# to gate execution must use PolicyDecision.execution_mode exclusively.
+#
+# risk_hint is keyword/rule-derived (not risk_level). It uses lowercase
+# string values and is informational only — the authoritative risk signal
+# for execution gating remains PolicyDecision.risk_level.
+# ---------------------------------------------------------------------------
+
+RISK_HINT_NONE   = "none"
+RISK_HINT_LOW    = "low"
+RISK_HINT_MEDIUM = "medium"
+RISK_HINT_HIGH   = "high"
+
+
+class RouteDecision(TypedDict, total=False):
+    """
+    Non-authoritative enrichment artifact from the Kernel routing step.
+
+    Required fields:
+        intent_type  — Classified intent category (matches Intent.operation)
+        domain       — Target domain (WORK, FIN, CODE, HOST, MACHINE_OPERATOR)
+
+    Enrichment fields (all optional, non-authoritative):
+        operator_goal         — Natural-language interpretation of the request goal
+        semantic_summary      — Concise normalized description of the classified intent
+        risk_hint             — Keyword-derived signal: "none"|"low"|"medium"|"high"|None
+        context_requirements  — List of context hints for this intent type
+        suggested_next_step   — Text guidance for the operator (never a callable)
+
+    Forbidden fields (must never appear here):
+        execution_mode, routing_action, risk_level, requires_confirmation,
+        parsed_payload, policy_explanation
+    """
+    # Required
+    intent_type: str
+    domain: str
+    # Enrichment signals (non-authoritative)
+    operator_goal: Optional[str]
+    semantic_summary: Optional[str]
+    risk_hint: Optional[str]
+    context_requirements: list
+    suggested_next_step: Optional[str]
+
+
+def make_route_decision(
+    intent_type: str,
+    domain: str,
+    *,
+    operator_goal: Optional[str] = None,
+    semantic_summary: Optional[str] = None,
+    risk_hint: Optional[str] = None,
+    context_requirements: Optional[list] = None,
+    suggested_next_step: Optional[str] = None,
+) -> RouteDecision:
+    """
+    Factory for RouteDecision with safe defaults.
+
+    Args:
+        intent_type:          Classified intent category (e.g. "WORK_QUERY")
+        domain:               Target domain string (e.g. "WORK")
+        operator_goal:        Optional natural-language goal statement
+        semantic_summary:     Optional concise intent description
+        risk_hint:            Optional keyword-derived risk signal
+        context_requirements: Optional list of context hints
+        suggested_next_step:  Optional operator guidance text
+
+    Returns:
+        RouteDecision with all fields present and safe defaults applied.
+    """
+    return RouteDecision(
+        intent_type=intent_type,
+        domain=domain,
+        operator_goal=operator_goal,
+        semantic_summary=semantic_summary,
+        risk_hint=risk_hint,
+        context_requirements=context_requirements if context_requirements is not None else [],
+        suggested_next_step=suggested_next_step,
+    )
+
