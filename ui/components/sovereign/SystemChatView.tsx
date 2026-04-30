@@ -1,345 +1,57 @@
 'use client'
 
-import { useState, useRef, useEffect, KeyboardEvent, Fragment } from 'react'
-import { useSovereignStore } from '@/stores/sovereign-store'
-import { sendSovereignMessage } from '@/lib/sovereign/api'
-import { redirectsForSurface } from '@/lib/api'
-import { RedirectActions } from './RedirectActions'
-import type { SovereignMessage, ExecutionStatus, ExecutionStatusSource } from '@/lib/sovereign/types'
+import { useEffect, useState } from 'react'
+import {
+  getSystemAssistantState,
+  type SystemAssistantStateResponse,
+} from '@/lib/api'
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function genId(): string {
-  return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
-}
-
-function executionStatusClass(status: ExecutionStatus): string {
+function statusClass(status: string): string {
   switch (status) {
-    case 'real':
+    case 'healthy':
       return 'bg-emerald-500/15 text-emerald-400 border-emerald-500/25'
-    case 'stub':
-      return 'bg-amber-500/15 text-amber-300 border-amber-500/25'
     case 'partial':
-      return 'bg-sky-500/15 text-sky-300 border-sky-500/25'
+      return 'bg-amber-500/15 text-amber-300 border-amber-500/25'
     case 'unavailable':
       return 'bg-slate-500/15 text-slate-300 border-slate-500/25'
+    default:
+      return 'bg-sky-500/15 text-sky-300 border-sky-500/25'
   }
 }
 
-function ExecutionStatusBadge({
-  status,
-  source = 'backend',
-}: {
-  status: ExecutionStatus
-  source?: ExecutionStatusSource
-}) {
+function StatusBadge({ status }: { status: string }) {
   return (
-    <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider ${executionStatusClass(status)}`}>
-      execution_status: {status}{source === 'ui_fallback' ? ' (ui fallback)' : ''}
+    <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider ${statusClass(status)}`}>
+      interpretation.status: {status}
     </span>
   )
 }
+export function SystemChatView() {
+  const [state, setState] = useState<SystemAssistantStateResponse | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-// ── RichText ──────────────────────────────────────────────────────────────────
+  const loadState = async () => {
+    setIsLoading(true)
+    setError(null)
 
-type RichBlock =
-  | { t: 'para'; text: string }
-  | { t: 'list'; items: string[] }
-  | { t: 'code'; lang: string; src: string }
-
-function parseBlocks(raw: string): RichBlock[] {
-  const blocks: RichBlock[] = []
-  const fenceRe = /```(\w*)\n?([\s\S]*?)```/g
-  let last = 0
-  let m: RegExpExecArray | null
-  while ((m = fenceRe.exec(raw)) !== null) {
-    const before = raw.slice(last, m.index).trim()
-    if (before) parseParagraphs(before, blocks)
-    blocks.push({ t: 'code', lang: m[1] || 'text', src: m[2].trimEnd() })
-    last = m.index + m[0].length
-  }
-  const tail = raw.slice(last).trim()
-  if (tail) parseParagraphs(tail, blocks)
-  return blocks.length ? blocks : [{ t: 'para', text: raw }]
-}
-
-function parseParagraphs(text: string, out: RichBlock[]) {
-  const chunks = text.split(/\n{2,}/)
-  for (const chunk of chunks) {
-    const trimmed = chunk.trim()
-    if (!trimmed) continue
-    const lines = trimmed.split('\n')
-    const isList = lines.every(l => /^[-•*]\s/.test(l))
-    if (isList) {
-      out.push({ t: 'list', items: lines.map(l => l.replace(/^[-•*]\s+/, '')) })
-    } else {
-      out.push({ t: 'para', text: trimmed })
+    try {
+      const next = await getSystemAssistantState()
+      setState(next)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unable to load System Assistant state.'
+      setError(message)
+    } finally {
+      setIsLoading(false)
     }
   }
-}
 
-function InlineText({ text }: { text: string }) {
-  const parts = text.split(/(`[^`]+`)/)
-  return (
-    <>
-      {parts.map((part, i) =>
-        part.startsWith('`') && part.endsWith('`') ? (
-          <code key={i} className="px-1 py-0.5 rounded bg-teal-500/10 text-[11px] font-mono text-teal-300 border border-teal-500/20">
-            {part.slice(1, -1)}
-          </code>
-        ) : (
-          <Fragment key={i}>{part}</Fragment>
-        )
-      )}
-    </>
-  )
-}
-
-function RichText({ content }: { content: string }) {
-  if (!content) return null
-  try {
-    const blocks = parseBlocks(content)
-    return (
-      <div className="space-y-2">
-        {blocks.map((block, i) => {
-          if (block.t === 'code') {
-            return (
-              <div key={i} className="rounded-lg overflow-hidden border border-teal-500/20">
-                {block.lang && block.lang !== 'text' && (
-                  <div className="px-3 py-1 bg-teal-500/5 border-b border-teal-500/20">
-                    <span className="text-[10px] font-mono text-teal-400/60 uppercase tracking-wider">{block.lang}</span>
-                  </div>
-                )}
-                <pre className="px-3 py-2.5 overflow-x-auto bg-os-elevated text-xs font-mono text-tx-primary whitespace-pre">
-                  {block.src}
-                </pre>
-              </div>
-            )
-          }
-          if (block.t === 'list') {
-            return (
-              <ul key={i} className="space-y-1 pl-3">
-                {block.items.map((item, j) => (
-                  <li key={j} className="flex gap-2 text-sm font-mono text-tx-primary">
-                    <span className="text-teal-400/60 flex-shrink-0 mt-px">-</span>
-                    <span><InlineText text={item} /></span>
-                  </li>
-                ))}
-              </ul>
-            )
-          }
-          return (
-            <p key={i} className="text-sm font-mono text-tx-primary whitespace-pre-wrap break-words leading-relaxed">
-              <InlineText text={block.text} />
-            </p>
-          )
-        })}
-      </div>
-    )
-  } catch {
-    return <pre className="text-sm font-mono text-tx-primary whitespace-pre-wrap break-words">{content}</pre>
-  }
-}
-
-// ── Message Bubble ────────────────────────────────────────────────────────────
-
-interface MessageBubbleProps {
-  message: SovereignMessage
-  /**
-   * Original operator text — captured at send time and passed through so
-   * RedirectActions can stash it for the destination surface to pre-load.
-   * Optional: when undefined, the redirect still navigates but does not
-   * pre-fill anything.
-   */
-  originalText?: string
-}
-
-function MessageBubble({ message, originalText }: MessageBubbleProps) {
-  const isUser = message.role === 'user'
-  const targets = message.redirectTargets ?? []
-  const redirectOptions = targets.length > 0
-    ? redirectsForSurface('system_chat').filter(o => targets.includes(o.target))
-    : []
-
-  return (
-    <div className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
-      {!isUser && (
-        <div className="w-7 h-7 rounded-lg bg-teal-500/10 border border-teal-500/20 flex items-center justify-center flex-shrink-0">
-          <span className="text-teal-400 text-[10px] font-mono font-bold">S</span>
-        </div>
-      )}
-
-      <div className={`
-        max-w-[75%] px-4 py-3 rounded-xl
-        ${isUser
-          ? 'bg-teal-500/10 border border-teal-500/20 text-tx-primary'
-          : 'bg-os-elevated border border-os-border text-tx-primary'
-        }
-      `}>
-        <RichText content={message.content} />
-        {!isUser && message.executionStatus && (
-          <div className="mt-2">
-            <ExecutionStatusBadge status={message.executionStatus} source={message.executionStatusSource} />
-          </div>
-        )}
-
-        {/* ALFA-FLIGHT-02 §5 — optional decision-source / confidence badge.
-            Only renders when the backend sent the field. Never inferred. */}
-        {!isUser && (message.decisionSource || typeof message.confidenceScore === 'number') && (
-          <div className="mt-2 flex items-center gap-2 flex-wrap">
-            {message.decisionSource && (
-              <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider bg-slate-500/10 text-slate-300 border-slate-500/25">
-                source: {message.decisionSource}
-              </span>
-            )}
-            {typeof message.confidenceScore === 'number' && (
-              <span className="inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider bg-slate-500/10 text-slate-300 border-slate-500/25">
-                confidence: {message.confidenceScore.toFixed(2)}
-              </span>
-            )}
-          </div>
-        )}
-
-        {/* ALFA-FLIGHT-02 §3 — actionable next step when the surface blocked
-            or is informational-only. RedirectActions handles store mutation
-            and view navigation; this surface stays informational. */}
-        {!isUser && redirectOptions.length > 0 && (
-          <RedirectActions
-            options={redirectOptions}
-            originalText={originalText}
-            variant="compact"
-          />
-        )}
-
-        {/* Timestamp */}
-        <div className="mt-2 pt-1.5 border-t border-os-border/50">
-          <span className="text-[9px] font-mono text-tx-muted">
-            {new Date(message.timestamp).toLocaleTimeString('en-US', {
-              hour12: false,
-              hour: '2-digit',
-              minute: '2-digit',
-            })}
-          </span>
-        </div>
-      </div>
-
-      {isUser && (
-        <div className="w-7 h-7 rounded-lg bg-slate-600/30 border border-slate-500/30 flex items-center justify-center flex-shrink-0">
-          <span className="text-slate-400 text-[10px] font-mono">U</span>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ── Component ─────────────────────────────────────────────────────────────────
-
-export function SystemChatView() {
-  const { systemChatMessages, addSystemChatMessage } = useSovereignStore()
-  const [input, setInput] = useState('')
-  const [isLoading, setIsLoading] = useState(false)
-  const messagesEndRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLTextAreaElement>(null)
-
-  // Auto-scroll to bottom
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [systemChatMessages])
-
-  // Focus input on mount
-  useEffect(() => {
-    inputRef.current?.focus()
+    void loadState()
   }, [])
 
-  const handleSend = async () => {
-    const text = input.trim()
-    if (!text || isLoading) return
-
-    setInput('')
-    setIsLoading(true)
-
-    // Add user message
-    const userMsg: SovereignMessage = {
-      id: genId(),
-      role: 'user',
-      content: text,
-      timestamp: new Date().toISOString(),
-      surface: 'system_chat',
-    }
-    addSystemChatMessage(userMsg)
-
-    // Send to API
-    const response = await sendSovereignMessage(text, 'system_chat')
-
-    // ALFA-FLIGHT-01.6 informational guard.
-    //
-    // System Chat is the informational layer — its UI contract states
-    // "This surface never executes or authorizes actions." The backend
-    // is single-source-of-truth and may classify input into a plan /
-    // confirmation flow (correct backend behavior; surface is never an
-    // authority verdict). When the backend response carries plan /
-    // needs_confirmation / non-direct execution_mode / non-ALLOW
-    // governance, we render it here as a canonical Blocked: block
-    // pointing the operator to MSO Direct or Machine Operator instead
-    // of leaking spurious action artefacts (the "ENERGY/COMMAND
-    // basura" complaint that triggered 01.6).
-    const hasPlan      = Array.isArray(response.plan) && response.plan.length > 0
-    const needsConfirm = response.needs_confirmation === true
-    const hasExecMode  = response.execution_mode != null && response.execution_mode !== 'direct'
-    const govDecision  = response.governance_trace?.decision
-    const govNonAllow  = govDecision != null && govDecision !== 'ALLOW'
-    const isExecutiveResponse = hasPlan || needsConfirm || hasExecMode || govNonAllow
-
-    let content: string
-    let redirectTargets: ('mso' | 'machine_operator')[] | undefined
-    if (!response.ok) {
-      content = `Error: ${response.error ?? 'unknown error'}`
-      // Even on error, offer a path forward — never silence.
-      redirectTargets = ['mso', 'machine_operator']
-    } else if (isExecutiveResponse) {
-      content =
-        'Blocked:\n' +
-        '  domain=SYSTEM\n' +
-        '  action=surface.system_chat.executive_intent\n' +
-        '  reason=System Chat is the informational layer; it does not render plans or confirmations.\n' +
-        '  suggestion=Switch to MSO Direct or Machine Operator to issue an executive request.'
-      redirectTargets = ['mso', 'machine_operator']
-    } else {
-      content = response.message
-    }
-
-    // Add assistant response.
-    // We intentionally drop plan / executionMode / pendingConfirmation here
-    // — System Chat does not render those. governanceTrace and
-    // executionStatus stay so the operator still sees backend honesty.
-    // ALFA-FLIGHT-02 §3 — when a redirect is offered, attach the targets
-    // to the message so the bubble renders RedirectActions chips beneath.
-    // ALFA-FLIGHT-02 §5 — passthrough optional traceability if backend sent it.
-    const assistantMsg: SovereignMessage = {
-      id: genId(),
-      role: 'assistant',
-      content,
-      timestamp: new Date().toISOString(),
-      surface: 'system_chat',
-      governanceTrace: response.governance_trace,
-      executionStatus: response.execution_status,
-      executionStatusSource: response.execution_status_source,
-      decisionSource: response.decision_source,
-      confidenceScore: response.confidence_score,
-      redirectTargets,
-    }
-    addSystemChatMessage(assistantMsg)
-
-    setIsLoading(false)
-    inputRef.current?.focus()
-  }
-
-  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
-    }
-  }
+  const interpretation = state?.interpretation
+  const snapshot = state?.snapshot
 
   return (
     <div className="flex flex-col h-full bg-os-base">
@@ -356,11 +68,45 @@ export function SystemChatView() {
             </p>
           </div>
         </div>
+        <button
+          type="button"
+          onClick={() => void loadState()}
+          disabled={isLoading}
+          className="ml-auto rounded-lg border border-teal-500/25 bg-teal-500/10 px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider text-teal-300 transition-all hover:bg-teal-500/15 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Refresh state
+        </button>
       </div>
 
-      {/* Messages */}
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-        {systemChatMessages.length === 0 && (
+        {isLoading && !state && (
+          <div className="rounded-xl border border-os-border bg-os-elevated px-4 py-4">
+            <div className="flex items-center gap-2">
+              <div className="w-1.5 h-1.5 rounded-full bg-teal-400 animate-pulse" />
+              <div className="w-1.5 h-1.5 rounded-full bg-teal-400 animate-pulse [animation-delay:150ms]" />
+              <div className="w-1.5 h-1.5 rounded-full bg-teal-400 animate-pulse [animation-delay:300ms]" />
+            </div>
+            <p className="mt-3 text-sm font-mono text-tx-secondary">
+              Loading System Assistant state from the backend.
+            </p>
+          </div>
+        )}
+
+        {error && (
+          <div className="rounded-xl border border-amber-500/25 bg-amber-500/10 px-4 py-4">
+            <p className="text-xs font-mono uppercase tracking-wider text-amber-300">
+              Passive error state
+            </p>
+            <p className="mt-2 text-sm font-mono text-tx-primary">
+              {error}
+            </p>
+            <p className="mt-2 text-xs font-mono text-tx-muted">
+              This view remains read-only and does not issue retries beyond re-fetching the same endpoint.
+            </p>
+          </div>
+        )}
+
+        {!isLoading && !state && !error && (
           <div className="flex flex-col items-center justify-center h-full text-center">
             <div className="w-16 h-16 rounded-2xl bg-teal-500/10 border border-teal-500/20 flex items-center justify-center mb-4">
               <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
@@ -381,77 +127,80 @@ export function SystemChatView() {
           </div>
         )}
 
-        {systemChatMessages.map((msg: SovereignMessage, idx: number) => {
-          // For assistant messages with redirect chips, surface the original
-          // user input so the destination surface can pre-fill its composer.
-          // We walk backward to the closest user message.
-          let originalText: string | undefined
-          if (msg.role === 'assistant' && (msg.redirectTargets?.length ?? 0) > 0) {
-            for (let i = idx - 1; i >= 0; i--) {
-              if (systemChatMessages[i].role === 'user') {
-                originalText = systemChatMessages[i].content
-                break
-              }
-            }
-          }
-          return <MessageBubble key={msg.id} message={msg} originalText={originalText} />
-        })}
-
-        {isLoading && (
-          <div className="flex gap-3 justify-start">
-            <div className="w-7 h-7 rounded-lg bg-teal-500/10 border border-teal-500/20 flex items-center justify-center flex-shrink-0">
-              <span className="text-teal-400 text-[10px] font-mono font-bold">S</span>
-            </div>
-            <div className="px-4 py-3 rounded-xl bg-os-elevated border border-os-border">
-              <div className="flex items-center gap-2">
-                <div className="w-1.5 h-1.5 rounded-full bg-teal-400 animate-pulse" />
-                <div className="w-1.5 h-1.5 rounded-full bg-teal-400 animate-pulse [animation-delay:150ms]" />
-                <div className="w-1.5 h-1.5 rounded-full bg-teal-400 animate-pulse [animation-delay:300ms]" />
+        {state && interpretation && (
+          <>
+            <div className="rounded-xl border border-os-border bg-os-elevated px-4 py-4 space-y-3">
+              <div className="flex items-center gap-3 flex-wrap">
+                <StatusBadge status={interpretation.status} />
+                <span className="inline-flex items-center rounded border border-slate-500/25 bg-slate-500/10 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider text-slate-300">
+                  source: {interpretation.source}
+                </span>
+                <span className="inline-flex items-center rounded border border-slate-500/25 bg-slate-500/10 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider text-slate-300">
+                  narrative: {String(interpretation.narrative)}
+                </span>
               </div>
-            </div>
-          </div>
-        )}
 
-        <div ref={messagesEndRef} />
+              <div>
+                <p className="text-[10px] font-mono uppercase tracking-wider text-teal-400/60">
+                  Summary
+                </p>
+                <p className="mt-2 text-sm font-mono leading-relaxed text-tx-primary">
+                  {interpretation.summary}
+                </p>
+              </div>
+
+              {snapshot?.operational_mode != null && (
+                <div>
+                  <p className="text-[10px] font-mono uppercase tracking-wider text-teal-400/60">
+                    Snapshot operational_mode
+                  </p>
+                  <p className="mt-2 text-sm font-mono text-tx-primary">
+                    {snapshot.operational_mode}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-xl border border-os-border bg-os-elevated px-4 py-4">
+              <p className="text-[10px] font-mono uppercase tracking-wider text-teal-400/60">
+                Observations
+              </p>
+              <ul className="mt-3 space-y-2">
+                {interpretation.observations.map((item, index) => (
+                  <li key={`${item}-${index}`} className="flex gap-2 text-sm font-mono text-tx-primary">
+                    <span className="mt-px text-teal-400/60">-</span>
+                    <span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="rounded-xl border border-os-border bg-os-elevated px-4 py-4">
+              <p className="text-[10px] font-mono uppercase tracking-wider text-teal-400/60">
+                Warnings
+              </p>
+              {interpretation.warnings.length > 0 ? (
+                <ul className="mt-3 space-y-2">
+                  {interpretation.warnings.map((warning, index) => (
+                    <li key={`${warning}-${index}`} className="flex gap-2 text-sm font-mono text-tx-primary">
+                      <span className="mt-px text-amber-300">!</span>
+                      <span>{warning}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-3 text-sm font-mono text-tx-secondary">
+                  No warnings reported by the backend.
+                </p>
+              )}
+            </div>
+          </>
+        )}
       </div>
 
-      {/* Input */}
       <div className="px-6 py-4 border-t border-os-border bg-os-surface">
-        <div className="flex gap-3">
-          <div className="flex-1 relative">
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Ask the system..."
-              rows={1}
-              className="
-                w-full px-4 py-3 rounded-xl
-                bg-os-base border border-teal-500/20
-                text-sm font-mono text-tx-primary placeholder:text-tx-muted
-                outline-none focus:border-teal-500/40 focus:ring-1 focus:ring-teal-500/20
-                transition-all resize-none
-              "
-            />
-          </div>
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() || isLoading}
-            className="
-              px-5 py-3 rounded-xl
-              bg-teal-500/10 border border-teal-500/30 
-              text-sm font-mono text-teal-400
-              hover:bg-teal-500/20 hover:border-teal-500/40
-              disabled:opacity-40 disabled:cursor-not-allowed
-              transition-all
-            "
-          >
-            Send
-          </button>
-        </div>
-        <p className="text-[9px] font-mono text-tx-muted mt-2 text-center">
-          Informational queries only - no commands executed from this surface
+        <p className="text-[9px] font-mono text-tx-muted text-center">
+          Passive view only. This surface re-fetches GET /system-assistant/state and does not execute actions.
         </p>
       </div>
     </div>
