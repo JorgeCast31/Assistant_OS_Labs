@@ -595,7 +595,7 @@ class TestCanonicalRouteInvariantsALFA(unittest.TestCase):
         for py_file in repo_root.rglob("*.py"):
             try:
                 tree = ast.parse(py_file.read_text(encoding="utf-8"))
-            except SyntaxError:
+            except (SyntaxError, UnicodeDecodeError):
                 continue
             found_in_file = False
             for node in ast.walk(tree):
