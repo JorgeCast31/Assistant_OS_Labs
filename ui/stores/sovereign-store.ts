@@ -45,42 +45,52 @@ interface SovereignState {
   // Navigation
   activeView: SovereignViewId
   activeAgent: AgentId | null
-  
+
   // Messages per surface
   systemChatMessages: SovereignMessage[]
   msoMessages: SovereignMessage[]
-  
+
   // States
   msoState: MSOState
   systemState: SovereignSystemState
   agentState: AgentState
-  
+
   // Pending escalations (from agents to MSO)
   pendingEscalations: EscalationRequest[]
-  
+
+  // ALFA-FLIGHT-02 §3 — when a surface redirects the operator (e.g. System
+  // Chat → MSO Direct), it stashes the original text here. The destination
+  // surface picks it up on mount and pre-fills its composer, so the operator
+  // does not have to retype. Cleared by the consumer immediately after read.
+  pendingRedirectText: string | null
+
   // Actions - Navigation
   setActiveView: (view: SovereignViewId) => void
   setActiveAgent: (agent: AgentId | null) => void
-  
+
   // Actions - Messages
   addSystemChatMessage: (msg: SovereignMessage) => void
   addMSOMessage: (msg: SovereignMessage) => void
   updateLastMSOMessage: (update: Partial<SovereignMessage>) => void
-  
+
   // Actions - State updates
   setMSOState: (state: Partial<MSOState>) => void
   setSystemState: (state: Partial<SovereignSystemState>) => void
   setAgentState: (state: Partial<AgentState>) => void
-  
+
   // Actions - Escalations
   addEscalation: (escalation: EscalationRequest) => void
   removeEscalation: (id: string) => void
   clearEscalations: () => void
+
+  // Actions - Redirect handoff
+  setPendingRedirectText: (text: string | null) => void
+  consumePendingRedirectText: () => string | null
 }
 
 // ── Store ─────────────────────────────────────────────────────────────────────
 
-export const useSovereignStore = create<SovereignState>((set) => ({
+export const useSovereignStore = create<SovereignState>((set, get) => ({
   // Navigation
   activeView: 'system',
   activeAgent: null,
@@ -96,7 +106,10 @@ export const useSovereignStore = create<SovereignState>((set) => ({
   
   // Pending escalations
   pendingEscalations: [],
-  
+
+  // ALFA-FLIGHT-02 §3 — redirect handoff buffer
+  pendingRedirectText: null,
+
   // Navigation actions
   setActiveView: (view) => set({ activeView: view }),
   setActiveAgent: (agent) => set((state) => ({ 
@@ -149,4 +162,13 @@ export const useSovereignStore = create<SovereignState>((set) => ({
   })),
   
   clearEscalations: () => set({ pendingEscalations: [] }),
+
+  // Redirect handoff actions
+  setPendingRedirectText: (text: string | null) => set({ pendingRedirectText: text }),
+  consumePendingRedirectText: (): string | null => {
+    const text = get().pendingRedirectText
+    if (text != null) set({ pendingRedirectText: null })
+    return text
+  },
 }))
+

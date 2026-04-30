@@ -173,9 +173,16 @@ export async function executeAgentCommand(
 
   if (!ALLOWED_CAPABILITIES.includes(capability as typeof ALLOWED_CAPABILITIES[number])) {
     const known = ALLOWED_CAPABILITIES.join(', ')
+    // ALFA-FLIGHT-02 §4 — Machine Operator never lies about execution.
+    // A locally-rejected unknown capability is `unavailable` from the
+    // operator's point of view: nothing ran. We surface that explicitly
+    // so the badge in the console is consistent with backend errors.
     return {
       ok: false,
-      output: `Unknown capability: ${rawCapability}\nAllowed: ${known}\nType 'help' for usage.`,
+      output:
+        `[execution_status: unavailable] ${rawCapability}\n` +
+        `Unknown capability. Allowed: ${known}\n` +
+        `Type 'help' for usage.`,
       status: 'failed',
       error: `Unknown capability: ${rawCapability}`,
     }
