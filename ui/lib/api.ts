@@ -28,6 +28,7 @@ export const RUNTIME_ENDPOINTS = {
   codeApiExecutions: `${API_BASE_URL}/api/code/executions`,
   webhookHealth: `${WEBHOOK_BASE_URL}/health`,
   webhookMsoState: `${WEBHOOK_BASE_URL}/mso/state`,
+  webhookSystemAssistantState: `${WEBHOOK_BASE_URL}/system-assistant/state`,
   webhookSystemCapabilities: `${WEBHOOK_BASE_URL}/system/capabilities`,
   webhookAgentsRegistry: `${WEBHOOK_BASE_URL}/agents/registry`,
   systemStateProxy: '/api/system/runtime-state',
@@ -184,6 +185,29 @@ interface SystemStateResponse {
   events?: SystemEvent[]
 }
 
+export interface SystemAssistantSnapshot {
+  generated_at?: string
+  status?: string
+  operational_mode?: string | null
+  warnings?: string[]
+}
+
+export interface SystemAssistantInterpretation {
+  status: 'healthy' | 'partial' | 'unavailable' | 'unknown'
+  summary: string
+  observations: string[]
+  warnings: string[]
+  narrative: true
+  source: 'system_assistant'
+  execution_status: null
+}
+
+export interface SystemAssistantStateResponse {
+  ok: boolean
+  snapshot: SystemAssistantSnapshot
+  interpretation: SystemAssistantInterpretation
+}
+
 /**
  * GET /api/system/runtime-state — internal Next.js proxy to the webhook
  * operability surface. Fallback to UNKNOWN if the proxy or backend is
@@ -206,6 +230,28 @@ export async function getSystemState(): Promise<{ mode: OperationalMode; events:
   } catch {
     return { mode: 'UNKNOWN', events: [] }
   }
+}
+
+/**
+ * GET /system-assistant/state on the webhook backend.
+ * The backend response is the source of truth; this helper only fetches it.
+ */
+export async function getSystemAssistantState(): Promise<SystemAssistantStateResponse> {
+  const res = await fetch(RUNTIME_ENDPOINTS.webhookSystemAssistantState, {
+    cache: 'no-store',
+    signal: AbortSignal.timeout(4000),
+  })
+
+  if (!res.ok) {
+    throw new Error(`System Assistant state unavailable (${res.status})`)
+  }
+
+  const json = await res.json() as SystemAssistantStateResponse
+  if (!json.ok) {
+    throw new Error('System Assistant state unavailable')
+  }
+
+  return json
 }
 
 /**
