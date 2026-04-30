@@ -136,6 +136,8 @@ from .operability import (
     build_mso_state_response,
     build_system_capabilities_response,
 )
+from .system_assistant.observer import observe_system
+from .system_assistant.interpreter import interpret_system_snapshot
 
 # Module-level variables for patching in tests
 NOTION_WORK_TRASH_DB_ID: str | None = None  # Set via environment or config later
@@ -1566,6 +1568,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_mso_state_get()
             return
 
+        if path == "/system-assistant/state":
+            self._handle_system_assistant_state_get()
+            return
+
         # M29: Cognition presence endpoints (feature-flagged)
         if path == "/cognition/providers":
             self._handle_cognition_providers_get()
@@ -1733,6 +1739,41 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._send_json_response(status, error)
             return
         self._send_json_response(200, build_mso_state_response())
+
+    def _handle_system_assistant_state_get(self) -> None:
+        """GET /system-assistant/state — read-only observer + interpretation payload."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        try:
+            snapshot = observe_system()
+            interpretation = interpret_system_snapshot(snapshot)
+            self._send_json_response(
+                200,
+                {
+                    "ok": True,
+                    "snapshot": snapshot,
+                    "interpretation": interpretation,
+                },
+            )
+            return
+        except Exception:
+            snapshot = {
+                "status": "unavailable",
+                "warnings": ["system assistant state unavailable"],
+            }
+            interpretation = interpret_system_snapshot(snapshot)
+            self._send_json_response(
+                200,
+                {
+                    "ok": True,
+                    "snapshot": snapshot,
+                    "interpretation": interpretation,
+                },
+            )
 
     def _handle_chat_history(self) -> None:
         """Handle GET /chat/history endpoint - retrieve conversation history."""
