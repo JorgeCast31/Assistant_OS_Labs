@@ -1,0 +1,147 @@
+"""System Assistant — interpretation layer.
+
+Transforms a read-only SystemSnapshot into a non-authoritative
+SystemInterpretation.
+
+INVARIANTS — never violated by this module:
+  - Does NOT call observe_system() or any observer automatically.
+  - Does NOT call any domain pipeline, agent, or Kernel.
+  - Does NOT produce execution_mode, GovernanceVerdict, or PolicyDecision.
+  - Does NOT contain execution triggers, commands, or pipeline targets.
+  - Does NOT modify any state.
+  - Does NOT use LLM.
+  - narrative=True in all outputs (marks non-authoritative origin).
+  - execution_status=None in all outputs.
+
+This module is pure: same input always produces same output.
+"""
+
+from __future__ import annotations
+
+from typing import Any, TypedDict
+
+
+# ---------------------------------------------------------------------------
+# Public contract
+# ---------------------------------------------------------------------------
+
+class SystemInterpretation(TypedDict):
+    """Non-authoritative interpretation of a SystemSnapshot.
+
+    All fields are present (total=True by default).
+    """
+
+    status: str           # "healthy" | "partial" | "unavailable" | "unknown"
+    summary: str          # single human-readable summary sentence
+    observations: list[str]  # individual observation strings (counts only, no raw dicts)
+    warnings: list[str]   # warnings verbatim from the snapshot
+    narrative: bool       # always True — marks non-authoritative origin
+    source: str           # always "system_assistant"
+    execution_status: None  # always None — this layer never executes
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _derive_status(snapshot: dict[str, Any]) -> str:
+    """Map snapshot status + warnings to interpretation status."""
+    snap_status = snapshot.get("status", "")
+    warnings = snapshot.get("warnings") or []
+
+    if snap_status == "unavailable":
+        return "unavailable"
+    if snap_status == "partial" or warnings:
+        return "partial"
+    if snap_status == "ok":
+        return "healthy"
+    return "unknown"
+
+
+def _describe_mode(mode: str | None) -> str:
+    """Return a safe mode description that never assumes NORMAL."""
+    if mode is None:
+        return "operational mode: no override set (unknown)"
+    return f"operational mode: {mode}"
+
+
+def _build_observations(snapshot: dict[str, Any]) -> list[str]:
+    """Build a list of observation strings from snapshot fields.
+
+    Reports only counts — never echoes raw agent or capability dicts.
+    Never mentions execution_mode, GovernanceVerdict, or PolicyDecision.
+    """
+    observations: list[str] = []
+
+    # Operational mode
+    mode = snapshot.get("operational_mode")
+    observations.append(_describe_mode(mode))
+
+    # Agents — count only
+    agents = snapshot.get("agents") or []
+    observations.append(f"registered agents: {len(agents)}")
+
+    # Capabilities — count only
+    capabilities = snapshot.get("capabilities") or []
+    observations.append(f"registered capabilities: {len(capabilities)}")
+
+    # Tasks — counts by status
+    tasks_summary = snapshot.get("tasks_summary") or {}
+    if tasks_summary:
+        parts = ", ".join(f"{s}={n}" for s, n in sorted(tasks_summary.items()))
+        observations.append(f"tasks summary: {parts}")
+    else:
+        observations.append("tasks summary: no tasks recorded")
+
+    return observations
+
+
+def _build_summary(status: str, snapshot: dict[str, Any]) -> str:
+    """Build a single-sentence human-readable summary."""
+    mode = snapshot.get("operational_mode")
+    mode_text = f"mode {mode}" if mode is not None else "mode unknown (no override set)"
+
+    if status == "healthy":
+        return f"System observation complete — {mode_text}, all sources available."
+    if status == "partial":
+        warning_count = len(snapshot.get("warnings") or [])
+        return (
+            f"System observation partial — {mode_text}, "
+            f"{warning_count} source(s) unavailable."
+        )
+    if status == "unavailable":
+        return "System observation unavailable — all sources failed."
+    return "System observation status unknown."
+
+
+# ---------------------------------------------------------------------------
+# Public interpreter function
+# ---------------------------------------------------------------------------
+
+def interpret_system_snapshot(snapshot: dict[str, Any]) -> SystemInterpretation:
+    """Transform a read-only SystemSnapshot dict into a SystemInterpretation.
+
+    This function is pure: identical inputs produce identical outputs.
+    It does not call observe_system(), pipelines, agents, or Kernel.
+    It does not modify any state.
+
+    Args:
+        snapshot: A SystemSnapshot dict as returned by observe_system().
+
+    Returns:
+        A SystemInterpretation dict. Never raises.
+    """
+    status = _derive_status(snapshot)
+    observations = _build_observations(snapshot)
+    summary = _build_summary(status, snapshot)
+    warnings = list(snapshot.get("warnings") or [])
+
+    return SystemInterpretation(
+        status=status,
+        summary=summary,
+        observations=observations,
+        warnings=warnings,
+        narrative=True,
+        source="system_assistant",
+        execution_status=None,
+    )
