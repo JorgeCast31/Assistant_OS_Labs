@@ -107,6 +107,92 @@ class TestBackendOperabilityEndpoints(unittest.TestCase):
         self.assertGreaterEqual(data["agents_available"], 1)
         self.assertIsInstance(data["recent_events"], list)
 
+    def test_get_system_assistant_state_returns_snapshot_and_interpretation(self) -> None:
+        status, data = self._request("GET", "/system-assistant/state")
+
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertIn("snapshot", data)
+        self.assertIn("interpretation", data)
+        self.assertIsInstance(data["snapshot"], dict)
+        self.assertIsInstance(data["interpretation"], dict)
+        self.assertTrue(data["interpretation"]["narrative"])
+
+    def test_get_system_assistant_state_does_not_invoke_kernel(self) -> None:
+        with patch("assistant_os.core.orchestrator.handle_request") as kernel_mock:
+            status, _ = self._request("GET", "/system-assistant/state")
+
+        self.assertEqual(status, 200)
+        kernel_mock.assert_not_called()
+
+    def test_get_system_assistant_state_does_not_invoke_pipelines(self) -> None:
+        with (
+            patch("assistant_os.pipelines.host_pipeline.execute") as host_pipeline_mock,
+            patch("assistant_os.pipelines.machine_operator_pipeline.execute") as mo_pipeline_mock,
+        ):
+            status, _ = self._request("GET", "/system-assistant/state")
+
+        self.assertEqual(status, 200)
+        host_pipeline_mock.assert_not_called()
+        mo_pipeline_mock.assert_not_called()
+
+    def test_get_system_assistant_state_does_not_invoke_agent_entrypoints(self) -> None:
+        call_tracker: list[object] = []
+
+        def tracking_entrypoint(request: object) -> object:
+            call_tracker.append(request)
+            return {}
+
+        with patch(
+            "assistant_os.agents.registry.AGENT_REGISTRY",
+            {
+                "test_agent": {
+                    "name": "test_agent",
+                    "domain": "TEST",
+                    "version": "0.0.1",
+                    "description": "Test agent",
+                    "input_contract": "TestRequest",
+                    "output_contract": "TestResult",
+                    "requires_review": False,
+                    "capability_scope": [],
+                    "entrypoint": tracking_entrypoint,
+                }
+            },
+        ):
+            status, _ = self._request("GET", "/system-assistant/state")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(call_tracker, [])
+
+    def test_get_system_assistant_state_does_not_write_audit_records(self) -> None:
+        with patch("assistant_os.storage.mso_store.persist_worker_security_event") as audit_mock:
+            status, _ = self._request("GET", "/system-assistant/state")
+
+        self.assertEqual(status, 200)
+        audit_mock.assert_not_called()
+
+    def test_get_system_assistant_state_handles_observer_failure_safely(self) -> None:
+        with patch("assistant_os.webhook_server.observe_system", side_effect=RuntimeError("boom")):
+            status, data = self._request("GET", "/system-assistant/state")
+
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["snapshot"]["status"], "unavailable")
+        self.assertGreater(len(data["snapshot"].get("warnings", [])), 0)
+        self.assertEqual(data["interpretation"]["status"], "unavailable")
+        self.assertNotIn("traceback", json.dumps(data).lower())
+
+    def test_get_system_assistant_state_has_no_authority_fields(self) -> None:
+        status, data = self._request("GET", "/system-assistant/state")
+
+        self.assertEqual(status, 200)
+        rendered = json.dumps(data)
+        self.assertNotIn("execution_mode", rendered)
+        self.assertNotIn("governance_verdict", rendered)
+        self.assertNotIn("policy_decision", rendered)
+        self.assertNotIn("GovernanceVerdict", rendered)
+        self.assertNotIn("PolicyDecision", rendered)
+
     def test_chat_process_surface_is_preserved_in_metadata_and_audit_without_changing_execution_mode(self) -> None:
         captured: dict[str, dict] = {}
 
