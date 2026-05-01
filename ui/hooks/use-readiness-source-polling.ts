@@ -1,18 +1,6 @@
 'use client'
 
-/**
- * S-OP-01E: useReadinessSourcePolling
- *
- * Polls agent registry and system capabilities on an interval and writes
- * agentRegistrySource + capabilitiesSource to sovereign-store.
- *
- * Follows the exact pattern of use-system-polling.ts:
- * - Module-level mutex prevents duplicate fetches across mounted instances.
- * - Safe to call in multiple components (SovereignShell + SystemView).
- * - Returns a manual refresh function.
- *
- * Does NOT include checkWebhookHealth — that concern remains in SovereignShell.
- */
+// Polls agent registry and capabilities; writes sources to sovereign-store.
 import { useEffect, useRef, useCallback } from 'react'
 import { useSovereignStore } from '@/stores/sovereign-store'
 import { fetchAgentRegistryWithMeta } from '@/lib/sovereign/agents'
@@ -39,12 +27,21 @@ export function useReadinessSourcePolling() {
       const prevAgentSrc = currentState.agentRegistrySource
       const prevCapSrc   = currentState.capabilitiesSource
 
-      const [agentResult, capResult] = await Promise.all([
+      const checkedAt = new Date().toISOString()
+
+      const [agentSettled, capSettled] = await Promise.allSettled([
         fetchAgentRegistryWithMeta(prevAgentSrc),
         getSystemCapabilities(),
       ])
 
-      const checkedAt = new Date().toISOString()
+      const agentResult = agentSettled.status === 'fulfilled'
+        ? agentSettled.value
+        : { agents: [], source: { status: 'unavailable' as const, lastCheckedAt: checkedAt, lastSuccessfulAt: prevAgentSrc.lastSuccessfulAt, error: 'fetch rejected' } }
+
+      const capResult = capSettled.status === 'fulfilled'
+        ? capSettled.value
+        : { ok: false as const, capabilities: [], domains: [], error: 'fetch rejected' }
+
       const hadPriorCapSuccess = prevCapSrc.lastSuccessfulAt != null
       let capabilitiesSource: ReadinessSourceState
 
@@ -65,13 +62,32 @@ export function useReadinessSourcePolling() {
         }
       }
 
-      // Preserve prior registeredAgents when stale
+      // blanking agents on transient failure would erase visible UI data
       if (agentResult.source.status !== 'stale') {
         setRegisteredAgents(agentResult.agents)
       }
       setSystemState({
         agentRegistrySource: agentResult.source,
         capabilitiesSource,
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      const checkedAt = new Date().toISOString()
+      const { agentRegistrySource: prevAgentSrc, capabilitiesSource: prevCapSrc } =
+        useSovereignStore.getState().systemState
+      setSystemState({
+        agentRegistrySource: {
+          status: prevAgentSrc.lastSuccessfulAt != null ? 'stale' : 'unavailable',
+          lastCheckedAt: checkedAt,
+          lastSuccessfulAt: prevAgentSrc.lastSuccessfulAt,
+          error: msg,
+        },
+        capabilitiesSource: {
+          status: prevCapSrc.lastSuccessfulAt != null ? 'stale' : 'unavailable',
+          lastCheckedAt: checkedAt,
+          lastSuccessfulAt: prevCapSrc.lastSuccessfulAt,
+          error: msg,
+        },
       })
     } finally {
       _fetchInFlight = false
