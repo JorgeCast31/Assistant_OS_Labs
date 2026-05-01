@@ -69,6 +69,7 @@ export function useReadinessSourcePolling() {
       setSystemState({
         agentRegistrySource: agentResult.source,
         capabilitiesSource,
+        lastUpdated: checkedAt,
       })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
