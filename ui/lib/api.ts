@@ -232,6 +232,59 @@ export async function getSystemState(): Promise<{ mode: OperationalMode; events:
   }
 }
 
+// ── System Capabilities ───────────────────────────────────────────────────────
+// Response shape matches assistant_os/operability.py:build_system_capabilities_response()
+
+export interface SystemCapabilitiesFeatures {
+  authority_artifact: boolean
+  replay_prevention: boolean
+  runner_enforced: boolean
+  /** 'stub' | 'real' | 'unknown' — typed defensively as string for forward compat */
+  code_apply_mode: string
+  /** 'available' | 'unavailable' | 'unknown' */
+  machine_operator: string
+}
+
+export type CapabilityStatus = 'revoked' | 'granted' | 'available' | 'blocked' | 'unavailable'
+
+export interface SystemCapability {
+  id: string
+  domain: string | null
+  mode: string | null
+  status: CapabilityStatus
+  requires_confirmation: boolean
+}
+
+export interface SystemCapabilitiesResponse {
+  ok: boolean
+  /** null when the proxy or backend is unavailable */
+  features: SystemCapabilitiesFeatures | null
+  domains: string[]
+  capabilities: SystemCapability[]
+  error?: string
+}
+
+/** GET /api/system/capabilities — Next.js proxy to :8787/system/capabilities. */
+export async function getSystemCapabilities(): Promise<SystemCapabilitiesResponse> {
+  const UNAVAILABLE: SystemCapabilitiesResponse = {
+    ok: false,
+    features: null,
+    domains: [],
+    capabilities: [],
+  }
+  try {
+    const res = await fetch('/api/system/capabilities', {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) return UNAVAILABLE
+    const json = await res.json() as SystemCapabilitiesResponse
+    return json.ok ? json : UNAVAILABLE
+  } catch {
+    return UNAVAILABLE
+  }
+}
+
 /**
  * GET /system-assistant/state on the webhook backend.
  * The backend response is the source of truth; this helper only fetches it.

@@ -1,6 +1,5 @@
 'use client'
 
-import { useEffect, useState } from 'react'
 import { useSovereignStore } from '@/stores/sovereign-store'
 import { MachineOperatorConsole } from './MachineOperatorConsole'
 import type { AgentId } from '@/lib/sovereign/types'
@@ -11,31 +10,13 @@ interface AgentPanelProps {
   agentId: AgentId | null
 }
 
-interface RegistryAgent {
-  id: string
-  name: string
-  status: string
-  capabilities: string[]
-}
-
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function AgentPanel({ agentId }: AgentPanelProps) {
-  const { setActiveAgent } = useSovereignStore()
-  const [agents, setAgents] = useState<RegistryAgent[]>([])
-  const [registryLoading, setRegistryLoading] = useState(true)
-
-  useEffect(() => {
-    fetch('/api/agents/registry')
-      .then(r => r.json())
-      .then((data: { ok?: boolean; agents?: RegistryAgent[] }) => {
-        if (data.ok && Array.isArray(data.agents)) {
-          setAgents(data.agents)
-        }
-      })
-      .catch(() => {})
-      .finally(() => setRegistryLoading(false))
-  }, [])
+  const { setActiveAgent, systemState } = useSovereignStore()
+  const agents = systemState.registeredAgents
+  // null lastUpdated = first poll not yet complete; treat as loading
+  const registryLoading = systemState.lastUpdated === null
 
   // No agent selected — show selection view with live registry
   if (!agentId) {

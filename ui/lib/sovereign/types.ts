@@ -119,6 +119,23 @@ export interface AgentState {
   pendingEscalations: EscalationRequest[]
 }
 
+// ── Agent Registry ────────────────────────────────────────────────────────────
+// Matches assistant_os/operability.py:build_agents_registry_response() per-agent shape.
+
+export interface RegistryAgent {
+  id: string
+  name: string
+  domain: string | null
+  description: string | null
+  status: string
+  capabilities: string[]
+  last_execution_at: string | null
+  last_result: string | null
+  policy_restricted: boolean
+  requires_authority: boolean
+  requires_review: boolean
+}
+
 // ── System State ──────────────────────────────────────────────────────────────
 
 export interface SovereignSystemState {
@@ -127,6 +144,8 @@ export interface SovereignSystemState {
   activeAgents: number
   totalAgents: number
   lastUpdated: string | null
+  /** Full agent list from /agents/registry. Empty until first poll. */
+  registeredAgents: RegistryAgent[]
 }
 
 // ── API Request/Response Types ────────────────────────────────────────────────
