@@ -52,7 +52,7 @@ export function StatusIndicator({
       case 'agent':
         return AGENT_COLORS[status as AgentStatus] ?? AGENT_COLORS.idle
       case 'health':
-        return HEALTH_COLORS[status as SystemHealth] ?? HEALTH_COLORS.healthy
+        return HEALTH_COLORS[status as SystemHealth] ?? HEALTH_COLORS.unavailable
     }
   }
 

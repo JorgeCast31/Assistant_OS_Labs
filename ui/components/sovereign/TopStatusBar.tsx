@@ -26,45 +26,54 @@ export function TopStatusBar() {
     <header className="flex items-center justify-between px-4 py-2 bg-os-surface border-b border-os-border">
       {/* Left: System Health */}
       <div className="flex items-center gap-4">
+        {/* System health has no backend source — display as unverified */}
         <div className="flex items-center gap-2">
-          <StatusIndicator type="health" status={systemState.health} size="md" />
+          <span className="w-2 h-2 rounded-full bg-tx-muted/40 flex-shrink-0" />
           <span className="text-[11px] font-mono text-tx-secondary uppercase tracking-wider">
             System
           </span>
-          <span className={`text-[11px] font-mono ${
-            systemState.health === 'healthy' ? 'text-teal-400' :
-            systemState.health === 'degraded' ? 'text-amber-400' : 'text-red-400'
-          }`}>
-            {systemState.health.toUpperCase()}
+          <span className="text-[11px] font-mono text-tx-muted">
+            UNVERIFIED
           </span>
         </div>
 
         <div className="w-px h-4 bg-os-border" />
 
-        {/* MSO Status */}
+        {/* MSO Status — show live status only after operator interaction */}
         <div className="flex items-center gap-2">
-          <StatusIndicator type="authority" status={msoState.status} size="md" pulse={msoState.status === 'deciding'} />
+          {(msoState.lastDecision !== null || msoState.executionState !== 'idle')
+            ? <StatusIndicator type="authority" status={msoState.status} size="md" pulse={msoState.status === 'deciding'} />
+            : <span className="w-2 h-2 rounded-full bg-tx-muted/40 flex-shrink-0" />
+          }
           <span className="text-[11px] font-mono text-tx-secondary uppercase tracking-wider">
             MSO
           </span>
           <span className={`text-[11px] font-mono ${
-            msoState.status === 'active' ? 'text-amber-400' :
-            msoState.status === 'deciding' ? 'text-amber-500' : 'text-red-400'
+            (msoState.lastDecision !== null || msoState.executionState !== 'idle')
+              ? msoState.status === 'active'   ? 'text-amber-400'
+              : msoState.status === 'deciding' ? 'text-amber-500'
+              :                                  'text-red-400'
+              : 'text-tx-muted'
           }`}>
-            {msoState.status.toUpperCase()}
+            {(msoState.lastDecision !== null || msoState.executionState !== 'idle')
+              ? msoState.status.toUpperCase()
+              : '—'}
           </span>
         </div>
 
         <div className="w-px h-4 bg-os-border" />
 
-        {/* Agents Count */}
+        {/* Agents Count — neutral when no backend source has populated values */}
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-mono text-tx-secondary uppercase tracking-wider">
             Agents
           </span>
-          <span className="text-[11px] font-mono text-slate-300">
-            {systemState.activeAgents}/{systemState.totalAgents}
-          </span>
+          {systemState.totalAgents === 0
+            ? <span className="text-[11px] font-mono text-tx-muted">—/—</span>
+            : <span className="text-[11px] font-mono text-slate-300">
+                {systemState.activeAgents === 0 ? '—' : systemState.activeAgents}/{systemState.totalAgents}
+              </span>
+          }
           {pendingEscalations.length > 0 && (
             <span className="px-1.5 py-0.5 text-[9px] font-mono bg-amber-500/20 text-amber-400 rounded animate-pulse">
               {pendingEscalations.length} PENDING

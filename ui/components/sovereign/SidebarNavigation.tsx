@@ -184,11 +184,11 @@ export function SidebarNavigation() {
                     <span className="text-sm font-mono font-medium">
                       {zone.label}
                     </span>
-                    {zone.id === 'mso' && (
-                      <StatusIndicator 
-                        type="authority" 
-                        status={msoState.status} 
-                        size="sm" 
+                    {zone.id === 'mso' && (msoState.lastDecision !== null || msoState.executionState !== 'idle') && (
+                      <StatusIndicator
+                        type="authority"
+                        status={msoState.status}
+                        size="sm"
                         pulse={msoState.status === 'deciding'}
                       />
                     )}
