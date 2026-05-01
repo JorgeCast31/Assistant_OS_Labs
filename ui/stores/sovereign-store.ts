@@ -15,6 +15,11 @@ import type {
 
 // ── Initial States ────────────────────────────────────────────────────────────
 
+// SOURCE: local interaction state only.
+// AuthorityStatus has no 'unknown' value; 'active' is the required initial type.
+// This does NOT reflect backend authority health — it reflects whether the
+// operator has interacted with MSO in this session. Renderers guard on
+// lastDecision/executionState before showing live MSO status indicators.
 const INITIAL_MSO_STATE: MSOState = {
   status: 'active',
   currentPlan: null,
@@ -23,6 +28,12 @@ const INITIAL_MSO_STATE: MSOState = {
   activePolicy: 'default',
 }
 
+// SOURCE: read-only poll via SovereignShell (checkWebhookHealth + getAvailableAgents).
+// health       — starts 'unavailable'; updated to real value after first 20s poll.
+// totalAgents  — starts 0; updated from /agents/registry response length.
+// activeAgents — no backend source; stays 0. Renderers show '—/N', not '0/N'.
+// msoStatus    — not polled; mirrors msoState.status for legacy reasons only.
+// lastUpdated  — null until first successful poll.
 const INITIAL_SYSTEM_STATE: SovereignSystemState = {
   health: 'unavailable',
   msoStatus: 'active',
@@ -94,16 +105,16 @@ export const useSovereignStore = create<SovereignState>((set, get) => ({
   // Navigation
   activeView: 'system',
   activeAgent: null,
-  
+
   // Messages
   systemChatMessages: [],
   msoMessages: [],
-  
+
   // States
   msoState: INITIAL_MSO_STATE,
   systemState: INITIAL_SYSTEM_STATE,
   agentState: INITIAL_AGENT_STATE,
-  
+
   // Pending escalations
   pendingEscalations: [],
 
@@ -112,21 +123,21 @@ export const useSovereignStore = create<SovereignState>((set, get) => ({
 
   // Navigation actions
   setActiveView: (view) => set({ activeView: view }),
-  setActiveAgent: (agent) => set((state) => ({ 
+  setActiveAgent: (agent) => set((state) => ({
     activeAgent: agent,
     // Only switch to 'agents' when selecting an agent; don't change view when clearing agent
     activeView: agent ? 'agents' : state.activeView,
   })),
-  
+
   // Message actions
   addSystemChatMessage: (msg) => set((state) => ({
     systemChatMessages: [...state.systemChatMessages, msg],
   })),
-  
+
   addMSOMessage: (msg) => set((state) => ({
     msoMessages: [...state.msoMessages, msg],
   })),
-  
+
   updateLastMSOMessage: (update) => set((state) => {
     const messages = [...state.msoMessages]
     if (messages.length > 0) {
@@ -134,7 +145,7 @@ export const useSovereignStore = create<SovereignState>((set, get) => ({
     }
     return { msoMessages: messages }
   }),
-  
+
   // State updates
   setMSOState: (update) => set((state) => ({
     msoState: { ...state.msoState, ...update },
@@ -143,24 +154,24 @@ export const useSovereignStore = create<SovereignState>((set, get) => ({
       msoStatus: update.status ?? state.msoState.status,
     },
   })),
-  
+
   setSystemState: (update) => set((state) => ({
     systemState: { ...state.systemState, ...update },
   })),
-  
+
   setAgentState: (update) => set((state) => ({
     agentState: { ...state.agentState, ...update },
   })),
-  
+
   // Escalation actions
   addEscalation: (escalation) => set((state) => ({
     pendingEscalations: [...state.pendingEscalations, escalation],
   })),
-  
+
   removeEscalation: (id) => set((state) => ({
     pendingEscalations: state.pendingEscalations.filter((e) => e.id !== id),
   })),
-  
+
   clearEscalations: () => set({ pendingEscalations: [] }),
 
   // Redirect handoff actions
@@ -171,4 +182,4 @@ export const useSovereignStore = create<SovereignState>((set, get) => ({
     return text
   },
 }))
-
+
