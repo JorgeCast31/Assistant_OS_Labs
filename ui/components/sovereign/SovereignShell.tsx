@@ -2,9 +2,9 @@
 
 import { useEffect } from 'react'
 import { useSovereignStore } from '@/stores/sovereign-store'
-import { checkWebhookHealth } from '@/lib/api'
-import { getRegisteredAgents } from '@/lib/sovereign/agents'
-import type { SystemHealth } from '@/lib/sovereign/types'
+import { checkWebhookHealth, getSystemCapabilities } from '@/lib/api'
+import { fetchAgentRegistryWithMeta } from '@/lib/sovereign/agents'
+import type { SystemHealth, ReadinessSourceState } from '@/lib/sovereign/types'
 import { SidebarNavigation } from './SidebarNavigation'
 import { TopStatusBar } from './TopStatusBar'
 import { SystemChatView } from './SystemChatView'
@@ -24,14 +24,46 @@ export function SovereignShell() {
 
   useEffect(() => {
     const poll = async () => {
-      const [webhookStatus, agents] = await Promise.all([
+      const currentState = useSovereignStore.getState().systemState
+      const prevAgentSrc = currentState.agentRegistrySource
+      const prevCapSrc = currentState.capabilitiesSource
+
+      const [webhookStatus, agentResult, capResult] = await Promise.all([
         checkWebhookHealth(),
-        getRegisteredAgents(),
+        fetchAgentRegistryWithMeta(prevAgentSrc),
+        getSystemCapabilities(),
       ])
-      setRegisteredAgents(agents)
+
+      const capCheckedAt = new Date().toISOString()
+      const hadPriorCapSuccess = prevCapSrc.lastSuccessfulAt != null
+      let capabilitiesSource: ReadinessSourceState
+      if (!capResult.ok) {
+        capabilitiesSource = {
+          status: hadPriorCapSuccess ? 'stale' : 'unavailable',
+          lastCheckedAt: capCheckedAt,
+          lastSuccessfulAt: prevCapSrc.lastSuccessfulAt,
+          error: capResult.error ?? 'Capabilities unavailable',
+        }
+      } else {
+        const hasData = capResult.capabilities.length > 0 || capResult.domains.length > 0
+        capabilitiesSource = {
+          status: hasData ? 'available' : 'empty',
+          lastCheckedAt: capCheckedAt,
+          lastSuccessfulAt: capCheckedAt,
+          error: null,
+        }
+      }
+
+      // Preserve prior registeredAgents and totalAgents when stale — clearing
+      // them would erase data the stale status is supposed to keep visible.
+      if (agentResult.source.status !== 'stale') {
+        setRegisteredAgents(agentResult.agents)
+      }
       setSystemState({
         health: toSovereignHealth(webhookStatus),
-        lastUpdated: new Date().toISOString(),
+        lastUpdated: capCheckedAt,
+        agentRegistrySource: agentResult.source,
+        capabilitiesSource,
       })
     }
 

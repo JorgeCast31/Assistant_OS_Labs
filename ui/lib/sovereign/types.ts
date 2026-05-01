@@ -146,6 +146,29 @@ export interface SovereignSystemState {
   lastUpdated: string | null
   /** Full agent list from /agents/registry. Empty until first poll. */
   registeredAgents: RegistryAgent[]
+  /** Source state for /agents/registry fetches. */
+  agentRegistrySource: ReadinessSourceState
+  /** Source state for /system/capabilities fetches. */
+  capabilitiesSource: ReadinessSourceState
+}
+
+// ── Readiness Source Metadata ─────────────────────────────────────────────────
+// Tracks the fetch state of each data source so future readiness UI can
+// distinguish not-yet-loaded, loading, available, empty, unavailable, and stale.
+
+export type ReadinessSourceStatus =
+  | 'unknown'      // initial state; no fetch has been attempted
+  | 'loading'      // fetch in flight
+  | 'available'    // fetch succeeded and returned data
+  | 'empty'        // fetch succeeded but source has no entries
+  | 'unavailable'  // fetch failed; no prior success to fall back on
+  | 'stale'        // fetch failed but a prior successful fetch exists
+
+export interface ReadinessSourceState {
+  status: ReadinessSourceStatus
+  lastCheckedAt: string | null
+  lastSuccessfulAt: string | null
+  error: string | null
 }
 
 // ── API Request/Response Types ────────────────────────────────────────────────

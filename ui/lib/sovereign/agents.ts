@@ -2,7 +2,10 @@
 // Real HTTP adapter for the Machine Operator agent.
 // Replaces all mock logic — every call goes to /api/agent/execute → webhook.
 
-import type { RegistryAgent } from './types'
+import type {
+  RegistryAgent,
+  ReadinessSourceState,
+} from './types'
 
 import type {
   AgentCommandRequest,
@@ -258,6 +261,69 @@ export async function getRegisteredAgents(): Promise<RegistryAgent[]> {
     )
   } catch {
     return []
+  }
+}
+
+export interface AgentRegistryResult {
+  agents: RegistryAgent[]
+  source: ReadinessSourceState
+}
+
+/**
+ * Fetch agent registry with full source state metadata.
+ * Distinguishes true empty registry from fetch failure.
+ * Produces 'stale' when a prior success exists but the current fetch fails.
+ */
+export async function fetchAgentRegistryWithMeta(
+  prevSource?: ReadinessSourceState,
+): Promise<AgentRegistryResult> {
+  const checkedAt = new Date().toISOString()
+  const hadPriorSuccess = prevSource?.lastSuccessfulAt != null
+
+  try {
+    const res = await fetch('/api/agents/registry', { cache: 'no-store' })
+    const data = (await res.json()) as { ok?: boolean; agents?: unknown[]; error?: string }
+
+    if (!res.ok || data.ok === false || !Array.isArray(data.agents)) {
+      const error = !res.ok
+        ? `HTTP ${res.status}`
+        : data.ok === false
+          ? (typeof data.error === 'string' ? data.error : 'Registry returned ok=false')
+          : 'Unexpected response shape'
+      return {
+        agents: [],
+        source: {
+          status: hadPriorSuccess ? 'stale' : 'unavailable',
+          lastCheckedAt: checkedAt,
+          lastSuccessfulAt: prevSource?.lastSuccessfulAt ?? null,
+          error,
+        },
+      }
+    }
+
+    const agents = data.agents.filter((a): a is RegistryAgent =>
+      a !== null && typeof a === 'object' && typeof (a as Record<string, unknown>).id === 'string'
+    )
+    return {
+      agents,
+      source: {
+        status: agents.length > 0 ? 'available' : 'empty',
+        lastCheckedAt: checkedAt,
+        lastSuccessfulAt: checkedAt,
+        error: null,
+      },
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return {
+      agents: [],
+      source: {
+        status: hadPriorSuccess ? 'stale' : 'unavailable',
+        lastCheckedAt: checkedAt,
+        lastSuccessfulAt: prevSource?.lastSuccessfulAt ?? null,
+        error: msg,
+      },
+    }
   }
 }
 
