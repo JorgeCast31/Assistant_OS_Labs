@@ -188,5 +188,77 @@ class TestAgentPanelStaleHandling(unittest.TestCase):
         )
 
 
+class TestReadinessPanelGuardrails(unittest.TestCase):
+    """ReadinessPanel must be read-only and honest about system state.
+
+    No execution/admin endpoints.  UNKNOWN mode must not be coerced to NORMAL.
+    Stale and UNKNOWN statuses must be handled explicitly.
+    """
+
+    def setUp(self) -> None:
+        self.src = _read("components/sovereign/ReadinessPanel.tsx")
+
+    def test_no_chat_process_endpoint(self) -> None:
+        self.assertNotIn(
+            "/api/chat/process",
+            self.src,
+            "ReadinessPanel must not call /api/chat/process",
+        )
+
+    def test_no_admin_endpoint(self) -> None:
+        self.assertNotIn(
+            "/admin",
+            self.src,
+            "ReadinessPanel must not call /admin endpoints",
+        )
+
+    def test_no_code_api_endpoint(self) -> None:
+        self.assertNotIn(
+            "/api/code",
+            self.src,
+            "ReadinessPanel must not call /api/code endpoints",
+        )
+
+    def test_no_mso_freeze_endpoint(self) -> None:
+        self.assertNotIn(
+            "/mso/freeze",
+            self.src,
+            "ReadinessPanel must not call /mso/freeze",
+        )
+
+    def test_no_system_healthy_fabrication(self) -> None:
+        # Panel must not render a blanket "SYSTEM HEALTHY" label
+        self.assertNotIn(
+            "system healthy",
+            self.src.lower(),
+            "ReadinessPanel must not render a fabricated 'SYSTEM HEALTHY' label",
+        )
+
+    def test_unknown_mode_handled_explicitly(self) -> None:
+        # UNKNOWN operational mode must appear as an explicit map key (TypeScript
+        # records use unquoted uppercase keys, e.g. UNKNOWN: 'bg-idle').
+        self.assertIn(
+            "UNKNOWN:",
+            self.src,
+            "ReadinessPanel must handle UNKNOWN operational mode explicitly",
+        )
+
+    def test_stale_handled_explicitly(self) -> None:
+        # 'stale' status must be present as an explicit case
+        self.assertIn(
+            "'stale'",
+            self.src,
+            "ReadinessPanel must handle 'stale' source status explicitly",
+        )
+
+    def test_webhook_ok_not_system_healthy(self) -> None:
+        # webhook=ok must render as transport-only, not system health
+        self.assertIn(
+            "transport only",
+            self.src,
+            "ReadinessPanel must qualify webhook=ok as 'transport only', not system healthy",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
