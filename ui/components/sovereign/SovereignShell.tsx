@@ -2,9 +2,9 @@
 
 import { useEffect } from 'react'
 import { useSovereignStore } from '@/stores/sovereign-store'
-import { checkWebhookHealth, getSystemCapabilities } from '@/lib/api'
-import { fetchAgentRegistryWithMeta } from '@/lib/sovereign/agents'
-import type { SystemHealth, ReadinessSourceState } from '@/lib/sovereign/types'
+import { checkWebhookHealth } from '@/lib/api'
+import type { SystemHealth } from '@/lib/sovereign/types'
+import { useReadinessSourcePolling } from '@/hooks/use-readiness-source-polling'
 import { SidebarNavigation } from './SidebarNavigation'
 import { TopStatusBar } from './TopStatusBar'
 import { SystemChatView } from './SystemChatView'
@@ -20,57 +20,21 @@ function toSovereignHealth(s: string): SystemHealth {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function SovereignShell() {
-  const { activeView, activeAgent, setSystemState, setRegisteredAgents } = useSovereignStore()
+  const { activeView, activeAgent, setSystemState } = useSovereignStore()
 
+  // Agent registry + capabilities polling (extracted to reusable hook)
+  useReadinessSourcePolling()
+
+  // Webhook health polling — separate concern not shared with SystemView
   useEffect(() => {
     const poll = async () => {
-      const currentState = useSovereignStore.getState().systemState
-      const prevAgentSrc = currentState.agentRegistrySource
-      const prevCapSrc = currentState.capabilitiesSource
-
-      const [webhookStatus, agentResult, capResult] = await Promise.all([
-        checkWebhookHealth(),
-        fetchAgentRegistryWithMeta(prevAgentSrc),
-        getSystemCapabilities(),
-      ])
-
-      const capCheckedAt = new Date().toISOString()
-      const hadPriorCapSuccess = prevCapSrc.lastSuccessfulAt != null
-      let capabilitiesSource: ReadinessSourceState
-      if (!capResult.ok) {
-        capabilitiesSource = {
-          status: hadPriorCapSuccess ? 'stale' : 'unavailable',
-          lastCheckedAt: capCheckedAt,
-          lastSuccessfulAt: prevCapSrc.lastSuccessfulAt,
-          error: capResult.error ?? 'Capabilities unavailable',
-        }
-      } else {
-        const hasData = capResult.capabilities.length > 0 || capResult.domains.length > 0
-        capabilitiesSource = {
-          status: hasData ? 'available' : 'empty',
-          lastCheckedAt: capCheckedAt,
-          lastSuccessfulAt: capCheckedAt,
-          error: null,
-        }
-      }
-
-      // Preserve prior registeredAgents and totalAgents when stale — clearing
-      // them would erase data the stale status is supposed to keep visible.
-      if (agentResult.source.status !== 'stale') {
-        setRegisteredAgents(agentResult.agents)
-      }
-      setSystemState({
-        health: toSovereignHealth(webhookStatus),
-        lastUpdated: capCheckedAt,
-        agentRegistrySource: agentResult.source,
-        capabilitiesSource,
-      })
+      const webhookStatus = await checkWebhookHealth()
+      setSystemState({ health: toSovereignHealth(webhookStatus) })
     }
-
     poll()
     const interval = setInterval(poll, 20_000)
     return () => clearInterval(interval)
-  }, [setSystemState, setRegisteredAgents])
+  }, [setSystemState])
 
   const renderMainContent = () => {
     switch (activeView) {
