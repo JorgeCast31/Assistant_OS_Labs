@@ -11,6 +11,7 @@ import type {
   AgentState,
   SovereignSystemState,
   EscalationRequest,
+  RegistryAgent,
 } from '@/lib/sovereign/types'
 
 // ── Initial States ────────────────────────────────────────────────────────────
@@ -28,18 +29,20 @@ const INITIAL_MSO_STATE: MSOState = {
   activePolicy: 'default',
 }
 
-// SOURCE: read-only poll via SovereignShell (checkWebhookHealth + getAvailableAgents).
-// health       — starts 'unavailable'; updated to real value after first 20s poll.
-// totalAgents  — starts 0; updated from /agents/registry response length.
-// activeAgents — no backend source; stays 0. Renderers show '—/N', not '0/N'.
-// msoStatus    — not polled; mirrors msoState.status for legacy reasons only.
-// lastUpdated  — null until first successful poll.
+// SOURCE: read-only poll via SovereignShell (checkWebhookHealth + getRegisteredAgents).
+// health            — starts 'unavailable'; updated to real value after first 20s poll.
+// totalAgents       — starts 0; derived from registeredAgents.length after first poll.
+// activeAgents      — no backend source; stays 0. Renderers show '—/N', not '0/N'.
+// msoStatus         — not polled; mirrors msoState.status for legacy reasons only.
+// lastUpdated       — null until first successful poll.
+// registeredAgents  — empty until first poll; full RegistryAgent[] from /agents/registry.
 const INITIAL_SYSTEM_STATE: SovereignSystemState = {
   health: 'unavailable',
   msoStatus: 'active',
   activeAgents: 0,
   totalAgents: 0,
   lastUpdated: null,
+  registeredAgents: [],
 }
 
 const INITIAL_AGENT_STATE: AgentState = {
@@ -88,6 +91,7 @@ interface SovereignState {
   setMSOState: (state: Partial<MSOState>) => void
   setSystemState: (state: Partial<SovereignSystemState>) => void
   setAgentState: (state: Partial<AgentState>) => void
+  setRegisteredAgents: (agents: RegistryAgent[]) => void
 
   // Actions - Escalations
   addEscalation: (escalation: EscalationRequest) => void
@@ -161,6 +165,10 @@ export const useSovereignStore = create<SovereignState>((set, get) => ({
 
   setAgentState: (update) => set((state) => ({
     agentState: { ...state.agentState, ...update },
+  })),
+
+  setRegisteredAgents: (agents) => set((state) => ({
+    systemState: { ...state.systemState, registeredAgents: agents, totalAgents: agents.length },
   })),
 
   // Escalation actions

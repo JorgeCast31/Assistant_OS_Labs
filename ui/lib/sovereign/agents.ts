@@ -2,6 +2,8 @@
 // Real HTTP adapter for the Machine Operator agent.
 // Replaces all mock logic — every call goes to /api/agent/execute → webhook.
 
+import type { RegistryAgent } from './types'
+
 import type {
   AgentCommandRequest,
   AgentCommandResponse,
@@ -46,15 +48,6 @@ execution_status legend
   stub         placeholder result; no real action took place
   partial      partial result (e.g. timeout mid-run)`
 
-interface RegistryAgent {
-  id?: string
-  name?: string
-  status?: string
-  capabilities?: unknown
-  requires_authority?: boolean
-  requires_review?: boolean
-}
-
 /**
  * Fetch live Machine Operator state from the backend registry via the
  * /api/agents/registry proxy. Returns a multi-line block describing
@@ -65,7 +58,7 @@ interface RegistryAgent {
 async function buildLiveStatusBlock(): Promise<string> {
   try {
     const res = await fetch('/api/agents/registry', { cache: 'no-store' })
-    const data = (await res.json()) as { ok?: boolean; agents?: RegistryAgent[]; error?: string }
+    const data = (await res.json()) as { ok?: boolean; agents?: Partial<RegistryAgent>[]; error?: string }
     if (!res.ok || data.ok === false) {
       const reason = typeof data.error === 'string' ? data.error : `HTTP ${res.status}`
       return [
@@ -247,6 +240,24 @@ export function getAgentState(agentId: AgentId): AgentState {
     status:             'idle',
     commandHistory:     [],
     pendingEscalations: [],
+  }
+}
+
+/**
+ * List registered agents from the backend registry with full RegistryAgent shape.
+ * Returns [] on any fetch failure — never fabricates registration state.
+ * Source: /api/agents/registry → :8787/agents/registry
+ */
+export async function getRegisteredAgents(): Promise<RegistryAgent[]> {
+  try {
+    const res = await fetch('/api/agents/registry', { cache: 'no-store' })
+    const data = (await res.json()) as { ok?: boolean; agents?: unknown[] }
+    if (!res.ok || !data.ok || !Array.isArray(data.agents)) return []
+    return data.agents.filter((a): a is RegistryAgent =>
+      a !== null && typeof a === 'object' && typeof (a as Record<string, unknown>).id === 'string'
+    )
+  } catch {
+    return []
   }
 }
 

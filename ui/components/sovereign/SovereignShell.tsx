@@ -3,7 +3,7 @@
 import { useEffect } from 'react'
 import { useSovereignStore } from '@/stores/sovereign-store'
 import { checkWebhookHealth } from '@/lib/api'
-import { getAvailableAgents } from '@/lib/sovereign/agents'
+import { getRegisteredAgents } from '@/lib/sovereign/agents'
 import type { SystemHealth } from '@/lib/sovereign/types'
 import { SidebarNavigation } from './SidebarNavigation'
 import { TopStatusBar } from './TopStatusBar'
@@ -20,17 +20,17 @@ function toSovereignHealth(s: string): SystemHealth {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function SovereignShell() {
-  const { activeView, activeAgent, setSystemState } = useSovereignStore()
+  const { activeView, activeAgent, setSystemState, setRegisteredAgents } = useSovereignStore()
 
   useEffect(() => {
     const poll = async () => {
       const [webhookStatus, agents] = await Promise.all([
         checkWebhookHealth(),
-        getAvailableAgents(),
+        getRegisteredAgents(),
       ])
+      setRegisteredAgents(agents)
       setSystemState({
         health: toSovereignHealth(webhookStatus),
-        totalAgents: agents.length,
         lastUpdated: new Date().toISOString(),
       })
     }
@@ -38,7 +38,7 @@ export function SovereignShell() {
     poll()
     const interval = setInterval(poll, 20_000)
     return () => clearInterval(interval)
-  }, [setSystemState])
+  }, [setSystemState, setRegisteredAgents])
 
   const renderMainContent = () => {
     switch (activeView) {
