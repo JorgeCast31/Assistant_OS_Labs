@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { useUIStore }       from '@/stores/ui-store'
 import { useSystemPolling } from '@/hooks/use-system-polling'
 import { StatusBadge }      from '@/components/shared/status-badge'
+import { SystemChatView }   from '@/components/sovereign/SystemChatView'
 import { FREEZE_CONTROL, RUNTIME_ENDPOINTS, freezeSystem, restoreSystem } from '@/lib/api'
 import type { HealthStatus, OperationalMode, SystemEvent } from '@/lib/types'
 
@@ -482,6 +483,18 @@ export function SystemView() {
               Recent Events
             </p>
             <EventLog events={recentEvents} />
+          </section>
+        )}
+
+        {/* Passive System Assistant state panel (GET /system-assistant/state only). */}
+        {!isInitializing && (
+          <section>
+            <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
+              System Assistant State
+            </p>
+            <div className="rounded-lg border border-os-border overflow-hidden">
+              <SystemChatView />
+            </div>
           </section>
         )}
 
