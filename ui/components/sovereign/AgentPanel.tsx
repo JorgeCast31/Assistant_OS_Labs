@@ -15,8 +15,10 @@ interface AgentPanelProps {
 export function AgentPanel({ agentId }: AgentPanelProps) {
   const { setActiveAgent, systemState } = useSovereignStore()
   const agents = systemState.registeredAgents
-  // null lastUpdated = first poll not yet complete; treat as loading
-  const registryLoading = systemState.lastUpdated === null
+  const registryStatus = systemState.agentRegistrySource.status
+  const registryLoading = registryStatus === 'unknown' || registryStatus === 'loading'
+  const registryStaleWithData = registryStatus === 'stale' && agents.length > 0
+  const registryUnavailable = (registryStatus === 'unavailable' || registryStatus === 'stale') && agents.length === 0
 
   // No agent selected — show selection view with live registry
   if (!agentId) {
@@ -66,8 +68,18 @@ export function AgentPanel({ agentId }: AgentPanelProps) {
                 <p className="text-xs font-mono text-tx-muted">Loading registry…</p>
               )}
 
-              {!registryLoading && agents.length === 0 && (
+              {!registryLoading && registryUnavailable && (
+                <p className="text-xs font-mono text-tx-muted">Registry unavailable</p>
+              )}
+
+              {!registryLoading && !registryUnavailable && agents.length === 0 && (
                 <p className="text-xs font-mono text-tx-muted">No agents registered</p>
+              )}
+
+              {registryStaleWithData && (
+                <p className="text-xs font-mono text-yellow-500/70">
+                  Registry check failed — showing last known data
+                </p>
               )}
 
               {agents.map((agent) => (

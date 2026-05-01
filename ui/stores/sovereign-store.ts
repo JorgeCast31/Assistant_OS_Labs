@@ -12,6 +12,7 @@ import type {
   SovereignSystemState,
   EscalationRequest,
   RegistryAgent,
+  ReadinessSourceState,
 } from '@/lib/sovereign/types'
 
 // ── Initial States ────────────────────────────────────────────────────────────
@@ -30,12 +31,21 @@ const INITIAL_MSO_STATE: MSOState = {
 }
 
 // SOURCE: read-only poll via SovereignShell (checkWebhookHealth + getRegisteredAgents).
-// health            — starts 'unavailable'; updated to real value after first 20s poll.
-// totalAgents       — starts 0; derived from registeredAgents.length after first poll.
-// activeAgents      — no backend source; stays 0. Renderers show '—/N', not '0/N'.
-// msoStatus         — not polled; mirrors msoState.status for legacy reasons only.
-// lastUpdated       — null until first successful poll.
-// registeredAgents  — empty until first poll; full RegistryAgent[] from /agents/registry.
+// health               — starts 'unavailable'; updated to real value after first 20s poll.
+// totalAgents          — starts 0; derived from registeredAgents.length after first poll.
+// activeAgents         — no backend source; stays 0. Renderers show '—/N', not '0/N'.
+// msoStatus            — not polled; mirrors msoState.status for legacy reasons only.
+// lastUpdated          — null until first successful poll.
+// registeredAgents     — empty until first poll; full RegistryAgent[] from /agents/registry.
+// agentRegistrySource  — 'unknown' until first poll; updated each poll cycle.
+// capabilitiesSource   — 'unknown' until first poll; updated each poll cycle.
+const INITIAL_SOURCE_STATE: ReadinessSourceState = {
+  status: 'unknown',
+  lastCheckedAt: null,
+  lastSuccessfulAt: null,
+  error: null,
+}
+
 const INITIAL_SYSTEM_STATE: SovereignSystemState = {
   health: 'unavailable',
   msoStatus: 'active',
@@ -43,6 +53,8 @@ const INITIAL_SYSTEM_STATE: SovereignSystemState = {
   totalAgents: 0,
   lastUpdated: null,
   registeredAgents: [],
+  agentRegistrySource: INITIAL_SOURCE_STATE,
+  capabilitiesSource: INITIAL_SOURCE_STATE,
 }
 
 const INITIAL_AGENT_STATE: AgentState = {

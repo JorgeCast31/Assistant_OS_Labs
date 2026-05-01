@@ -159,5 +159,34 @@ class TestSystemChatViewEndpoints(unittest.TestCase):
         )
 
 
+class TestAgentPanelStaleHandling(unittest.TestCase):
+    """AgentPanel must treat stale registry differently from empty/unavailable.
+
+    Stale means a prior successful fetch exists but the latest check failed.
+    Prior agent data must be kept visible with a clear warning — not silently
+    shown as fresh and not erased.
+    """
+
+    def setUp(self) -> None:
+        self.src = _read("components/sovereign/AgentPanel.tsx")
+
+    def test_stale_with_data_detected_separately(self) -> None:
+        # AgentPanel must define a separate variable for stale-with-data so it
+        # can be rendered differently from both 'available' and 'unavailable'.
+        self.assertIn(
+            "registryStaleWithData",
+            self.src,
+            "AgentPanel must handle stale + agents > 0 as a distinct case",
+        )
+
+    def test_stale_not_rendered_silently_as_available(self) -> None:
+        # A stale warning must be present so prior data is not shown as fresh.
+        self.assertIn(
+            "last known",
+            self.src,
+            "AgentPanel must render a 'last known data' warning for stale registry",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
