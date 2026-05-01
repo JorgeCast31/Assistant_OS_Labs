@@ -5,6 +5,7 @@ import { useUIStore }       from '@/stores/ui-store'
 import { useSystemPolling } from '@/hooks/use-system-polling'
 import { StatusBadge }      from '@/components/shared/status-badge'
 import { SystemChatView }   from '@/components/sovereign/SystemChatView'
+import { ReadinessPanel }   from '@/components/sovereign/ReadinessPanel'
 import { FREEZE_CONTROL, RUNTIME_ENDPOINTS, freezeSystem, restoreSystem } from '@/lib/api'
 import type { HealthStatus, OperationalMode, SystemEvent } from '@/lib/types'
 
@@ -473,6 +474,16 @@ export function SystemView() {
                 accent={needsReview > 0}
               />
             </div>
+          </section>
+        )}
+
+        {/* Readiness Sources */}
+        {!isInitializing && (
+          <section>
+            <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
+              Readiness Sources
+            </p>
+            <ReadinessPanel />
           </section>
         )}
 
