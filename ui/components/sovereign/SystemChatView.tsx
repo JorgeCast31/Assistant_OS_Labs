@@ -22,7 +22,7 @@ function statusClass(status: string): string {
 function StatusBadge({ status }: { status: string }) {
   return (
     <span className={`inline-flex items-center rounded border px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider ${statusClass(status)}`}>
-      interpretation.status: {status}
+      status: {status}
     </span>
   )
 }
@@ -56,15 +56,15 @@ export function SystemChatView() {
   return (
     <div className="flex flex-col h-full bg-os-base">
       {/* Header */}
-      <div className="px-6 py-4 border-b border-os-border bg-os-surface">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-os-border bg-os-surface">
         <div className="flex items-center gap-3">
           <div className="w-2 h-2 rounded-full bg-teal-400" />
           <div>
             <h2 className="text-sm font-mono font-semibold text-teal-400">
-              System Chat
+              System Assistant
             </h2>
             <p className="text-[10px] font-mono text-tx-muted">
-              Informational Layer - Safe queries, no execution
+              Read-only · observes state · no execution
             </p>
           </div>
         </div>
@@ -72,9 +72,9 @@ export function SystemChatView() {
           type="button"
           onClick={() => void loadState()}
           disabled={isLoading}
-          className="ml-auto rounded-lg border border-teal-500/25 bg-teal-500/10 px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider text-teal-300 transition-all hover:bg-teal-500/15 disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-lg border border-teal-500/25 bg-teal-500/10 px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider text-teal-300 transition-all hover:bg-teal-500/15 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Refresh state
+          {isLoading ? 'Refreshing…' : 'Refresh state'}
         </button>
       </div>
 
@@ -135,8 +135,8 @@ export function SystemChatView() {
                 <span className="inline-flex items-center rounded border border-slate-500/25 bg-slate-500/10 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider text-slate-300">
                   source: {interpretation.source}
                 </span>
-                <span className="inline-flex items-center rounded border border-slate-500/25 bg-slate-500/10 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider text-slate-300">
-                  narrative: {String(interpretation.narrative)}
+                <span className="inline-flex items-center rounded border border-slate-500/20 bg-slate-500/8 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider text-slate-400/60">
+                  exec: null
                 </span>
               </div>
 
@@ -152,11 +152,18 @@ export function SystemChatView() {
               {snapshot?.operational_mode != null && (
                 <div>
                   <p className="text-[10px] font-mono uppercase tracking-wider text-teal-400/60">
-                    Snapshot operational_mode
+                    Operational mode
                   </p>
-                  <p className="mt-2 text-sm font-mono text-tx-primary">
-                    {snapshot.operational_mode}
-                  </p>
+                  <div className="mt-2 flex items-center gap-2">
+                    <p className="text-sm font-mono text-tx-primary">
+                      {snapshot.operational_mode}
+                    </p>
+                    {(snapshot.operational_mode === 'UNKNOWN' || snapshot.operational_mode === null) && (
+                      <span className="text-[9px] font-mono text-amber-300/70 border border-amber-500/20 rounded px-1.5 py-0.5">
+                        UNKNOWN ≠ NORMAL
+                      </span>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
