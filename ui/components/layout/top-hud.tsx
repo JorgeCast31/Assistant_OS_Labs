@@ -37,7 +37,7 @@ function overallHealth(
   if (api === 'down')                                    return 'down'
   if (api === 'unknown' && webhook === 'unknown')        return 'unknown'
   if (webhook === 'down' || api === 'warn')              return 'warn'
-  if (api === 'ok' && (webhook === 'ok' || webhook === 'unknown')) return 'ok'
+  if (api === 'ok' && webhook === 'ok')                           return 'ok'
   return 'warn'
 }
 
