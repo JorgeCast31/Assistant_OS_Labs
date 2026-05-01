@@ -63,14 +63,15 @@ export function TopStatusBar() {
 
         <div className="w-px h-4 bg-os-border" />
 
-        {/* Agents Count */}
+        {/* Agents Count — neutral when no backend source has populated values */}
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-mono text-tx-secondary uppercase tracking-wider">
             Agents
           </span>
-          <span className="text-[11px] font-mono text-slate-300">
-            {systemState.activeAgents}/{systemState.totalAgents}
-          </span>
+          {(systemState.activeAgents === 0 && systemState.totalAgents === 0)
+            ? <span className="text-[11px] font-mono text-tx-muted">—/—</span>
+            : <span className="text-[11px] font-mono text-slate-300">{systemState.activeAgents}/{systemState.totalAgents}</span>
+          }
           {pendingEscalations.length > 0 && (
             <span className="px-1.5 py-0.5 text-[9px] font-mono bg-amber-500/20 text-amber-400 rounded animate-pulse">
               {pendingEscalations.length} PENDING

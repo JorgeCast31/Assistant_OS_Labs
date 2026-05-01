@@ -2,25 +2,41 @@
 
 import { useEffect } from 'react'
 import { useSovereignStore } from '@/stores/sovereign-store'
+import { checkWebhookHealth } from '@/lib/api'
+import { getAvailableAgents } from '@/lib/sovereign/agents'
+import type { SystemHealth } from '@/lib/sovereign/types'
 import { SidebarNavigation } from './SidebarNavigation'
 import { TopStatusBar } from './TopStatusBar'
 import { SystemChatView } from './SystemChatView'
 import { MSOView } from './MSOView'
 import { AgentPanel } from './AgentPanel'
 
+function toSovereignHealth(s: string): SystemHealth {
+  if (s === 'ok')   return 'healthy'
+  if (s === 'warn' || s === 'degraded') return 'degraded'
+  return 'unavailable'
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function SovereignShell() {
   const { activeView, activeAgent, setSystemState } = useSovereignStore()
 
-  // Simulate periodic system state updates
   useEffect(() => {
-    const updateState = () => {
-      setSystemState({ lastUpdated: new Date().toISOString() })
+    const poll = async () => {
+      const [webhookStatus, agents] = await Promise.all([
+        checkWebhookHealth(),
+        getAvailableAgents(),
+      ])
+      setSystemState({
+        health: toSovereignHealth(webhookStatus),
+        totalAgents: agents.length,
+        lastUpdated: new Date().toISOString(),
+      })
     }
-    
-    updateState()
-    const interval = setInterval(updateState, 5000)
+
+    poll()
+    const interval = setInterval(poll, 20_000)
     return () => clearInterval(interval)
   }, [setSystemState])
 

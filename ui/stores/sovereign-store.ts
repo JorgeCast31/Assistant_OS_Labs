@@ -24,10 +24,10 @@ const INITIAL_MSO_STATE: MSOState = {
 }
 
 const INITIAL_SYSTEM_STATE: SovereignSystemState = {
-  health: 'healthy',
+  health: 'unavailable',
   msoStatus: 'active',
-  activeAgents: 1,
-  totalAgents: 1,
+  activeAgents: 0,
+  totalAgents: 0,
   lastUpdated: null,
 }
 
