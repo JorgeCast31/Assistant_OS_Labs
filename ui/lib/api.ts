@@ -290,7 +290,7 @@ export async function getSystemCapabilities(): Promise<SystemCapabilitiesRespons
  * The backend response is the source of truth; this helper only fetches it.
  */
 export async function getSystemAssistantState(): Promise<SystemAssistantStateResponse> {
-  const res = await fetch(RUNTIME_ENDPOINTS.webhookSystemAssistantState, {
+  const res = await fetch('/api/system-assistant/state', {
     cache: 'no-store',
     signal: AbortSignal.timeout(4000),
   })

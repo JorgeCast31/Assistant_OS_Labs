@@ -260,5 +260,68 @@ class TestReadinessPanelGuardrails(unittest.TestCase):
         )
 
 
+class TestSystemAssistantProxyAlignment(unittest.TestCase):
+    """getSystemAssistantState must call the local proxy, not the webhook directly.
+
+    The webhook URL requires a server-side token (X-Assistant-Token).
+    Calling it from the browser produces 401. The proxy injects the token
+    server-side; the browser never sees it.
+    """
+
+    def setUp(self) -> None:
+        self.api_src    = _read("lib/api.ts")
+        self.route_src  = _read("app/api/system-assistant/state/route.ts")
+
+    def test_get_system_assistant_state_calls_local_proxy(self) -> None:
+        # The function must call the local Next.js route, not the direct webhook URL.
+        self.assertIn(
+            "/api/system-assistant/state",
+            self.api_src,
+            "getSystemAssistantState must target the local proxy /api/system-assistant/state",
+        )
+
+    def test_get_system_assistant_state_not_direct_webhook(self) -> None:
+        # Must not pass the raw webhook URL to fetch() inside getSystemAssistantState.
+        # Scan only the function body (lines after its definition).
+        lines = self.api_src.splitlines()
+        in_fn = False
+        for line in lines:
+            if "getSystemAssistantState" in line and "export async function" in line:
+                in_fn = True
+            if in_fn and "webhookSystemAssistantState" in line and "fetch(" in line:
+                self.fail(
+                    "getSystemAssistantState must not pass webhookSystemAssistantState "
+                    "directly to fetch() — use the local proxy instead"
+                )
+
+    def test_proxy_route_does_not_expose_token_string(self) -> None:
+        # The proxy route must not contain the literal token variable names that
+        # would be visible to the browser if the file were served as client code.
+        self.assertNotIn(
+            "WEBHOOK_TOKEN",
+            self.route_src,
+            "Proxy route must not reference WEBHOOK_TOKEN",
+        )
+        self.assertNotIn(
+            "NEXT_PUBLIC_",
+            self.route_src,
+            "Proxy route must not use NEXT_PUBLIC_ env vars (would expose to browser)",
+        )
+
+    def test_proxy_route_is_get_only(self) -> None:
+        # Only GET should be exported — no POST/PUT/DELETE mutation surfaces.
+        self.assertIn(
+            "export async function GET",
+            self.route_src,
+            "Proxy route must export a GET handler",
+        )
+        for method in ("POST", "PUT", "DELETE", "PATCH"):
+            self.assertNotIn(
+                f"export async function {method}",
+                self.route_src,
+                f"Proxy route must not export {method} (read-only endpoint)",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
