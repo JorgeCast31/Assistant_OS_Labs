@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { useUIStore }       from '@/stores/ui-store'
 import { useSystemPolling } from '@/hooks/use-system-polling'
+import { useReadinessSourcePolling } from '@/hooks/use-readiness-source-polling'
 import { StatusBadge }      from '@/components/shared/status-badge'
 import { SystemChatView }   from '@/components/sovereign/SystemChatView'
 import { ReadinessPanel }   from '@/components/sovereign/ReadinessPanel'
@@ -350,6 +351,7 @@ function EventLog({ events }: { events: SystemEvent[] }) {
 export function SystemView() {
   const { systemData, isSystemRefreshing } = useUIStore()
   const { refresh } = useSystemPolling()
+  useReadinessSourcePolling()
 
   const {
     apiStatus,
