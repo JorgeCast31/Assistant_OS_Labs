@@ -412,3 +412,45 @@ export interface CognitiveTrace {
   fallback_used: boolean
   path?: string
 }
+
+// ── MSO Governance Recent (S-MSO-FE-01A) ─────────────────────────────────────
+
+export interface GovernanceReason {
+  code: string
+  detail: string
+}
+
+export interface GovernanceConstraint {
+  kind: string
+  value: string
+}
+
+export interface GovernanceIntervention {
+  kind: string
+  value: string
+  reason: string
+}
+
+export interface GovernanceDecisionSummary {
+  governance_ref: string
+  created_at: string
+  action: GovernanceDecisionType
+  target_domain: string
+  target_action: string
+  risk_level: 'low' | 'medium' | 'high'
+  operational_mode: OperationalMode
+  effective_execution_mode: string
+  justification: string
+  reasons: GovernanceReason[]
+  constraints: GovernanceConstraint[]
+  interventions: GovernanceIntervention[]
+}
+
+export interface GovernanceRecentResponse {
+  ok: boolean
+  source: 'mso_governance'
+  decisions: GovernanceDecisionSummary[]
+  count: number
+  limit: number
+  ephemeral: true
+}
