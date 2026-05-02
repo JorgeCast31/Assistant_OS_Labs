@@ -438,5 +438,98 @@ class TestBackendOperabilityEndpoints(unittest.TestCase):
         self.assertNotIn("dynamic_factors", decision)
 
 
+# ── GET /mso/governance/status ────────────────────────────────────────────────
+
+class TestGovernanceStatusEndpoint(unittest.TestCase):
+    server: WebhookHTTPServer
+    port: int
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.server, cls.port = start_server_thread("127.0.0.1", 0)
+        import time
+        time.sleep(0.1)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.shutdown()
+        cls.server.server_close()
+
+    def setUp(self) -> None:
+        from assistant_os.mso.capability_registry import reset_dynamic_capabilities
+        from assistant_os.mso.system_state import clear_operational_mode_override
+        from assistant_os.mso.task_registry import reset_task_registry
+        from assistant_os.mso.trace_aggregator import reset_trace_aggregator
+        from assistant_os.storage.mso_store import clear_mso_store
+
+        reset_dynamic_capabilities()
+        clear_operational_mode_override()
+        reset_task_registry()
+        reset_trace_aggregator()
+        clear_mso_store()
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        token: str | None = WEBHOOK_TOKEN,
+    ) -> tuple[int, dict]:
+        headers: dict[str, str] = {}
+        if token is not None:
+            headers["X-Assistant-Token"] = token
+        conn = http.client.HTTPConnection("127.0.0.1", self.port)
+        conn.request(method, path, headers=headers)
+        res = conn.getresponse()
+        status = res.status
+        data = json.loads(res.read().decode())
+        conn.close()
+        return status, data
+
+    def test_get_mso_governance_status_returns_normal_on_fresh_store(self) -> None:
+        status, data = self._request("GET", "/mso/governance/status")
+
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["source"], "mso_governance")
+        self.assertEqual(data["operational_mode"], "NORMAL")
+        self.assertIn("operational_mode_reason", data)
+        self.assertIn("operational_mode_source", data)
+        self.assertIn("hardened_domains", data)
+        self.assertIsInstance(data["hardened_domains"], list)
+        self.assertEqual(data["hardened_domain_count"], 0)
+        self.assertEqual(data["active_revocation_count"], 0)
+        self.assertTrue(data["ephemeral"])
+
+    def test_get_mso_governance_status_requires_auth(self) -> None:
+        status, _data = self._request("GET", "/mso/governance/status", token=None)
+
+        self.assertEqual(status, 401)
+
+    def test_get_mso_governance_status_invalid_token(self) -> None:
+        status, _data = self._request("GET", "/mso/governance/status", token="wrong-token")
+
+        self.assertEqual(status, 401)
+
+    def test_get_mso_governance_status_returns_frozen_when_override_active(self) -> None:
+        from assistant_os.mso.system_state import set_operational_mode
+
+        set_operational_mode("FROZEN", reason="test freeze")
+
+        status, data = self._request("GET", "/mso/governance/status")
+
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["operational_mode"], "FROZEN")
+        self.assertEqual(data["operational_mode_reason"], "test freeze")
+        self.assertIn(data["operational_mode_source"], ("manual", "override"))
+
+    def test_get_mso_governance_status_is_read_only(self) -> None:
+        _, first = self._request("GET", "/mso/governance/status")
+        _, second = self._request("GET", "/mso/governance/status")
+
+        self.assertEqual(first["operational_mode"], second["operational_mode"])
+
+
 if __name__ == "__main__":
     unittest.main()

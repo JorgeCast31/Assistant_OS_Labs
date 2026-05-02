@@ -622,5 +622,111 @@ class TestGovernanceRecentPanel(unittest.TestCase):
         )
 
 
+class TestGovernanceStatusBand(unittest.TestCase):
+    """GovernanceStatusBand invariants — S-MSO-GS-01.
+
+    1. Component file exists and calls getGovernanceStatus.
+    2. Proxy route is GET-only, force-dynamic, no token exposure.
+    3. Types export GovernanceStatusResponse.
+    4. system-view mounts GovernanceStatusBand.
+    5. Component contains no mutation strings.
+    6. Component contains 'not MSO active or healthy' qualifier.
+    """
+
+    def setUp(self) -> None:
+        self.band_src        = _read("components/sovereign/GovernanceStatusBand.tsx")
+        self.route_src       = _read("app/api/mso/governance/status/route.ts")
+        self.types_src       = _read("lib/types.ts")
+        self.api_src         = _read("lib/api.ts")
+        self.system_view_src = _read("components/views/system-view.tsx")
+
+    def test_band_calls_get_governance_status(self) -> None:
+        self.assertIn(
+            "getGovernanceStatus",
+            self.band_src,
+            "GovernanceStatusBand must call getGovernanceStatus",
+        )
+
+    def test_band_calls_local_proxy(self) -> None:
+        self.assertIn(
+            "/api/mso/governance/status",
+            self.api_src,
+            "getGovernanceStatus must target the local proxy /api/mso/governance/status",
+        )
+
+    def test_proxy_route_is_get_only(self) -> None:
+        self.assertIn(
+            "export async function GET",
+            self.route_src,
+            "Governance status proxy must export a GET handler",
+        )
+        for method in ("POST", "PUT", "DELETE", "PATCH"):
+            self.assertNotIn(
+                f"export async function {method}",
+                self.route_src,
+                f"Governance status proxy must not export {method} (read-only endpoint)",
+            )
+
+    def test_proxy_route_is_force_dynamic(self) -> None:
+        self.assertIn(
+            "export const dynamic = 'force-dynamic'",
+            self.route_src,
+            "Governance status proxy must set dynamic = 'force-dynamic'",
+        )
+
+    def test_proxy_route_does_not_expose_token(self) -> None:
+        self.assertNotIn(
+            "WEBHOOK_TOKEN",
+            self.route_src,
+            "Governance status proxy must not reference WEBHOOK_TOKEN",
+        )
+        self.assertNotIn(
+            "NEXT_PUBLIC_",
+            self.route_src,
+            "Governance status proxy must not use NEXT_PUBLIC_ env vars",
+        )
+
+    def test_governance_status_type_exported(self) -> None:
+        self.assertIn(
+            "export interface GovernanceStatusResponse",
+            self.types_src,
+            "ui/lib/types.ts must export GovernanceStatusResponse",
+        )
+
+    def test_system_view_mounts_band(self) -> None:
+        self.assertIn(
+            "GovernanceStatusBand",
+            self.system_view_src,
+            "system-view.tsx must mount GovernanceStatusBand",
+        )
+
+    def test_band_contains_no_mutation(self) -> None:
+        for forbidden in ("fetch(", "POST", "DELETE", "mutation"):
+            if forbidden in self.band_src:
+                self.fail(
+                    f"GovernanceStatusBand must not contain '{forbidden}' — read-only component",
+                )
+
+    def test_band_contains_not_mso_qualifier(self) -> None:
+        src_lower = self.band_src.lower()
+        has_qualifier = (
+            "not mso health" in src_lower
+            or "does not imply mso" in src_lower
+            or "does not mean mso" in src_lower
+        )
+        self.assertTrue(
+            has_qualifier,
+            "GovernanceStatusBand must include a qualifier clarifying this does "
+            "not imply MSO active or healthy",
+        )
+
+    def test_band_no_mso_active_fabrication(self) -> None:
+        self.assertNotIn(
+            "MSO ACTIVE",
+            self.band_src,
+            "GovernanceStatusBand must not render 'MSO ACTIVE'",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

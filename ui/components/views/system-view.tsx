@@ -8,6 +8,7 @@ import { StatusBadge }      from '@/components/shared/status-badge'
 import { SystemChatView }   from '@/components/sovereign/SystemChatView'
 import { ReadinessPanel }   from '@/components/sovereign/ReadinessPanel'
 import { GovernanceRecentPanel } from '@/components/sovereign/GovernanceRecentPanel'
+import { GovernanceStatusBand } from '@/components/sovereign/GovernanceStatusBand'
 import { FREEZE_CONTROL, RUNTIME_ENDPOINTS, freezeSystem, restoreSystem } from '@/lib/api'
 import type { HealthStatus, OperationalMode, SystemEvent } from '@/lib/types'
 
@@ -506,7 +507,10 @@ export function SystemView() {
             <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
               Recent Governance
             </p>
-            <GovernanceRecentPanel />
+            <GovernanceStatusBand />
+            <div className="mt-3">
+              <GovernanceRecentPanel />
+            </div>
           </section>
         )}
 
