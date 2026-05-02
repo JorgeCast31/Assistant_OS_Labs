@@ -1763,6 +1763,14 @@ class WebhookHandler(BaseHTTPRequestHandler):
             limit = 50
         try:
             decisions = get_recent_governance(limit=limit)
+
+            def _pick(obj: object, *keys: str) -> dict:
+                # nested fields may be typed dataclass objects OR plain dicts
+                # (the latter happens when GovernanceDecision is reconstructed via asdict())
+                if isinstance(obj, dict):
+                    return {k: obj.get(k, "") for k in keys}
+                return {k: getattr(obj, k, "") for k in keys}
+
             serialized = [
                 {
                     "governance_ref": d.governance_ref,
@@ -1774,9 +1782,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     "operational_mode": d.operational_mode,
                     "effective_execution_mode": d.effective_execution_mode,
                     "justification": d.justification,
-                    "reasons": [{"code": r.code, "detail": r.detail} for r in d.reasons],
-                    "constraints": [{"kind": c.kind, "value": c.value} for c in d.constraints],
-                    "interventions": [{"kind": i.kind, "value": i.value, "reason": i.reason} for i in d.interventions],
+                    "reasons": [_pick(r, "code", "detail") for r in d.reasons],
+                    "constraints": [_pick(c, "kind", "value") for c in d.constraints],
+                    "interventions": [_pick(i, "kind", "value", "reason") for i in d.interventions],
                 }
                 for d in decisions
             ]
