@@ -323,5 +323,66 @@ class TestSystemAssistantProxyAlignment(unittest.TestCase):
             )
 
 
+class TestTopStatusBarMSOLabels(unittest.TestCase):
+    """TopStatusBar must not render local-only MSO state as live backend truth.
+
+    S-MSO-UI-01B invariants:
+    - msoState.status must not drive colored authority badges.
+    - StatusIndicator must not be rendered from msoState.status.
+    - MSO section must show a static 'not wired' label.
+    - executionState must not drive amber/red/pulse color semantics.
+    - activeAgents must not be shown as '0/N' (hardcoded zero implies real data).
+    """
+
+    def setUp(self) -> None:
+        self.src = _read("components/sovereign/TopStatusBar.tsx")
+
+    def test_mso_status_not_displayed_as_live_authority(self) -> None:
+        # msoState.status drives amber-400 in the pre-fix version.
+        # After S-MSO-UI-01B this condition must not exist.
+        self.assertNotIn(
+            "msoState.status === 'active'",
+            self.src,
+            "TopStatusBar must not color-code msoState.status as live authority truth",
+        )
+
+    def test_no_status_indicator_from_local_mso_state(self) -> None:
+        # StatusIndicator must not be rendered with msoState.status as its value.
+        for line in self.src.splitlines():
+            if "StatusIndicator" in line and "msoState.status" in line:
+                self.fail(
+                    f"TopStatusBar renders StatusIndicator with local msoState.status: {line.strip()}"
+                )
+
+    def test_mso_section_shows_static_unwired_label(self) -> None:
+        # MSO section must display a static 'not wired' label — never a live status value.
+        has_trace_na  = "TRACE N/A"  in self.src
+        has_not_wired = "NOT WIRED"  in self.src
+        has_unwired   = "UNWIRED"    in self.src
+        self.assertTrue(
+            has_trace_na or has_not_wired or has_unwired,
+            "TopStatusBar MSO section must render a static 'TRACE N/A' / 'NOT WIRED' / 'UNWIRED' label",
+        )
+
+    def test_exec_state_no_animated_amber(self) -> None:
+        # executionState must not drive animate-pulse + amber color simultaneously.
+        # That combination implies live backend execution activity from local state.
+        for line in self.src.splitlines():
+            if "executionState" in line and "animate-pulse" in line and "amber" in line:
+                self.fail(
+                    f"TopStatusBar exec state uses animate-pulse amber from local-only executionState: "
+                    f"{line.strip()}"
+                )
+
+    def test_active_agents_guarded_not_shown_as_zero(self) -> None:
+        # activeAgents is hardcoded 0 with no backend source.
+        # The safe pattern requires a '—' guard so '0/N' is never displayed.
+        self.assertIn(
+            "activeAgents === 0 ? '—'",
+            self.src,
+            "TopStatusBar must guard activeAgents with '—' when value is 0 (no backend source)",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
