@@ -187,11 +187,64 @@ class TestBackendOperabilityEndpoints(unittest.TestCase):
 
         self.assertEqual(status, 200)
         rendered = json.dumps(data)
-        self.assertNotIn("execution_mode", rendered)
+        # Check for exact JSON key pattern — prevents false match on
+        # "effective_execution_mode" which is a legitimate read-only descriptor.
+        self.assertNotIn('"execution_mode":', rendered)
         self.assertNotIn("governance_verdict", rendered)
         self.assertNotIn("policy_decision", rendered)
         self.assertNotIn("GovernanceVerdict", rendered)
         self.assertNotIn("PolicyDecision", rendered)
+
+    def test_get_system_assistant_state_snapshot_includes_governance_summary(self) -> None:
+        status, data = self._request("GET", "/system-assistant/state")
+
+        self.assertEqual(status, 200)
+        snapshot = data.get("snapshot", {})
+        self.assertIn("governance_status_summary", snapshot)
+        gov = snapshot["governance_status_summary"]
+        if gov is not None:
+            self.assertIn("operational_mode", gov)
+            self.assertIn("active_revocation_count", gov)
+            self.assertIn("hardened_domain_count", gov)
+
+    def test_get_system_assistant_state_governance_summary_fail_soft(self) -> None:
+        with patch(
+            "assistant_os.system_assistant.observer._read_governance_status_summary",
+            side_effect=RuntimeError("governance surface down"),
+        ):
+            status, data = self._request("GET", "/system-assistant/state")
+
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        snapshot = data.get("snapshot", {})
+        self.assertIsNone(snapshot.get("governance_status_summary"))
+        warnings = snapshot.get("warnings", [])
+        self.assertTrue(
+            any("governance" in w.lower() for w in warnings),
+            f"Expected governance warning, got: {warnings}",
+        )
+
+    def test_get_system_assistant_state_recent_governance_field_present(self) -> None:
+        status, data = self._request("GET", "/system-assistant/state")
+
+        self.assertEqual(status, 200)
+        snapshot = data.get("snapshot", {})
+        self.assertIn("recent_governance", snapshot)
+        recent = snapshot["recent_governance"]
+        # recent_governance is list or None depending on source availability
+        self.assertTrue(recent is None or isinstance(recent, list))
+
+    def test_get_system_assistant_state_is_read_only(self) -> None:
+        """Two successive reads must return consistent snapshot shapes."""
+        _, data_a = self._request("GET", "/system-assistant/state")
+        _, data_b = self._request("GET", "/system-assistant/state")
+
+        self.assertTrue(data_a["ok"])
+        self.assertTrue(data_b["ok"])
+        # Governance summary keys must be present in both or absent in both
+        snap_a = data_a.get("snapshot", {})
+        snap_b = data_b.get("snapshot", {})
+        self.assertEqual("governance_status_summary" in snap_a, "governance_status_summary" in snap_b)
 
     def test_chat_process_surface_is_preserved_in_metadata_and_audit_without_changing_execution_mode(self) -> None:
         captured: dict[str, dict] = {}

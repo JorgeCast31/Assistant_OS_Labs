@@ -324,5 +324,172 @@ class TestObserveSystemNoStatesMutation(unittest.TestCase):
         self.assertEqual(len(tasks_before), len(tasks_after))
 
 
+class TestGovernanceStatusSummarySource(unittest.TestCase):
+    """governance_status_summary is included as a passive read-only source."""
+
+    def test_governance_status_summary_in_snapshot(self) -> None:
+        fake = {
+            "source": "mso_governance_status",
+            "operational_mode": "NORMAL",
+            "operational_mode_source": "derived",
+            "hardened_domain_count": 0,
+            "active_revocation_count": 0,
+            "active_grant_count": 0,
+            "recent_anomaly_count": 0,
+            "ephemeral": True,
+            "note": "Governance status is operational runtime state, not MSO activity or health.",
+        }
+        with patch(
+            "assistant_os.system_assistant.observer._read_governance_status_summary",
+            return_value=fake,
+        ):
+            from assistant_os.system_assistant.observer import observe_system
+            snapshot = observe_system()
+        self.assertIn("governance_status_summary", snapshot)
+        self.assertEqual(snapshot["governance_status_summary"]["operational_mode"], "NORMAL")
+
+    def test_governance_status_summary_fail_soft(self) -> None:
+        with patch(
+            "assistant_os.system_assistant.observer._read_governance_status_summary",
+            side_effect=RuntimeError("governance surface down"),
+        ):
+            from assistant_os.system_assistant.observer import observe_system
+            snapshot = observe_system()
+        self.assertIsInstance(snapshot, dict)
+        warnings = snapshot.get("warnings", [])
+        self.assertTrue(
+            any("governance" in w.lower() for w in warnings),
+            f"Expected governance-related warning, got: {warnings}",
+        )
+
+    def test_governance_status_summary_fail_sets_none(self) -> None:
+        with patch(
+            "assistant_os.system_assistant.observer._read_governance_status_summary",
+            side_effect=RuntimeError("governance surface down"),
+        ):
+            from assistant_os.system_assistant.observer import observe_system
+            snapshot = observe_system()
+        self.assertIsNone(snapshot.get("governance_status_summary"))
+
+    def test_observer_does_not_mutate_governance(self) -> None:
+        """Reading governance summary must not alter MSO state."""
+        from assistant_os.mso.system_state import get_operational_mode_override
+        from assistant_os.system_assistant.observer import observe_system
+        before_mode, _ = get_operational_mode_override()
+        observe_system()
+        after_mode, _ = get_operational_mode_override()
+        self.assertEqual(before_mode, after_mode)
+
+
+class TestRecentGovernanceSummarySource(unittest.TestCase):
+    """recent_governance is included as a passive read-only source."""
+
+    def test_recent_governance_in_snapshot(self) -> None:
+        fake = [
+            {
+                "governance_ref": "G-001",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "action": "BLOCK",
+                "target_domain": "ENERGY",
+                "target_action": "COMMAND",
+                "risk_level": "high",
+                "operational_mode": "NORMAL",
+                "effective_execution_mode": "blocked",
+                "reason": "anomaly detected",
+            }
+        ]
+        with patch(
+            "assistant_os.system_assistant.observer._read_recent_governance_summary",
+            return_value=fake,
+        ):
+            from assistant_os.system_assistant.observer import observe_system
+            snapshot = observe_system()
+        self.assertIn("recent_governance", snapshot)
+        self.assertEqual(len(snapshot["recent_governance"]), 1)
+        self.assertEqual(snapshot["recent_governance"][0]["action"], "BLOCK")
+
+    def test_recent_governance_empty_list_included(self) -> None:
+        with patch(
+            "assistant_os.system_assistant.observer._read_recent_governance_summary",
+            return_value=[],
+        ):
+            from assistant_os.system_assistant.observer import observe_system
+            snapshot = observe_system()
+        self.assertIn("recent_governance", snapshot)
+        self.assertEqual(snapshot["recent_governance"], [])
+
+    def test_recent_governance_fail_soft(self) -> None:
+        with patch(
+            "assistant_os.system_assistant.observer._read_recent_governance_summary",
+            side_effect=RuntimeError("trace aggregator down"),
+        ):
+            from assistant_os.system_assistant.observer import observe_system
+            snapshot = observe_system()
+        self.assertIsInstance(snapshot, dict)
+        warnings = snapshot.get("warnings", [])
+        self.assertTrue(
+            any("governance" in w.lower() for w in warnings),
+            f"Expected governance-related warning, got: {warnings}",
+        )
+
+    def test_recent_governance_fail_sets_none(self) -> None:
+        with patch(
+            "assistant_os.system_assistant.observer._read_recent_governance_summary",
+            side_effect=RuntimeError("trace aggregator down"),
+        ):
+            from assistant_os.system_assistant.observer import observe_system
+            snapshot = observe_system()
+        self.assertIsNone(snapshot.get("recent_governance"))
+
+    def test_dict_shaped_reasons_do_not_break_observer(self) -> None:
+        """Dict-shaped reason objects must be handled without raising."""
+        from types import SimpleNamespace
+        fake_decision = SimpleNamespace(
+            governance_ref="G-002",
+            created_at="2026-01-01T00:00:00+00:00",
+            action="ALLOW",
+            target_domain="CODE",
+            target_action="execute",
+            risk_level="low",
+            operational_mode="NORMAL",
+            effective_execution_mode="allow",
+            justification="baseline allow",
+            reasons=[{"code": "R-001", "detail": "domain rule applied"}],
+        )
+        with patch(
+            "assistant_os.mso.governance_surface.get_recent_governance_decisions",
+            return_value=[fake_decision],
+        ):
+            from assistant_os.system_assistant.observer import _read_recent_governance_summary
+            result = _read_recent_governance_summary()
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["reason"], "domain rule applied")
+
+    def test_dataclass_shaped_reasons_do_not_break_observer(self) -> None:
+        """Dataclass-shaped reason objects must be handled without raising."""
+        from types import SimpleNamespace
+        reason_obj = SimpleNamespace(code="R-002", detail="policy rule applied")
+        fake_decision = SimpleNamespace(
+            governance_ref="G-003",
+            created_at="2026-01-01T00:00:00+00:00",
+            action="BLOCK",
+            target_domain="FINANCE",
+            target_action="transfer",
+            risk_level="high",
+            operational_mode="DEGRADED",
+            effective_execution_mode="blocked",
+            justification="risk threshold exceeded",
+            reasons=[reason_obj],
+        )
+        with patch(
+            "assistant_os.mso.governance_surface.get_recent_governance_decisions",
+            return_value=[fake_decision],
+        ):
+            from assistant_os.system_assistant.observer import _read_recent_governance_summary
+            result = _read_recent_governance_summary()
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["reason"], "policy rule applied")
+
+
 if __name__ == "__main__":
     unittest.main()
