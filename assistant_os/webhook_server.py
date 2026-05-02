@@ -138,6 +138,7 @@ from .operability import (
 )
 from .system_assistant.observer import observe_system
 from .system_assistant.interpreter import interpret_system_snapshot
+from .mso.governance_surface import get_recent_governance
 
 # Module-level variables for patching in tests
 NOTION_WORK_TRASH_DB_ID: str | None = None  # Set via environment or config later
@@ -1568,6 +1569,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_mso_state_get()
             return
 
+        if path == "/mso/governance/recent":
+            self._handle_mso_governance_recent_get()
+            return
+
         if path == "/system-assistant/state":
             self._handle_system_assistant_state_get()
             return
@@ -1739,6 +1744,60 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._send_json_response(status, error)
             return
         self._send_json_response(200, build_mso_state_response())
+
+    def _handle_mso_governance_recent_get(self) -> None:
+        """GET /mso/governance/recent — recent in-memory governance decisions (ephemeral)."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+        params = self._parse_query_params()
+        try:
+            limit = int(params.get("limit", "20"))
+        except ValueError:
+            limit = 20
+        if limit < 1:
+            limit = 1
+        if limit > 50:
+            limit = 50
+        try:
+            decisions = get_recent_governance(limit=limit)
+            serialized = [
+                {
+                    "governance_ref": d.governance_ref,
+                    "created_at": d.created_at,
+                    "action": d.action,
+                    "target_domain": d.target_domain,
+                    "target_action": d.target_action,
+                    "risk_level": d.risk_level,
+                    "operational_mode": d.operational_mode,
+                    "effective_execution_mode": d.effective_execution_mode,
+                    "justification": d.justification,
+                    "reasons": [{"code": r.code, "detail": r.detail} for r in d.reasons],
+                    "constraints": [{"kind": c.kind, "value": c.value} for c in d.constraints],
+                    "interventions": [{"kind": i.kind, "value": i.value, "reason": i.reason} for i in d.interventions],
+                }
+                for d in decisions
+            ]
+            self._send_json_response(200, {
+                "ok": True,
+                "source": "mso_governance",
+                "decisions": serialized,
+                "count": len(serialized),
+                "limit": limit,
+                "ephemeral": True,
+            })
+        except Exception:
+            self._send_json_response(200, {
+                "ok": False,
+                "source": "mso_governance",
+                "error": "governance state unavailable",
+                "decisions": [],
+                "count": 0,
+                "limit": limit,
+                "ephemeral": True,
+            })
 
     def _handle_system_assistant_state_get(self) -> None:
         """GET /system-assistant/state — read-only observer + interpretation payload."""

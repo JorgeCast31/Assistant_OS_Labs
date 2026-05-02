@@ -234,5 +234,140 @@ class TestBackendOperabilityEndpoints(unittest.TestCase):
         self.assertTrue(data["needs_confirmation"])
 
 
+    # ── GET /mso/governance/recent ────────────────────────────────────────────
+
+    def _insert_governance_decision(self, governance_ref: str = "test-gov-001", action: str = "ALLOW") -> None:
+        from assistant_os.contracts import now_iso
+        from assistant_os.mso.contracts import (
+            DeterministicDecisionTrace,
+            GovernanceDecision,
+            GovernanceReason,
+        )
+        from assistant_os.mso.trace_aggregator import begin_trace_chain
+
+        decision_trace = DeterministicDecisionTrace(
+            decision_ref=f"dec-{governance_ref}",
+            context_id=f"ctx-{governance_ref}",
+            trace_id=f"trace-{governance_ref}",
+            plan_id=governance_ref,
+            domain="WORK",
+            action="create_page",
+            execution_mode="FULL_EXECUTE",
+            operation="work_create",
+            preview="",
+            created_at=now_iso(),
+        )
+        gov_decision = GovernanceDecision(
+            governance_ref=governance_ref,
+            action=action,
+            target_domain="WORK",
+            target_action="create_page",
+            effective_execution_mode="FULL_EXECUTE",
+            risk_level="low",
+            justification="test justification",
+            reasons=[GovernanceReason(code="test_code", detail="test detail")],
+            constraints=[],
+            interventions=[],
+            capability_mode="allow",
+            base_execution_mode="FULL_EXECUTE",
+            operational_mode="NORMAL",
+            created_at=now_iso(),
+        )
+        begin_trace_chain(
+            task_id=f"task-{governance_ref}",
+            context_id=f"ctx-{governance_ref}",
+            trace_id=f"trace-{governance_ref}",
+            plan_id=governance_ref,
+            request_text="test request",
+            operation="work_create",
+            domain="WORK",
+            action="create_page",
+            execution_mode="FULL_EXECUTE",
+            created_at=now_iso(),
+            advisory_trace=None,
+            decision_trace=decision_trace,
+            governance_decision=gov_decision,
+        )
+
+    def test_get_mso_governance_recent_returns_empty_on_fresh_store(self) -> None:
+        status, data = self._request("GET", "/mso/governance/recent")
+
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["source"], "mso_governance")
+        self.assertEqual(data["decisions"], [])
+        self.assertEqual(data["count"], 0)
+        self.assertEqual(data["limit"], 20)
+        self.assertTrue(data["ephemeral"])
+
+    def test_get_mso_governance_recent_requires_auth(self) -> None:
+        status, data = self._request("GET", "/mso/governance/recent", token=None)
+
+        self.assertEqual(status, 401)
+
+    def test_get_mso_governance_recent_invalid_token(self) -> None:
+        status, data = self._request("GET", "/mso/governance/recent", token="wrong-token")
+
+        self.assertEqual(status, 401)
+
+    def test_get_mso_governance_recent_returns_decisions_after_insert(self) -> None:
+        self._insert_governance_decision(governance_ref="gov-abc", action="ALLOW")
+
+        status, data = self._request("GET", "/mso/governance/recent")
+
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["count"], 1)
+        decision = data["decisions"][0]
+        self.assertEqual(decision["governance_ref"], "gov-abc")
+        self.assertEqual(decision["action"], "ALLOW")
+        self.assertEqual(decision["target_domain"], "WORK")
+        self.assertEqual(decision["risk_level"], "low")
+        self.assertEqual(decision["operational_mode"], "NORMAL")
+        self.assertIn("created_at", decision)
+        self.assertIsInstance(decision["reasons"], list)
+        self.assertEqual(decision["reasons"][0]["code"], "test_code")
+
+    def test_get_mso_governance_recent_limit_param(self) -> None:
+        for i in range(5):
+            self._insert_governance_decision(governance_ref=f"gov-limit-{i}")
+
+        status, data = self._request("GET", "/mso/governance/recent?limit=2")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["limit"], 2)
+        self.assertEqual(data["count"], 2)
+        self.assertEqual(len(data["decisions"]), 2)
+
+    def test_get_mso_governance_recent_limit_clamped_to_max(self) -> None:
+        status, data = self._request("GET", "/mso/governance/recent?limit=999")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["limit"], 50)
+
+    def test_get_mso_governance_recent_excludes_internal_fields(self) -> None:
+        self._insert_governance_decision(governance_ref="gov-fields")
+
+        status, data = self._request("GET", "/mso/governance/recent")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(data["count"], 1)
+        decision = data["decisions"][0]
+        self.assertNotIn("anomaly_signals", decision)
+        self.assertNotIn("dynamic_factors", decision)
+        self.assertNotIn("capability_mode", decision)
+        self.assertNotIn("capability_source", decision)
+        self.assertNotIn("base_execution_mode", decision)
+
+    def test_get_mso_governance_recent_is_read_only(self) -> None:
+        self._insert_governance_decision(governance_ref="gov-ro")
+
+        _, first = self._request("GET", "/mso/governance/recent")
+        _, second = self._request("GET", "/mso/governance/recent")
+
+        self.assertEqual(first["count"], second["count"])
+        self.assertEqual(first["decisions"][0]["governance_ref"], second["decisions"][0]["governance_ref"])
+
+
 if __name__ == "__main__":
     unittest.main()

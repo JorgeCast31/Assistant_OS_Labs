@@ -30,8 +30,12 @@ class TestCognitionProvidersDisabled(unittest.TestCase):
         os.environ.pop("ASSISTANT_LOCAL_LLM_ENABLED", None)
 
     def test_disabled_returns_single_provider_with_disabled_status(self):
-        # Reload config with feature off
-        with patch.dict(os.environ, {"ASSISTANT_LOCAL_LLM_ENABLED": "false"}):
+        # Reload config with feature off; patch dotenv so .env does not override env vars
+        with patch.dict(os.environ, {
+                "ASSISTANT_LOCAL_LLM_ENABLED": "false",
+                "ASSISTANT_UI_SHOW_COGNITION": "false",
+            }), \
+             patch("dotenv.load_dotenv"):
             # Force reimport so new env is picked up
             import importlib
             import assistant_os.config as cfg
@@ -335,7 +339,12 @@ class TestCognitionTraceInChatResponse(unittest.TestCase):
 
     def test_cognitive_trace_absent_by_default(self):
         """When ASSISTANT_LOCAL_LLM_ENABLED is not set, no cognitive_trace in response."""
-        with patch.dict(os.environ, {"ASSISTANT_LOCAL_LLM_ENABLED": "false"}):
+        # patch dotenv so .env does not override env vars during config reload
+        with patch.dict(os.environ, {
+                "ASSISTANT_LOCAL_LLM_ENABLED": "false",
+                "ASSISTANT_UI_SHOW_COGNITION": "false",
+            }), \
+             patch("dotenv.load_dotenv"):
             # Reimport config so the flag takes effect
             import importlib
             import assistant_os.config as cfg
