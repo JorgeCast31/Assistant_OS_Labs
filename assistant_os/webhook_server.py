@@ -138,7 +138,7 @@ from .operability import (
 )
 from .system_assistant.observer import observe_system
 from .system_assistant.interpreter import interpret_system_snapshot
-from .mso.governance_surface import get_recent_governance
+from .mso.governance_surface import get_governance_summary, get_operational_mode, get_recent_governance
 
 # Module-level variables for patching in tests
 NOTION_WORK_TRASH_DB_ID: str | None = None  # Set via environment or config later
@@ -1573,6 +1573,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_mso_governance_recent_get()
             return
 
+        if path == "/mso/governance/status":
+            self._handle_mso_governance_status_get()
+            return
+
         if path == "/system-assistant/state":
             self._handle_system_assistant_state_get()
             return
@@ -1804,6 +1808,37 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "decisions": [],
                 "count": 0,
                 "limit": limit,
+                "ephemeral": True,
+            })
+
+    def _handle_mso_governance_status_get(self) -> None:
+        """GET /mso/governance/status — read-only operational mode and key governance counts (ephemeral)."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+        try:
+            summary = get_governance_summary()
+            mode, reason, source = get_operational_mode()
+            self._send_json_response(200, {
+                "ok": True,
+                "source": "mso_governance",
+                "operational_mode": mode,
+                "operational_mode_reason": reason,
+                "operational_mode_source": source,
+                "hardened_domains": summary.hardened_domains,
+                "hardened_domain_count": len(summary.hardened_domains),
+                "active_revocation_count": summary.active_revocation_count,
+                "active_grant_count": summary.active_grant_count,
+                "recent_anomaly_count": summary.recent_anomaly_count,
+                "ephemeral": True,
+            })
+        except Exception:
+            self._send_json_response(200, {
+                "ok": False,
+                "source": "mso_governance",
+                "error": "governance status unavailable",
                 "ephemeral": True,
             })
 

@@ -15,6 +15,7 @@ import type {
   ExecutionStatus,
   ExecutionStatusSource,
   GovernanceRecentResponse,
+  GovernanceStatusResponse,
 } from './types'
 
 export const API_BASE_URL =
@@ -678,5 +679,40 @@ export async function getRecentGovernanceDecisions(
     return json.ok ? json : GOVERNANCE_UNAVAILABLE
   } catch {
     return GOVERNANCE_UNAVAILABLE
+  }
+}
+
+// ── MSO Governance Status (S-MSO-GS-01) ──────────────────────────────────────
+
+const GOVERNANCE_STATUS_UNAVAILABLE: GovernanceStatusResponse = {
+  ok: false,
+  source: 'mso_governance',
+  operational_mode: 'UNKNOWN',
+  operational_mode_reason: '',
+  operational_mode_source: 'derived',
+  hardened_domains: [],
+  hardened_domain_count: 0,
+  active_revocation_count: 0,
+  active_grant_count: 0,
+  recent_anomaly_count: 0,
+  ephemeral: true,
+}
+
+/**
+ * GET /api/mso/governance/status — current operational mode and governance state counts.
+ * Calls the local Next.js proxy which injects the auth token server-side.
+ * Returns an unavailable envelope on any error — never throws.
+ */
+export async function getGovernanceStatus(): Promise<GovernanceStatusResponse> {
+  try {
+    const res = await fetch('/api/mso/governance/status', {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) return GOVERNANCE_STATUS_UNAVAILABLE
+    const json = await res.json() as GovernanceStatusResponse
+    return json.ok ? json : GOVERNANCE_STATUS_UNAVAILABLE
+  } catch {
+    return GOVERNANCE_STATUS_UNAVAILABLE
   }
 }

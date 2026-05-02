@@ -454,3 +454,19 @@ export interface GovernanceRecentResponse {
   limit: number
   ephemeral: true
 }
+
+// ── MSO Governance Status (S-MSO-GS-01) ──────────────────────────────────────
+
+export interface GovernanceStatusResponse {
+  ok: boolean
+  source: 'mso_governance'
+  operational_mode: OperationalMode
+  operational_mode_reason: string
+  operational_mode_source: 'derived' | 'override' | string
+  hardened_domains: string[]
+  hardened_domain_count: number
+  active_revocation_count: number
+  active_grant_count: number
+  recent_anomaly_count: number
+  ephemeral: true
+}
