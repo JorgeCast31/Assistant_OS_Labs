@@ -11,6 +11,7 @@ Verifies:
 8. interpretation does not include execution trigger / command / pipeline target
 9. interpreter does not call observe_system automatically
 10. interpreter is pure: same input -> same output
+11. governance observations appear and carry correct qualifiers
 """
 
 from __future__ import annotations
@@ -66,6 +67,78 @@ def _unavailable_snapshot() -> dict:
             "capabilities source unavailable: error",
             "tasks source unavailable: error",
         ],
+    }
+
+
+def _snapshot_with_governance() -> dict:
+    return {
+        "generated_at": "2026-05-01T00:00:00+00:00",
+        "status": "ok",
+        "operational_mode": "NORMAL",
+        "agents": [],
+        "capabilities": [],
+        "tasks_summary": {},
+        "warnings": [],
+        "governance_status_summary": {
+            "source": "mso_governance_status",
+            "operational_mode": "NORMAL",
+            "operational_mode_source": "derived",
+            "hardened_domain_count": 1,
+            "active_revocation_count": 0,
+            "active_grant_count": 0,
+            "recent_anomaly_count": 0,
+            "ephemeral": True,
+            "note": "Governance status is operational runtime state, not MSO activity or health.",
+        },
+        "recent_governance": [
+            {
+                "governance_ref": "G-001",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "action": "BLOCK",
+                "target_domain": "ENERGY",
+                "target_action": "COMMAND",
+                "risk_level": "high",
+                "operational_mode": "NORMAL",
+                "effective_execution_mode": "blocked",
+                "reason": "anomaly detected",
+            }
+        ],
+    }
+
+
+def _snapshot_no_governance() -> dict:
+    return {
+        "generated_at": "2026-05-01T00:00:00+00:00",
+        "status": "ok",
+        "operational_mode": "NORMAL",
+        "agents": [],
+        "capabilities": [],
+        "tasks_summary": {},
+        "warnings": [],
+    }
+
+
+def _snapshot_empty_recent_governance() -> dict:
+    return {
+        "generated_at": "2026-05-01T00:00:00+00:00",
+        "status": "ok",
+        "operational_mode": "NORMAL",
+        "agents": [],
+        "capabilities": [],
+        "tasks_summary": {},
+        "warnings": [],
+        "governance_status_summary": {
+            "source": "mso_governance_status",
+            "operational_mode": "NORMAL",
+            "operational_mode_source": "derived",
+            "hardened_domain_count": 0,
+            "active_revocation_count": 0,
+            "active_grant_count": 0,
+            "recent_anomaly_count": 0,
+            "ephemeral": True,
+            "note": "Governance status is operational runtime state, not MSO activity or health.",
+        },
+        "recent_governance": [],
     }
 
 
@@ -305,6 +378,87 @@ class TestCountsOnly(unittest.TestCase):
         result = interpret_system_snapshot(_healthy_snapshot())
         for obs in result.get("observations", []):
             self.assertIsInstance(obs, str)
+
+
+# ---------------------------------------------------------------------------
+# 11. Governance observations
+# ---------------------------------------------------------------------------
+
+class TestGovernanceObservations(unittest.TestCase):
+    def test_governance_status_observation_appears(self) -> None:
+        from assistant_os.system_assistant.interpreter import interpret_system_snapshot
+        result = interpret_system_snapshot(_snapshot_with_governance())
+        all_text = " ".join(result["observations"])
+        self.assertIn("Governance status:", all_text)
+        self.assertIn("NORMAL", all_text)
+        self.assertIn("derived", all_text)
+
+    def test_governance_status_observation_contains_qualifier(self) -> None:
+        from assistant_os.system_assistant.interpreter import interpret_system_snapshot
+        result = interpret_system_snapshot(_snapshot_with_governance())
+        all_text = " ".join(result["observations"])
+        self.assertIn("not MSO activity or health", all_text)
+
+    def test_governance_no_summary_does_not_crash(self) -> None:
+        from assistant_os.system_assistant.interpreter import interpret_system_snapshot
+        result = interpret_system_snapshot(_snapshot_no_governance())
+        self.assertIsInstance(result["observations"], list)
+
+    def test_governance_absent_does_not_add_observation(self) -> None:
+        from assistant_os.system_assistant.interpreter import interpret_system_snapshot
+        result = interpret_system_snapshot(_snapshot_no_governance())
+        all_text = " ".join(result["observations"])
+        self.assertNotIn("Governance status:", all_text)
+        self.assertNotIn("Recent governance:", all_text)
+
+    def test_recent_governance_empty_observation_appears(self) -> None:
+        from assistant_os.system_assistant.interpreter import interpret_system_snapshot
+        result = interpret_system_snapshot(_snapshot_empty_recent_governance())
+        all_text = " ".join(result["observations"])
+        self.assertIn("Recent governance:", all_text)
+        self.assertIn("does not imply MSO inactivity", all_text)
+
+    def test_recent_governance_empty_does_not_claim_mso_inactive(self) -> None:
+        from assistant_os.system_assistant.interpreter import interpret_system_snapshot
+        result = interpret_system_snapshot(_snapshot_empty_recent_governance())
+        all_text = " ".join(result["observations"])
+        self.assertNotIn("MSO inactive", all_text)
+
+    def test_recent_governance_latest_decision_observation_appears(self) -> None:
+        from assistant_os.system_assistant.interpreter import interpret_system_snapshot
+        result = interpret_system_snapshot(_snapshot_with_governance())
+        all_text = " ".join(result["observations"])
+        self.assertIn("Recent governance:", all_text)
+        self.assertIn("BLOCK", all_text)
+        self.assertIn("ENERGY", all_text)
+        self.assertIn("anomaly detected", all_text)
+
+    def test_no_mso_active_in_observations(self) -> None:
+        from assistant_os.system_assistant.interpreter import interpret_system_snapshot
+        result = interpret_system_snapshot(_snapshot_with_governance())
+        all_text = " ".join(result["observations"]) + " " + result["summary"]
+        self.assertNotIn("MSO ACTIVE", all_text)
+        self.assertNotIn("MSO HEALTHY", all_text)
+        self.assertNotIn("system safe", all_text.lower())
+        self.assertNotIn("system unsafe", all_text.lower())
+        self.assertNotIn("governance working perfectly", all_text.lower())
+
+    def test_interpreter_remains_pure_with_governance(self) -> None:
+        from assistant_os.system_assistant.interpreter import interpret_system_snapshot
+        snap = _snapshot_with_governance()
+        result_a = interpret_system_snapshot(snap)
+        result_b = interpret_system_snapshot(snap)
+        self.assertEqual(result_a, result_b)
+
+    def test_interpreter_does_not_call_governance_surface(self) -> None:
+        """Interpreter reads from snapshot dict only — never calls governance_surface."""
+        from unittest.mock import patch
+        from assistant_os.system_assistant.interpreter import interpret_system_snapshot
+        with patch(
+            "assistant_os.mso.governance_surface.get_governance_summary"
+        ) as gs_mock:
+            interpret_system_snapshot(_snapshot_with_governance())
+        gs_mock.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -70,6 +70,7 @@ def _build_observations(snapshot: dict[str, Any]) -> list[str]:
 
     Reports only counts — never echoes raw agent or capability dicts.
     Never mentions execution_mode, GovernanceVerdict, or PolicyDecision.
+    Never claims MSO ACTIVE, MSO HEALTHY, system safe/unsafe.
     """
     observations: list[str] = []
 
@@ -92,6 +93,43 @@ def _build_observations(snapshot: dict[str, Any]) -> list[str]:
         observations.append(f"tasks summary: {parts}")
     else:
         observations.append("tasks summary: no tasks recorded")
+
+    # Governance status summary — passive observability, not authority
+    gov_summary = snapshot.get("governance_status_summary")
+    if gov_summary is not None:
+        gov_mode = gov_summary.get("operational_mode", "unknown")
+        gov_mode_source = gov_summary.get("operational_mode_source", "unknown")
+        hardened = gov_summary.get("hardened_domain_count", 0)
+        revocations = gov_summary.get("active_revocation_count", 0)
+        anomalies = gov_summary.get("recent_anomaly_count", 0)
+        observations.append(
+            f"Governance status: mode {gov_mode} (source {gov_mode_source}), "
+            f"{hardened} hardened domains, {revocations} active revocations, "
+            f"{anomalies} recent anomalies. "
+            "This is runtime status, not MSO activity or health."
+        )
+
+    # Recent governance decisions — presence/count only, not authority
+    recent_gov = snapshot.get("recent_governance")
+    if recent_gov is not None:
+        if len(recent_gov) == 0:
+            observations.append(
+                "Recent governance: no decisions recorded since backend start. "
+                "This does not imply MSO inactivity."
+            )
+        else:
+            latest = recent_gov[0]
+            action = latest.get("action", "unknown")
+            domain = latest.get("target_domain", "unknown")
+            target_action = latest.get("target_action", "unknown")
+            exec_mode = latest.get("effective_execution_mode", "unknown")
+            reason = latest.get("reason") or ""
+            reason_part = f" Reason: {reason}" if reason else ""
+            observations.append(
+                f"Recent governance: {len(recent_gov)} decision(s) shown; "
+                f"latest {action} on {domain}/{target_action}, "
+                f"execution mode {exec_mode}.{reason_part}"
+            )
 
     return observations
 

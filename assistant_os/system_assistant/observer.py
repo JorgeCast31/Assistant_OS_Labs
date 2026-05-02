@@ -8,6 +8,9 @@ INVARIANTS — never violated by this module:
   - Does NOT call any agent entrypoint.
   - Does NOT call Kernel handle_request().
   - Does NOT call MSO governance / evaluation methods.
+  - MAY read governance surfaces as passive read-only observability
+    (governance_surface.py read facades only); does NOT evaluate, decide,
+    or infer MSO activity or health from those reads.
   - Does NOT issue, consume, or validate capability tokens.
   - Does NOT write to audit_store.
   - Does NOT mutate ExecutionRegistry or any mutable state.
@@ -37,12 +40,14 @@ class SystemSnapshot(TypedDict, total=False):
     """
 
     generated_at: str
-    status: str                         # "ok" | "partial" | "unavailable"
-    operational_mode: str | None        # override mode or None if not set
-    agents: list[dict[str, Any]]        # read-only agent metadata summaries
-    capabilities: list[dict[str, Any]]  # read-only capability records
-    tasks_summary: dict[str, int]       # counts by status
-    warnings: list[str]                 # non-fatal source errors
+    status: str                                   # "ok" | "partial" | "unavailable"
+    operational_mode: str | None                  # override mode or None if not set
+    agents: list[dict[str, Any]]                  # read-only agent metadata summaries
+    capabilities: list[dict[str, Any]]            # read-only capability records
+    tasks_summary: dict[str, int]                 # counts by status
+    warnings: list[str]                           # non-fatal source errors
+    governance_status_summary: dict[str, Any] | None   # compact read from governance_surface
+    recent_governance: list[dict[str, Any]] | None     # lightweight recent decisions
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +105,61 @@ def _read_tasks_summary() -> dict[str, int]:
     return summary
 
 
+def _read_governance_status_summary() -> dict[str, Any]:
+    """Read operational mode and key governance counts from governance_surface.
+
+    Passive read-only; does not evaluate, decide, or imply MSO activity or health.
+    """
+    from assistant_os.mso.governance_surface import get_governance_summary, get_operational_mode
+    summary = get_governance_summary()
+    mode, _mode_reason, mode_source = get_operational_mode()
+    return {
+        "source": "mso_governance_status",
+        "operational_mode": mode,
+        "operational_mode_source": mode_source,
+        "hardened_domain_count": len(summary.hardened_domains),
+        "active_revocation_count": summary.active_revocation_count,
+        "active_grant_count": summary.active_grant_count,
+        "recent_anomaly_count": summary.recent_anomaly_count,
+        "ephemeral": True,
+        "note": "Governance status is operational runtime state, not MSO activity or health.",
+    }
+
+
+def _read_recent_governance_summary(limit: int = 3) -> list[dict[str, Any]]:
+    """Return recent governance decisions as lightweight dicts.
+
+    Passive read-only; does not evaluate, decide, or imply MSO activity or health.
+    Handles both dataclass-shaped and dict-shaped nested reason objects.
+    """
+    from assistant_os.mso.governance_surface import get_recent_governance
+    decisions = get_recent_governance(limit=limit)
+    result = []
+    for d in decisions:
+        reasons = getattr(d, "reasons", None) or []
+        reason_text: str | None = None
+        if reasons:
+            first = reasons[0]
+            if isinstance(first, dict):
+                reason_text = first.get("detail") or first.get("code") or None
+            else:
+                reason_text = getattr(first, "detail", None) or getattr(first, "code", None) or None
+        if not reason_text:
+            reason_text = getattr(d, "justification", None) or None
+        result.append({
+            "governance_ref": d.governance_ref,
+            "created_at": d.created_at,
+            "action": d.action,
+            "target_domain": d.target_domain,
+            "target_action": d.target_action,
+            "risk_level": d.risk_level,
+            "operational_mode": d.operational_mode,
+            "effective_execution_mode": d.effective_execution_mode,
+            "reason": reason_text,
+        })
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Public observer function
 # ---------------------------------------------------------------------------
@@ -147,6 +207,20 @@ def observe_system() -> SystemSnapshot:
     except Exception as exc:  # noqa: BLE001
         warnings.append(f"tasks source unavailable: {exc}")
         snapshot["tasks_summary"] = {}
+
+    # --- governance status summary ---
+    try:
+        snapshot["governance_status_summary"] = _read_governance_status_summary()
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"Governance status unavailable: {exc}")
+        snapshot["governance_status_summary"] = None
+
+    # --- recent governance ---
+    try:
+        snapshot["recent_governance"] = _read_recent_governance_summary()
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"Recent governance unavailable: {exc}")
+        snapshot["recent_governance"] = None
 
     # Degrade status if any warnings were recorded.
     if warnings:
