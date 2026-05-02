@@ -384,5 +384,61 @@ class TestTopStatusBarMSOLabels(unittest.TestCase):
         )
 
 
+class TestReadinessPanelCognitionDisabled(unittest.TestCase):
+    """ReadinessPanel must treat disabled cognition providers as neutral, not offline.
+
+    S-COG-01B: when the backend returns status='disabled' (feature flag off),
+    the UI must show a neutral idle indicator, not a red '0/1 online' error.
+    Disabled is not offline — it means the feature is intentionally inactive.
+    """
+
+    def setUp(self) -> None:
+        self.src = _read("components/sovereign/ReadinessPanel.tsx")
+
+    def test_disabled_providers_filtered_before_counting(self) -> None:
+        """Active-provider count must exclude disabled providers."""
+        self.assertIn(
+            "status !== 'disabled'",
+            self.src,
+            "ReadinessPanel must filter out providers with status='disabled' "
+            "before computing the online/total count — disabled is not offline",
+        )
+
+    def test_all_disabled_renders_neutral_label(self) -> None:
+        """All-disabled state must produce a neutral label, not an error count."""
+        self.assertIn(
+            "Cognition disabled",
+            self.src,
+            "ReadinessPanel must render 'Cognition disabled' (neutral, idle) when "
+            "every provider has status='disabled' — not '0/1 online' with a red dot",
+        )
+
+    def test_no_unfiltered_providers_length_as_total(self) -> None:
+        """totalProviders must not be assigned from unfiltered providers.length."""
+        for line in self.src.splitlines():
+            if re.search(r'\btotalProviders\b\s*=\s*providers\.length\b', line):
+                self.fail(
+                    "ReadinessPanel assigns totalProviders = providers.length without "
+                    f"filtering disabled providers — disabled would render as offline: "
+                    f"{line.strip()}",
+                )
+
+    def test_all_disabled_guard_present(self) -> None:
+        """An explicit all-disabled guard must exist before the error branch."""
+        has_guard = (
+            "allDisabled" in self.src
+            or (
+                "totalActive === 0" in self.src
+                and "allProviders.length" in self.src
+            )
+        )
+        self.assertTrue(
+            has_guard,
+            "ReadinessPanel must define an explicit all-disabled guard "
+            "(e.g. 'allDisabled' variable) so disabled providers never fall through "
+            "to the '0/N online' error branch",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
