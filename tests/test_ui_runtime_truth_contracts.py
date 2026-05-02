@@ -520,5 +520,107 @@ class TestGovernanceRecentProxyAlignment(unittest.TestCase):
             )
 
 
+class TestGovernanceRecentPanel(unittest.TestCase):
+    """GovernanceRecentPanel invariants — S-MSO-UI-01C.
+
+    1. Component file exists.
+    2. Calls getRecentGovernanceDecisions, not direct webhook URL.
+    3. Contains no mutation strings.
+    4. Contains ephemeral warning and 'not MSO' qualifier.
+    5. SystemView mounts GovernanceRecentPanel.
+    6. No "MSO ACTIVE" string introduced.
+    7. Panel not mounted inside ReadinessPanel.
+    """
+
+    def setUp(self) -> None:
+        self.panel_src       = _read("components/sovereign/GovernanceRecentPanel.tsx")
+        self.system_view_src = _read("components/views/system-view.tsx")
+        self.readiness_src   = _read("components/sovereign/ReadinessPanel.tsx")
+
+    def test_panel_file_exists(self) -> None:
+        self.assertIn(
+            "GovernanceRecentPanel",
+            self.panel_src,
+            "GovernanceRecentPanel.tsx must export GovernanceRecentPanel",
+        )
+
+    def test_calls_local_helper_not_direct_webhook(self) -> None:
+        self.assertIn(
+            "getRecentGovernanceDecisions",
+            self.panel_src,
+            "GovernanceRecentPanel must call getRecentGovernanceDecisions (local helper via proxy)",
+        )
+        self.assertNotIn(
+            "8787",
+            self.panel_src,
+            "GovernanceRecentPanel must not call the webhook port directly",
+        )
+        self.assertNotIn(
+            "WEBHOOK_BASE_URL",
+            self.panel_src,
+            "GovernanceRecentPanel must not reference WEBHOOK_BASE_URL (would bypass proxy)",
+        )
+
+    def test_no_mutation_strings(self) -> None:
+        for forbidden in ("approve", "deny", "/admin", "/mso/freeze", "/api/code"):
+            self.assertNotIn(
+                forbidden,
+                self.panel_src,
+                f"GovernanceRecentPanel must not contain mutation/admin string: '{forbidden}'",
+            )
+        # POST must not appear as a fetch method (method: 'POST')
+        self.assertNotIn(
+            "method: 'POST'",
+            self.panel_src,
+            "GovernanceRecentPanel must not perform POST requests",
+        )
+
+    def test_contains_ephemeral_warning(self) -> None:
+        self.assertIn(
+            "phemeral",
+            self.panel_src,
+            "GovernanceRecentPanel must include the word 'ephemeral' to signal non-persistent data",
+        )
+
+    def test_contains_not_mso_health_qualifier(self) -> None:
+        src_lower = self.panel_src.lower()
+        has_qualifier = (
+            "not mso health" in src_lower
+            or "does not imply mso" in src_lower
+            or "does not mean mso" in src_lower
+        )
+        self.assertTrue(
+            has_qualifier,
+            "GovernanceRecentPanel must include a qualifier clarifying this is "
+            "not MSO health and does not imply MSO active",
+        )
+
+    def test_system_view_mounts_panel(self) -> None:
+        self.assertIn(
+            "GovernanceRecentPanel",
+            self.system_view_src,
+            "system-view.tsx must mount GovernanceRecentPanel",
+        )
+
+    def test_no_mso_active_fabrication(self) -> None:
+        for src, name in (
+            (self.panel_src,       "GovernanceRecentPanel.tsx"),
+            (self.system_view_src, "system-view.tsx"),
+        ):
+            self.assertNotIn(
+                "MSO ACTIVE",
+                src,
+                f"{name} must not render the string 'MSO ACTIVE' — "
+                "governance decisions are not an authority badge",
+            )
+
+    def test_not_mounted_inside_readiness_panel(self) -> None:
+        self.assertNotIn(
+            "GovernanceRecentPanel",
+            self.readiness_src,
+            "GovernanceRecentPanel must not be mounted inside ReadinessPanel",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
