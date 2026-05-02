@@ -368,6 +368,75 @@ class TestBackendOperabilityEndpoints(unittest.TestCase):
         self.assertEqual(first["count"], second["count"])
         self.assertEqual(first["decisions"][0]["governance_ref"], second["decisions"][0]["governance_ref"])
 
+    def test_get_mso_governance_recent_serializes_dict_nested_fields(self) -> None:
+        """Regression: orchestrator reconstructs GovernanceDecision via GovernanceDecision(**asdict(...)),
+        which stores reasons/constraints/interventions as plain dicts instead of typed objects.
+        The serializer must handle both without raising AttributeError."""
+        from dataclasses import asdict
+        from assistant_os.contracts import now_iso
+        from assistant_os.mso.contracts import GovernanceDecision, GovernanceReason, GovernanceConstraint, GovernanceIntervention
+        from assistant_os.mso.trace_aggregator import _lock, _recent_governance
+
+        typed_decision = GovernanceDecision(
+            governance_ref="gov-dict-regression",
+            action="BLOCK",
+            target_domain="ENERGY",
+            target_action="COMMAND",
+            effective_execution_mode="blocked",
+            risk_level="high",
+            justification="capability registry denied",
+            reasons=[GovernanceReason(code="CAPABILITY_DENIED", detail="no registered capability")],
+            constraints=[GovernanceConstraint(kind="mode_cap", value="blocked")],
+            interventions=[GovernanceIntervention(kind="execution_block", value="blocked", reason="capability denied")],
+            capability_mode="deny",
+            base_execution_mode="FULL_EXECUTE",
+            operational_mode="NORMAL",
+            created_at=now_iso(),
+        )
+        # Simulate orchestrator line: GovernanceDecision(**asdict(governance))
+        # asdict() converts nested dataclasses to plain dicts; the reconstructed object
+        # stores reasons/constraints/interventions as list[dict], not typed instances.
+        dict_decision = GovernanceDecision(**asdict(typed_decision))
+
+        with _lock:
+            _recent_governance.append(dict_decision)
+
+        status, data = self._request("GET", "/mso/governance/recent")
+
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"], msg=f"Expected ok:true but got: {data}")
+        self.assertGreaterEqual(data["count"], 1)
+
+        decision = next(
+            (d for d in data["decisions"] if d["governance_ref"] == "gov-dict-regression"),
+            None,
+        )
+        self.assertIsNotNone(decision, "gov-dict-regression not found in response")
+        self.assertEqual(decision["action"], "BLOCK")
+        self.assertEqual(decision["target_domain"], "ENERGY")
+        self.assertEqual(decision["effective_execution_mode"], "blocked")
+
+        self.assertIsInstance(decision["reasons"], list)
+        self.assertEqual(len(decision["reasons"]), 1)
+        self.assertEqual(decision["reasons"][0]["code"], "CAPABILITY_DENIED")
+        self.assertEqual(decision["reasons"][0]["detail"], "no registered capability")
+
+        self.assertIsInstance(decision["constraints"], list)
+        self.assertEqual(len(decision["constraints"]), 1)
+        self.assertEqual(decision["constraints"][0]["kind"], "mode_cap")
+        self.assertEqual(decision["constraints"][0]["value"], "blocked")
+
+        self.assertIsInstance(decision["interventions"], list)
+        self.assertEqual(len(decision["interventions"]), 1)
+        self.assertEqual(decision["interventions"][0]["kind"], "execution_block")
+        self.assertEqual(decision["interventions"][0]["reason"], "capability denied")
+
+        # Excluded internal fields must not be present
+        self.assertNotIn("capability_mode", decision)
+        self.assertNotIn("base_execution_mode", decision)
+        self.assertNotIn("anomaly_signals", decision)
+        self.assertNotIn("dynamic_factors", decision)
+
 
 if __name__ == "__main__":
     unittest.main()
