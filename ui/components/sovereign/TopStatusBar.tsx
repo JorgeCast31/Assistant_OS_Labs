@@ -1,7 +1,6 @@
 'use client'
 
 import { useSovereignStore } from '@/stores/sovereign-store'
-import { StatusIndicator } from './StatusIndicator'
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -39,25 +38,14 @@ export function TopStatusBar() {
 
         <div className="w-px h-4 bg-os-border" />
 
-        {/* MSO Status — show live status only after operator interaction */}
+        {/* MSO trace — backend trace source not wired; operationalMode is the real runtime signal */}
         <div className="flex items-center gap-2">
-          {(msoState.lastDecision !== null || msoState.executionState !== 'idle')
-            ? <StatusIndicator type="authority" status={msoState.status} size="md" pulse={msoState.status === 'deciding'} />
-            : <span className="w-2 h-2 rounded-full bg-tx-muted/40 flex-shrink-0" />
-          }
+          <span className="w-2 h-2 rounded-full bg-tx-muted/40 flex-shrink-0" />
           <span className="text-[11px] font-mono text-tx-secondary uppercase tracking-wider">
             MSO
           </span>
-          <span className={`text-[11px] font-mono ${
-            (msoState.lastDecision !== null || msoState.executionState !== 'idle')
-              ? msoState.status === 'active'   ? 'text-amber-400'
-              : msoState.status === 'deciding' ? 'text-amber-500'
-              :                                  'text-red-400'
-              : 'text-tx-muted'
-          }`}>
-            {(msoState.lastDecision !== null || msoState.executionState !== 'idle')
-              ? msoState.status.toUpperCase()
-              : '—'}
+          <span className="text-[11px] font-mono text-tx-muted">
+            TRACE N/A
           </span>
         </div>
 
@@ -84,20 +72,12 @@ export function TopStatusBar() {
 
       {/* Right: Execution State + Time */}
       <div className="flex items-center gap-4">
-        {/* Execution State */}
+        {/* Execution State — session-local only; no backend poll */}
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-mono text-tx-muted uppercase tracking-wider">
             Exec
           </span>
-          <span className={`text-[11px] font-mono px-2 py-0.5 rounded ${
-            msoState.executionState === 'idle' ? 'bg-slate-700/50 text-slate-400' :
-            msoState.executionState === 'executing' ? 'bg-amber-500/20 text-amber-400 animate-pulse' :
-            msoState.executionState === 'awaiting_confirmation' ? 'bg-amber-500/20 text-amber-400' :
-            msoState.executionState === 'completed' ? 'bg-emerald-500/20 text-emerald-400' :
-            msoState.executionState === 'failed' ? 'bg-red-500/20 text-red-400' :
-            msoState.executionState === 'blocked' ? 'bg-red-500/20 text-red-400' :
-            'bg-teal-500/20 text-teal-400'
-          }`}>
+          <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-700/50 text-slate-400">
             {msoState.executionState.toUpperCase().replace('_', ' ')}
           </span>
         </div>
