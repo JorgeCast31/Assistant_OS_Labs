@@ -147,11 +147,16 @@ export function ReadinessPanel() {
     ? String(activeExecutions)
     : `${activeExecutions} — Code API ${HEALTH_LABEL[apiStatus].toLowerCase()}`
 
-  // Cognition row — explicit state machine across poll/error/provider combinations
-  const onlineProviders = providers.filter(p => p.status === 'online').length
-  const totalProviders  = providers.length
-  const neverPolled     = lastPolled == null && pollError == null
-  const pollFailed      = pollError != null
+  // Cognition row — explicit state machine across poll/error/provider combinations.
+  // disabled providers are feature-flagged off — they are not offline failures.
+  const allProviders    = providers
+  const activeProviders = allProviders.filter(p => p.status !== 'disabled')
+  const onlineProviders = activeProviders.filter(p => p.status === 'online').length
+  const totalActive     = activeProviders.length
+  const allDisabled     = allProviders.length > 0 && totalActive === 0
+
+  const neverPolled = lastPolled == null && pollError == null
+  const pollFailed  = pollError != null
 
   let cogDot: string
   let cogText: string
@@ -171,26 +176,31 @@ export function ReadinessPanel() {
     // Failed but have prior provider list — stale
     cogDot   = 'bg-warn'
     cogText  = 'text-warn'
-    cogValue = totalProviders === 0
+    cogValue = totalActive === 0
       ? 'Poll error (no prior providers)'
-      : `${onlineProviders}/${totalProviders} online (stale)`
-  } else if (totalProviders === 0) {
-    // Good poll, no providers configured
+      : `${onlineProviders}/${totalActive} online (stale)`
+  } else if (allProviders.length === 0) {
+    // Good poll — backend returned no providers at all
     cogDot   = 'bg-idle'
     cogText  = 'text-tx-muted'
     cogValue = 'No providers configured'
-  } else if (onlineProviders === totalProviders) {
+  } else if (allDisabled) {
+    // All providers have status='disabled' — feature flag off, not a server failure
+    cogDot   = 'bg-idle'
+    cogText  = 'text-tx-muted'
+    cogValue = 'Cognition disabled'
+  } else if (onlineProviders === totalActive) {
     cogDot   = 'bg-ok'
     cogText  = 'text-ok'
-    cogValue = `${onlineProviders}/${totalProviders} online`
+    cogValue = `${onlineProviders}/${totalActive} online`
   } else if (onlineProviders > 0) {
     cogDot   = 'bg-warn'
     cogText  = 'text-warn'
-    cogValue = `${onlineProviders}/${totalProviders} online`
+    cogValue = `${onlineProviders}/${totalActive} online`
   } else {
     cogDot   = 'bg-err'
     cogText  = 'text-err'
-    cogValue = `0/${totalProviders} online`
+    cogValue = `0/${totalActive} online`
   }
 
   return (
