@@ -65,6 +65,26 @@ def _describe_mode(mode: str | None) -> str:
     return f"operational mode: {mode}"
 
 
+def _describe_effective_mode(snapshot: dict[str, Any]) -> str:
+    """Build mode text for summary using best available mode signal.
+
+    Priority: manual override > governance effective mode > unknown.
+    This does not infer MSO activity or health.
+    """
+    override = snapshot.get("operational_mode")
+    if override is not None:
+        return f"manual operational override {override}"
+
+    gov = snapshot.get("governance_status_summary")
+    if isinstance(gov, dict):
+        gov_mode = gov.get("operational_mode")
+        gov_source = gov.get("operational_mode_source") or "derived"
+        if gov_mode is not None:
+            return f"effective governance mode {gov_mode} (source {gov_source})"
+
+    return "mode unknown (no override set)"
+
+
 def _build_observations(snapshot: dict[str, Any]) -> list[str]:
     """Build a list of observation strings from snapshot fields.
 
@@ -136,8 +156,7 @@ def _build_observations(snapshot: dict[str, Any]) -> list[str]:
 
 def _build_summary(status: str, snapshot: dict[str, Any]) -> str:
     """Build a single-sentence human-readable summary."""
-    mode = snapshot.get("operational_mode")
-    mode_text = f"mode {mode}" if mode is not None else "mode unknown (no override set)"
+    mode_text = _describe_effective_mode(snapshot)
 
     if status == "healthy":
         return f"System observation complete — {mode_text}, all sources available."

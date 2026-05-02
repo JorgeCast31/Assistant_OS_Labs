@@ -461,5 +461,115 @@ class TestGovernanceObservations(unittest.TestCase):
         gs_mock.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# 12. Summary effective mode wording
+# ---------------------------------------------------------------------------
+
+class TestSummaryEffectiveModeWording(unittest.TestCase):
+    def _summary(self, snap: dict) -> str:
+        from assistant_os.system_assistant.interpreter import interpret_system_snapshot
+        return interpret_system_snapshot(snap)["summary"]
+
+    def test_manual_override_takes_priority_over_governance(self) -> None:
+        snap = {
+            "generated_at": "2026-05-01T00:00:00+00:00",
+            "status": "ok",
+            "operational_mode": "FROZEN",
+            "agents": [], "capabilities": [], "tasks_summary": {}, "warnings": [],
+            "governance_status_summary": {
+                "operational_mode": "NORMAL",
+                "operational_mode_source": "derived",
+                "hardened_domain_count": 0, "active_revocation_count": 0,
+                "active_grant_count": 0, "recent_anomaly_count": 0,
+            },
+        }
+        summary = self._summary(snap)
+        self.assertIn("manual operational override FROZEN", summary)
+        self.assertNotIn("effective governance mode", summary)
+
+    def test_governance_effective_mode_used_when_no_override(self) -> None:
+        snap = {
+            "generated_at": "2026-05-01T00:00:00+00:00",
+            "status": "ok",
+            "operational_mode": None,
+            "agents": [], "capabilities": [], "tasks_summary": {}, "warnings": [],
+            "governance_status_summary": {
+                "operational_mode": "NORMAL",
+                "operational_mode_source": "derived",
+                "hardened_domain_count": 0, "active_revocation_count": 0,
+                "active_grant_count": 0, "recent_anomaly_count": 0,
+            },
+        }
+        summary = self._summary(snap)
+        self.assertIn("effective governance mode NORMAL (source derived)", summary)
+
+    def test_unknown_fallback_when_no_override_and_no_governance(self) -> None:
+        snap = {
+            "generated_at": "2026-05-01T00:00:00+00:00",
+            "status": "ok",
+            "operational_mode": None,
+            "agents": [], "capabilities": [], "tasks_summary": {}, "warnings": [],
+        }
+        summary = self._summary(snap)
+        self.assertIn("mode unknown (no override set)", summary)
+        self.assertNotIn("NORMAL", summary)
+
+    def test_unknown_fallback_when_governance_status_summary_none(self) -> None:
+        snap = {
+            "generated_at": "2026-05-01T00:00:00+00:00",
+            "status": "ok",
+            "operational_mode": None,
+            "agents": [], "capabilities": [], "tasks_summary": {}, "warnings": [],
+            "governance_status_summary": None,
+        }
+        summary = self._summary(snap)
+        self.assertIn("mode unknown (no override set)", summary)
+
+    def test_partial_summary_uses_effective_governance_mode(self) -> None:
+        snap = {
+            "generated_at": "2026-05-01T00:00:00+00:00",
+            "status": "partial",
+            "operational_mode": None,
+            "agents": [], "capabilities": [], "tasks_summary": {},
+            "warnings": ["agents source unavailable: error"],
+            "governance_status_summary": {
+                "operational_mode": "NORMAL",
+                "operational_mode_source": "derived",
+                "hardened_domain_count": 0, "active_revocation_count": 0,
+                "active_grant_count": 0, "recent_anomaly_count": 0,
+            },
+        }
+        summary = self._summary(snap)
+        self.assertIn("System observation partial", summary)
+        self.assertIn("effective governance mode NORMAL (source derived)", summary)
+
+    def test_derived_frozen_appears_correctly(self) -> None:
+        snap = {
+            "generated_at": "2026-05-01T00:00:00+00:00",
+            "status": "ok",
+            "operational_mode": None,
+            "agents": [], "capabilities": [], "tasks_summary": {}, "warnings": [],
+            "governance_status_summary": {
+                "operational_mode": "FROZEN",
+                "operational_mode_source": "derived",
+                "hardened_domain_count": 2, "active_revocation_count": 1,
+                "active_grant_count": 0, "recent_anomaly_count": 3,
+            },
+        }
+        summary = self._summary(snap)
+        self.assertIn("effective governance mode FROZEN (source derived)", summary)
+
+    def test_no_mso_active_or_healthy_in_summary(self) -> None:
+        for snap in (
+            _snapshot_with_governance(),
+            _snapshot_no_governance(),
+            _snapshot_empty_recent_governance(),
+        ):
+            with self.subTest(status=snap["status"]):
+                summary = self._summary(snap)
+                self.assertNotIn("MSO ACTIVE", summary)
+                self.assertNotIn("MSO HEALTHY", summary)
+
+
 if __name__ == "__main__":
     unittest.main()
