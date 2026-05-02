@@ -440,5 +440,85 @@ class TestReadinessPanelCognitionDisabled(unittest.TestCase):
         )
 
 
+class TestGovernanceRecentProxyAlignment(unittest.TestCase):
+    """getRecentGovernanceDecisions must call the local proxy, not the webhook directly.
+
+    S-MSO-FE-01A: the proxy route injects the auth token server-side.
+    The browser must never see the token. Calling the webhook directly would
+    produce 401 from the browser.
+    """
+
+    def setUp(self) -> None:
+        self.api_src   = _read("lib/api.ts")
+        self.route_src = _read("app/api/mso/governance/recent/route.ts")
+        self.types_src = _read("lib/types.ts")
+
+    def test_get_recent_governance_decisions_calls_local_proxy(self) -> None:
+        self.assertIn(
+            "/api/mso/governance/recent",
+            self.api_src,
+            "getRecentGovernanceDecisions must target the local proxy /api/mso/governance/recent",
+        )
+
+    def test_get_recent_governance_decisions_not_direct_webhook(self) -> None:
+        lines = self.api_src.splitlines()
+        in_fn = False
+        for line in lines:
+            if "getRecentGovernanceDecisions" in line and "export async function" in line:
+                in_fn = True
+            if in_fn and "WEBHOOK_BASE_URL" in line and "fetch(" in line:
+                self.fail(
+                    "getRecentGovernanceDecisions must not call WEBHOOK_BASE_URL directly — "
+                    "use the local proxy instead"
+                )
+
+    def test_proxy_route_does_not_expose_token(self) -> None:
+        self.assertNotIn(
+            "WEBHOOK_TOKEN",
+            self.route_src,
+            "Governance proxy route must not reference WEBHOOK_TOKEN",
+        )
+        self.assertNotIn(
+            "NEXT_PUBLIC_",
+            self.route_src,
+            "Governance proxy route must not use NEXT_PUBLIC_ env vars (would expose to browser)",
+        )
+
+    def test_proxy_route_is_get_only(self) -> None:
+        self.assertIn(
+            "export async function GET",
+            self.route_src,
+            "Governance proxy route must export a GET handler",
+        )
+        for method in ("POST", "PUT", "DELETE", "PATCH"):
+            self.assertNotIn(
+                f"export async function {method}",
+                self.route_src,
+                f"Governance proxy route must not export {method} (read-only endpoint)",
+            )
+
+    def test_proxy_route_is_force_dynamic(self) -> None:
+        self.assertIn(
+            "export const dynamic = 'force-dynamic'",
+            self.route_src,
+            "Governance proxy route must set dynamic = 'force-dynamic' to prevent caching",
+        )
+
+    def test_proxy_route_forwards_limit_param(self) -> None:
+        self.assertIn(
+            "limit",
+            self.route_src,
+            "Governance proxy route must forward the 'limit' query param to the backend",
+        )
+
+    def test_governance_types_exported(self) -> None:
+        for name in ("GovernanceDecisionSummary", "GovernanceRecentResponse"):
+            self.assertIn(
+                f"export interface {name}",
+                self.types_src,
+                f"ui/lib/types.ts must export {name}",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,7 @@ import type {
   SystemEvent,
   ExecutionStatus,
   ExecutionStatusSource,
+  GovernanceRecentResponse,
 } from './types'
 
 export const API_BASE_URL =
@@ -642,5 +643,40 @@ export async function apiSearchMessages(q: string): Promise<MessageSearchResult[
     return (json.results ?? []) as MessageSearchResult[]
   } catch {
     return []
+  }
+}
+
+// ── MSO Governance Recent (S-MSO-FE-01A) ─────────────────────────────────────
+
+const GOVERNANCE_UNAVAILABLE: GovernanceRecentResponse = {
+  ok: false,
+  source: 'mso_governance',
+  decisions: [],
+  count: 0,
+  limit: 20,
+  ephemeral: true,
+}
+
+/**
+ * GET /api/mso/governance/recent — recent in-memory governance decisions.
+ * Calls the local Next.js proxy which injects the auth token server-side.
+ * Returns an empty envelope on any error — never throws.
+ */
+export async function getRecentGovernanceDecisions(
+  limit?: number,
+): Promise<GovernanceRecentResponse> {
+  try {
+    const path = limit !== undefined
+      ? `/api/mso/governance/recent?limit=${limit}`
+      : '/api/mso/governance/recent'
+    const res = await fetch(path, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) return GOVERNANCE_UNAVAILABLE
+    const json = await res.json() as GovernanceRecentResponse
+    return json.ok ? json : GOVERNANCE_UNAVAILABLE
+  } catch {
+    return GOVERNANCE_UNAVAILABLE
   }
 }
