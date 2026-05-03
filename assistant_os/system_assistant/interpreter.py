@@ -151,6 +151,36 @@ def _build_observations(snapshot: dict[str, Any]) -> list[str]:
                 f"execution mode {exec_mode}.{reason_part}"
             )
 
+    # CODE readiness summary — passive observability, counts only, not authority.
+    # Wording must never imply: ready to execute, safe to apply, authorized,
+    # MSO ACTIVE, MSO HEALTHY, system healthy because online.
+    code = snapshot.get("code_readiness_summary")
+    if code is not None:
+        api_word = "reachable" if code.get("code_api_reachable") else "unavailable"
+        apply_mode = code.get("apply_execution_mode", "unknown")
+        allowed = code.get("code_capability_allowed_count", 0)
+        confirm = code.get("code_capability_confirm_only_count", 0)
+        blocked = code.get("code_capability_blocked_count", 0)
+        runner_part = ""
+        if code.get("runner_backend_probed"):
+            available = code.get("runner_backend_available")
+            if available is True:
+                runner_part = ", runner backend available"
+            elif available is False:
+                runner_part = ", runner backend unavailable"
+            else:
+                runner_part = ", runner backend unknown"
+        observations.append(
+            f"CODE readiness: API {api_word}, apply mode {apply_mode}, "
+            f"{allowed} allow / {confirm} confirm_only / {blocked} blocked "
+            f"capabilities{runner_part}. "
+            "This is readiness, not execution authority."
+        )
+    else:
+        observations.append(
+            "CODE readiness: unavailable. This does not imply CODE authority."
+        )
+
     return observations
 
 

@@ -728,5 +728,109 @@ class TestGovernanceStatusBand(unittest.TestCase):
         )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# S-CODE-READINESS-01D — UI passive surface contracts.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCodeReadinessProxy(unittest.TestCase):
+    """The Next.js proxy at /api/code/readiness must be GET-only and server-auth."""
+
+    def setUp(self) -> None:
+        self.src = _read("app/api/code/readiness/route.ts")
+
+    def test_proxy_exists(self) -> None:
+        self.assertTrue(self.src.strip(), "proxy route file must not be empty")
+
+    def test_proxy_is_get_only(self) -> None:
+        self.assertIn("export async function GET", self.src)
+        for forbidden in (
+            "export async function POST",
+            "export async function PUT",
+            "export async function DELETE",
+            "export async function PATCH",
+        ):
+            self.assertNotIn(
+                forbidden, self.src,
+                f"CODE readiness proxy must not export {forbidden} — read-only surface",
+            )
+
+    def test_proxy_uses_server_side_auth(self) -> None:
+        self.assertIn("getWebhookHeaders", self.src)
+        self.assertNotIn("NEXT_PUBLIC_ASSISTANT_TOKEN", self.src)
+        self.assertNotIn("NEXT_PUBLIC_WEBHOOK_TOKEN", self.src)
+
+    def test_proxy_targets_code_readiness_path(self) -> None:
+        self.assertIn("/code/readiness", self.src)
+
+    def test_proxy_returns_not_authority_envelope_on_failure(self) -> None:
+        self.assertIn("not authority", self.src.lower())
+
+
+class TestCodeReadinessHelper(unittest.TestCase):
+    """getCodeReadiness must call the LOCAL proxy, not the webhook directly."""
+
+    def setUp(self) -> None:
+        self.src = _read("lib/api.ts")
+
+    def test_helper_exists(self) -> None:
+        self.assertIn("export async function getCodeReadiness", self.src)
+
+    def test_helper_calls_local_proxy_only(self) -> None:
+        idx = self.src.find("export async function getCodeReadiness")
+        self.assertNotEqual(idx, -1)
+        body = self.src[idx: idx + 1500]
+        self.assertIn("/api/code/readiness", body)
+        self.assertNotIn("WEBHOOK_BASE_URL", body)
+        self.assertNotIn("ASSISTANT_TOKEN", body)
+
+
+class TestReadinessPanelCodeReadinessRender(unittest.TestCase):
+    """ReadinessPanel must render CODE readiness without authority/action affordances."""
+
+    def setUp(self) -> None:
+        self.src = _read("components/sovereign/ReadinessPanel.tsx")
+
+    def test_imports_code_readiness_store(self) -> None:
+        self.assertIn("useCodeReadinessStore", self.src)
+
+    def test_imports_polling_hook(self) -> None:
+        self.assertIn("useCodeReadinessPolling", self.src)
+
+    def test_renders_code_readiness_section(self) -> None:
+        self.assertIn("CODE Readiness", self.src)
+
+    def test_no_action_buttons(self) -> None:
+        for forbidden in (
+            "<button",
+            "onClick",
+            "fetch(",
+            "POST",
+            "DELETE",
+        ):
+            self.assertNotIn(
+                forbidden, self.src,
+                f"ReadinessPanel must not contain '{forbidden}' — passive read-only surface",
+            )
+
+    def test_no_authority_wording(self) -> None:
+        lowered = self.src.lower()
+        for forbidden in (
+            "ready to execute",
+            "safe to apply",
+            "authorized",
+            "execution enabled",
+            "mso active",
+            "mso healthy",
+        ):
+            self.assertNotIn(
+                forbidden, lowered,
+                f"ReadinessPanel must not render authority wording: '{forbidden}'",
+            )
+
+    def test_includes_not_authority_qualifier(self) -> None:
+        self.assertIn("not authority", self.src.lower())
+
+
 if __name__ == "__main__":
     unittest.main()

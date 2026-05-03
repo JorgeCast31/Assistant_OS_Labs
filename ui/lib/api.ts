@@ -716,3 +716,59 @@ export async function getGovernanceStatus(): Promise<GovernanceStatusResponse> {
     return GOVERNANCE_STATUS_UNAVAILABLE
   }
 }
+
+// ── CODE readiness (S-CODE-READINESS-01D) ────────────────────────────────────
+// Read-only passive surface. Browser → Next.js proxy → webhook backend.
+// Never carries authority. Never triggers execution.
+
+import type { CodeReadinessResponse } from './types'
+
+const CODE_READINESS_UNAVAILABLE: CodeReadinessResponse = {
+  ok: false,
+  source: 'code_readiness',
+  domain: 'CODE',
+  feature_enabled: false,
+  last_health_check: '',
+  note:
+    'Readiness is source availability and configuration only — it is not authority. ' +
+    'Capabilities are governed by MSO.',
+  code_api_reachable: false,
+  code_api_url: '',
+  code_api_latency_ms: 0,
+  code_api_error: 'CODE readiness backend unavailable',
+  apply_execution_mode: 'stub',
+  apply_real_enabled: false,
+  runner_backend_probed: false,
+  runner_backend_available: null,
+  runner_backend_latency_ms: null,
+  runner_backend_error: null,
+  runner_timeout_seconds: 0,
+  runner_memory_limit: '',
+  runner_cpu_limit: '',
+  runner_base_image: '',
+  code_capabilities: [],
+  code_capability_allowed_count: 0,
+  code_capability_confirm_only_count: 0,
+  code_capability_blocked_count: 0,
+  error: 'CODE readiness backend unavailable',
+}
+
+/**
+ * GET /api/code/readiness — passive CODE readiness summary.
+ * Calls the LOCAL Next.js proxy (`/api/code/readiness`) which injects auth
+ * server-side. The browser MUST NEVER call the webhook backend directly.
+ * Returns an unavailable envelope on any error — never throws.
+ */
+export async function getCodeReadiness(): Promise<CodeReadinessResponse> {
+  try {
+    const res = await fetch('/api/code/readiness', {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) return CODE_READINESS_UNAVAILABLE
+    const json = await res.json() as CodeReadinessResponse
+    return json.ok ? json : { ...CODE_READINESS_UNAVAILABLE, error: json.error ?? 'unavailable' }
+  } catch {
+    return CODE_READINESS_UNAVAILABLE
+  }
+}

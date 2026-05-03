@@ -571,5 +571,132 @@ class TestSummaryEffectiveModeWording(unittest.TestCase):
                 self.assertNotIn("MSO HEALTHY", summary)
 
 
+# ---------------------------------------------------------------------------
+# S-CODE-READINESS-01C — interpreter must observe CODE readiness passively.
+# ---------------------------------------------------------------------------
+
+
+def _snapshot_with_code_readiness(*, reachable: bool = True,
+                                   apply_mode: str = "stub",
+                                   allowed: int = 2,
+                                   confirm: int = 2,
+                                   blocked: int = 0,
+                                   runner_probed: bool = False,
+                                   runner_available: object = None) -> dict:
+    return {
+        "status": "ok",
+        "operational_mode": None,
+        "agents": [],
+        "capabilities": [],
+        "tasks_summary": {},
+        "warnings": [],
+        "code_readiness_summary": {
+            "source": "code_readiness",
+            "domain": "CODE",
+            "feature_enabled": True,
+            "code_api_reachable": reachable,
+            "apply_execution_mode": apply_mode,
+            "apply_real_enabled": apply_mode == "real",
+            "runner_backend_probed": runner_probed,
+            "runner_backend_available": runner_available,
+            "code_capability_allowed_count": allowed,
+            "code_capability_confirm_only_count": confirm,
+            "code_capability_blocked_count": blocked,
+            "note": "Readiness is not authority.",
+        },
+    }
+
+
+def _snapshot_without_code_readiness() -> dict:
+    return {
+        "status": "ok",
+        "operational_mode": None,
+        "agents": [],
+        "capabilities": [],
+        "tasks_summary": {},
+        "warnings": [],
+        "code_readiness_summary": None,
+    }
+
+
+class TestCodeReadinessObservations(unittest.TestCase):
+    """Interpreter must surface CODE readiness with passive wording only."""
+
+    def _observations(self, snapshot: dict) -> list[str]:
+        from assistant_os.system_assistant.interpreter import interpret_system_snapshot
+        return interpret_system_snapshot(snapshot)["observations"]
+
+    def test_observation_appears_when_present(self) -> None:
+        snap = _snapshot_with_code_readiness()
+        joined = " || ".join(self._observations(snap))
+        self.assertIn("CODE readiness", joined)
+        self.assertIn("API reachable", joined)
+        self.assertIn("apply mode stub", joined)
+        self.assertIn("2 allow", joined)
+        self.assertIn("not execution authority", joined.lower())
+
+    def test_api_unreachable_phrased_as_unavailable(self) -> None:
+        snap = _snapshot_with_code_readiness(reachable=False)
+        joined = " || ".join(self._observations(snap))
+        self.assertIn("API unavailable", joined)
+
+    def test_runner_probed_available(self) -> None:
+        snap = _snapshot_with_code_readiness(
+            apply_mode="real", runner_probed=True, runner_available=True,
+        )
+        joined = " || ".join(self._observations(snap))
+        self.assertIn("runner backend available", joined)
+
+    def test_runner_probed_unavailable(self) -> None:
+        snap = _snapshot_with_code_readiness(
+            apply_mode="real", runner_probed=True, runner_available=False,
+        )
+        joined = " || ".join(self._observations(snap))
+        self.assertIn("runner backend unavailable", joined)
+
+    def test_unavailable_when_summary_none(self) -> None:
+        snap = _snapshot_without_code_readiness()
+        joined = " || ".join(self._observations(snap))
+        self.assertIn("CODE readiness: unavailable", joined)
+        self.assertIn("does not imply CODE authority", joined)
+
+    def test_no_forbidden_authority_wording(self) -> None:
+        for snap in (
+            _snapshot_with_code_readiness(),
+            _snapshot_with_code_readiness(reachable=False),
+            _snapshot_with_code_readiness(apply_mode="real",
+                                          runner_probed=True,
+                                          runner_available=True),
+            _snapshot_without_code_readiness(),
+        ):
+            with self.subTest():
+                joined = " || ".join(self._observations(snap))
+                lowered = joined.lower()
+                for forbidden in (
+                    "ready to execute",
+                    "safe to apply",
+                    "authorized",
+                    "execution enabled",
+                    "runner authorized",
+                    "mso active",
+                    "mso healthy",
+                    "healthy because online",
+                ):
+                    self.assertNotIn(
+                        forbidden, lowered,
+                        f"Forbidden authority wording leaked: {forbidden!r}",
+                    )
+
+    def test_interpreter_does_not_import_codeops(self) -> None:
+        """Interpreter must remain pure — no I/O, no codeops/readiness import."""
+        import inspect
+        from assistant_os.system_assistant import interpreter as _interp
+        src = inspect.getsource(_interp)
+        # Must NOT import codeops.readiness directly — relies on snapshot only.
+        self.assertNotIn("from assistant_os.codeops.readiness", src)
+        self.assertNotIn("from ..codeops", src)
+        self.assertNotIn("from .codeops", src)
+
+
 if __name__ == "__main__":
     unittest.main()

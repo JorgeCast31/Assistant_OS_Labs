@@ -366,6 +366,23 @@ def handle_list_executions(
     return {"ok": True, "executions": results, "count": len(results)}
 
 
+def handle_code_readiness() -> Dict[str, Any]:
+    """Return read-only CODE readiness summary in a stable envelope.
+
+    Wraps assistant_os.codeops.readiness.get_code_readiness(). This handler
+    does NOT execute code, create jobs, mutate state, or invoke the runner.
+    The producer itself is fail-soft; this layer wraps the result with an
+    `ok`/`source` envelope consistent with other read-only endpoints.
+    """
+    from ..codeops.readiness import get_code_readiness
+    summary = get_code_readiness()
+    return {
+        "ok": True,
+        "source": "code_readiness",
+        **summary,
+    }
+
+
 def handle_code_status() -> Dict[str, Any]:
     """Return aggregated execution counts for operational visibility.
 
@@ -824,6 +841,24 @@ class CodeAPIHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 logger.exception("STATUS_ERROR")
                 self._send(500, {"ok": False, "error": str(exc)})
+        elif path == "/api/code/readiness":
+            # S-CODE-READINESS-01B: read-only CODE readiness surface.
+            # No execution, no job creation, no mutation. Authority is MSO's.
+            try:
+                self._send(200, handle_code_readiness())
+            except Exception as exc:
+                logger.exception("READINESS_ERROR")
+                # Fail-soft envelope so callers always receive structured JSON.
+                self._send(200, {
+                    "ok": False,
+                    "source": "code_readiness",
+                    "domain": "CODE",
+                    "error": f"readiness producer unavailable: {exc}",
+                    "note": (
+                        "Readiness is source availability and configuration only — "
+                        "it is not authority. Capabilities are governed by MSO."
+                    ),
+                })
         elif path.startswith("/api/code/executions/"):
             suffix = path[len("/api/code/executions/"):]
             if not suffix:

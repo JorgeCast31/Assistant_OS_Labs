@@ -48,6 +48,7 @@ class SystemSnapshot(TypedDict, total=False):
     warnings: list[str]                           # non-fatal source errors
     governance_status_summary: dict[str, Any] | None   # compact read from governance_surface
     recent_governance: list[dict[str, Any]] | None     # lightweight recent decisions
+    code_readiness_summary: dict[str, Any] | None      # compact CODE readiness (counts, not full caps)
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +124,31 @@ def _read_governance_status_summary() -> dict[str, Any]:
         "recent_anomaly_count": summary.recent_anomaly_count,
         "ephemeral": True,
         "note": "Governance status is operational runtime state, not MSO activity or health.",
+    }
+
+
+def _read_code_readiness_summary() -> dict[str, Any]:
+    """Return a COMPACT CODE readiness snapshot.
+
+    Passive read-only; does NOT execute, mutate, or imply CODE authority.
+    The full capability list is intentionally NOT embedded here — only counts.
+    Callers wanting the full list should hit ``/code/readiness`` directly.
+    """
+    from assistant_os.codeops.readiness import get_code_readiness
+    full = get_code_readiness()
+    return {
+        "source": "code_readiness",
+        "domain": full.get("domain", "CODE"),
+        "feature_enabled": bool(full.get("feature_enabled", False)),
+        "code_api_reachable": bool(full.get("code_api_reachable", False)),
+        "apply_execution_mode": full.get("apply_execution_mode", "unknown"),
+        "apply_real_enabled": bool(full.get("apply_real_enabled", False)),
+        "runner_backend_probed": bool(full.get("runner_backend_probed", False)),
+        "runner_backend_available": full.get("runner_backend_available", None),
+        "code_capability_allowed_count": int(full.get("code_capability_allowed_count", 0) or 0),
+        "code_capability_confirm_only_count": int(full.get("code_capability_confirm_only_count", 0) or 0),
+        "code_capability_blocked_count": int(full.get("code_capability_blocked_count", 0) or 0),
+        "note": full.get("note", "Readiness is not authority."),
     }
 
 
@@ -221,6 +247,13 @@ def observe_system() -> SystemSnapshot:
     except Exception as exc:  # noqa: BLE001
         warnings.append(f"Recent governance unavailable: {exc}")
         snapshot["recent_governance"] = None
+
+    # --- CODE readiness summary (compact, counts only) ---
+    try:
+        snapshot["code_readiness_summary"] = _read_code_readiness_summary()
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"CODE readiness unavailable: {exc}")
+        snapshot["code_readiness_summary"] = None
 
     # Degrade status if any warnings were recorded.
     if warnings:
