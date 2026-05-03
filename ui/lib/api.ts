@@ -16,6 +16,7 @@ import type {
   ExecutionStatusSource,
   GovernanceRecentResponse,
   GovernanceStatusResponse,
+  AuthorityStatusResponse,
 } from './types'
 
 export const API_BASE_URL =
@@ -804,5 +805,41 @@ export async function getConfirmPending(limit = 10): Promise<ConfirmPendingRespo
     return json.ok ? json : { ...CONFIRM_PENDING_UNAVAILABLE, error: json.error ?? 'unavailable' }
   } catch {
     return CONFIRM_PENDING_UNAVAILABLE
+  }
+}
+
+const AUTHORITY_STATUS_UNAVAILABLE: AuthorityStatusResponse = {
+  ok: false,
+  source: 'authority_status',
+  note: 'Authority status is posture, not execution permission.',
+  capabilities: [],
+  counts: {
+    total: 0,
+    allow: 0,
+    confirm_only: 0,
+    deny: 0,
+    blocked: 0,
+    active_grants: 0,
+    active_revocations: 0,
+  },
+  error: 'Authority status backend unavailable',
+}
+
+/**
+ * GET /api/mso/authority/status — passive authority matrix summary.
+ * Calls the local Next.js proxy only and never exposes webhook auth in browser.
+ * Returns an unavailable envelope on any error — never throws.
+ */
+export async function getAuthorityStatus(): Promise<AuthorityStatusResponse> {
+  try {
+    const res = await fetch('/api/mso/authority/status', {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) return AUTHORITY_STATUS_UNAVAILABLE
+    const json = await res.json() as AuthorityStatusResponse
+    return json.ok ? json : { ...AUTHORITY_STATUS_UNAVAILABLE, error: json.error ?? 'unavailable' }
+  } catch {
+    return AUTHORITY_STATUS_UNAVAILABLE
   }
 }

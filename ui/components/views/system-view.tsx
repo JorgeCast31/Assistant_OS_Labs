@@ -7,6 +7,7 @@ import { useReadinessSourcePolling } from '@/hooks/use-readiness-source-polling'
 import { StatusBadge }      from '@/components/shared/status-badge'
 import { SystemChatView }   from '@/components/sovereign/SystemChatView'
 import { ReadinessPanel }   from '@/components/sovereign/ReadinessPanel'
+import { AuthorityMatrixPanel } from '@/components/sovereign/AuthorityMatrixPanel'
 import { ConfirmFlowQueuePanel } from '@/components/sovereign/ConfirmFlowQueuePanel'
 import { GovernanceRecentPanel } from '@/components/sovereign/GovernanceRecentPanel'
 import { GovernanceStatusBand } from '@/components/sovereign/GovernanceStatusBand'
@@ -498,6 +499,15 @@ export function SystemView() {
               Confirm Queue
             </p>
             <ConfirmFlowQueuePanel />
+          </section>
+        )}
+
+        {!isInitializing && (
+          <section>
+            <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
+              Authority Matrix
+            </p>
+            <AuthorityMatrixPanel />
           </section>
         )}
 

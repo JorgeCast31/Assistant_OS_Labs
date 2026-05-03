@@ -547,3 +547,37 @@ export interface ConfirmPendingResponse {
   pending: ConfirmPendingEntry[]
   error?: string
 }
+
+// ── Authority status matrix (S-AUTH-SURFACE-01C) ──────────────────────────
+
+export interface AuthorityCapabilityRow {
+  domain: string
+  action: string
+  mode: string
+  allowed: boolean
+  notes: string
+  active_grant: boolean
+  active_revocation: boolean
+  effective_posture: string
+}
+
+export interface AuthorityStatusCounts {
+  total: number
+  allow: number
+  confirm_only: number
+  deny: number
+  blocked: number
+  active_grants: number
+  active_revocations: number
+}
+
+export interface AuthorityStatusResponse {
+  ok: boolean
+  source: 'authority_status'
+  feature_enabled?: boolean
+  last_health_check?: string
+  note: string
+  capabilities: AuthorityCapabilityRow[]
+  counts: AuthorityStatusCounts
+  error?: string
+}
