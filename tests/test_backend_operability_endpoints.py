@@ -584,6 +584,96 @@ class TestGovernanceStatusEndpoint(unittest.TestCase):
         self.assertEqual(first["operational_mode"], second["operational_mode"])
 
     # -----------------------------------------------------------------
+    # S-AUTH-SURFACE-01B: GET /mso/authority/status
+    # -----------------------------------------------------------------
+
+    def test_get_mso_authority_status_requires_auth(self) -> None:
+        status, _ = self._request("GET", "/mso/authority/status", token=None)
+        self.assertEqual(status, 401)
+
+    def test_get_mso_authority_status_invalid_token(self) -> None:
+        status, _ = self._request("GET", "/mso/authority/status", token="wrong-token")
+        self.assertEqual(status, 401)
+
+    def test_get_mso_authority_status_valid_auth_returns_ok_and_source(self) -> None:
+        status, data = self._request("GET", "/mso/authority/status")
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["source"], "authority_status")
+
+    def test_get_mso_authority_status_includes_capabilities_counts_and_note(self) -> None:
+        _, data = self._request("GET", "/mso/authority/status")
+        self.assertIn("capabilities", data)
+        self.assertIn("counts", data)
+        self.assertIn("note", data)
+        self.assertIsInstance(data["capabilities"], list)
+        self.assertIsInstance(data["counts"], dict)
+
+    def test_get_mso_authority_status_no_forbidden_fields(self) -> None:
+        _, data = self._request("GET", "/mso/authority/status")
+        serialized = json.dumps(data).lower()
+        for forbidden in (
+            "token",
+            "signature",
+            "authority_artifact",
+            "execution_mode",
+            "policy_decision",
+            "governance_verdict",
+            "approved",
+            "authorized",
+            "safe_to_apply",
+            "ready_to_execute",
+        ):
+            self.assertNotIn(forbidden, serialized,
+                             f"/mso/authority/status leaked forbidden field: {forbidden}")
+
+    def test_get_mso_authority_status_post_not_200(self) -> None:
+        status, _ = self._request("POST", "/mso/authority/status")
+        self.assertNotEqual(status, 200)
+
+    def test_get_mso_authority_status_fail_soft_on_producer_exception(self) -> None:
+        with patch("assistant_os.mso.authority_status.get_authority_status",
+                   side_effect=RuntimeError("authority producer unavailable")):
+            status, data = self._request("GET", "/mso/authority/status")
+
+        self.assertEqual(status, 200)
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["source"], "authority_status")
+        self.assertEqual(data["capabilities"], [])
+        self.assertEqual(data["counts"]["total"], 0)
+        self.assertEqual(data["counts"]["allow"], 0)
+        self.assertEqual(data["counts"]["confirm_only"], 0)
+        self.assertEqual(data["counts"]["deny"], 0)
+        self.assertEqual(data["counts"]["blocked"], 0)
+        self.assertEqual(data["counts"]["active_grants"], 0)
+        self.assertEqual(data["counts"]["active_revocations"], 0)
+        self.assertIn("error", data)
+        self.assertIn("does not grant execution permission", data["note"].lower())
+
+    def test_get_mso_authority_status_calls_get_authority_status_not_registry(self) -> None:
+        with patch("assistant_os.mso.authority_status.get_authority_status") as mock_fn:
+            mock_fn.return_value = {
+                "source": "authority_status",
+                "feature_enabled": True,
+                "last_health_check": "2026-01-01T00:00:00+00:00",
+                "note": "Authority status is read-only posture, not execution permission.",
+                "capabilities": [],
+                "counts": {
+                    "total": 0,
+                    "allow": 0,
+                    "confirm_only": 0,
+                    "deny": 0,
+                    "blocked": 0,
+                    "active_grants": 0,
+                    "active_revocations": 0,
+                },
+            }
+            status, _ = self._request("GET", "/mso/authority/status")
+
+        self.assertEqual(status, 200)
+        mock_fn.assert_called_once()
+
+    # -----------------------------------------------------------------
     # S-CODE-READINESS-01B: GET /code/readiness
     # -----------------------------------------------------------------
 

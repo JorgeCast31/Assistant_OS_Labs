@@ -1577,6 +1577,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_mso_governance_status_get()
             return
 
+        if path == "/mso/authority/status":
+            self._handle_mso_authority_status_get()
+            return
+
         if path == "/system-assistant/state":
             self._handle_system_assistant_state_get()
             return
@@ -1851,6 +1855,46 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "error": "governance status unavailable",
                 "ephemeral": True,
             })
+
+    def _handle_mso_authority_status_get(self) -> None:
+        """GET /mso/authority/status — read-only authority posture matrix summary."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from .mso.authority_status import get_authority_status
+            summary = get_authority_status()
+            self._send_json_response(
+                200,
+                {
+                    "ok": True,
+                    "source": "authority_status",
+                    **summary,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-soft read-only surface
+            self._send_json_response(
+                200,
+                {
+                    "ok": False,
+                    "source": "authority_status",
+                    "capabilities": [],
+                    "counts": {
+                        "total": 0,
+                        "allow": 0,
+                        "confirm_only": 0,
+                        "deny": 0,
+                        "blocked": 0,
+                        "active_grants": 0,
+                        "active_revocations": 0,
+                    },
+                    "error": str(exc),
+                    "note": "Authority status unavailable; this does not grant execution permission.",
+                },
+            )
 
     def _handle_system_assistant_state_get(self) -> None:
         """GET /system-assistant/state — read-only observer + interpretation payload."""
