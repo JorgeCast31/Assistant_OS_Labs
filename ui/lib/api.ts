@@ -722,6 +722,7 @@ export async function getGovernanceStatus(): Promise<GovernanceStatusResponse> {
 // Never carries authority. Never triggers execution.
 
 import type { CodeReadinessResponse } from './types'
+import type { ConfirmPendingResponse } from './types'
 
 const CODE_READINESS_UNAVAILABLE: CodeReadinessResponse = {
   ok: false,
@@ -770,5 +771,38 @@ export async function getCodeReadiness(): Promise<CodeReadinessResponse> {
     return json.ok ? json : { ...CODE_READINESS_UNAVAILABLE, error: json.error ?? 'unavailable' }
   } catch {
     return CODE_READINESS_UNAVAILABLE
+  }
+}
+
+const CONFIRM_PENDING_UNAVAILABLE: ConfirmPendingResponse = {
+  ok: false,
+  source: 'confirm_flow',
+  pending_count: 0,
+  expired_pending_count: 0,
+  pending: [],
+  note: 'Confirm queue is observability only; confirmation remains governed.',
+  error: 'Confirm pending backend unavailable',
+}
+
+/**
+ * GET /api/confirm/pending — passive confirm queue summary.
+ * Calls the LOCAL Next.js proxy only and never exposes webhook auth in browser.
+ * Returns an unavailable envelope on any error — never throws.
+ */
+export async function getConfirmPending(limit = 10): Promise<ConfirmPendingResponse> {
+  const safeLimit = Number.isFinite(limit)
+    ? Math.max(1, Math.min(50, Math.trunc(limit)))
+    : 10
+
+  try {
+    const res = await fetch(`/api/confirm/pending?limit=${safeLimit}`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) return CONFIRM_PENDING_UNAVAILABLE
+    const json = await res.json() as ConfirmPendingResponse
+    return json.ok ? json : { ...CONFIRM_PENDING_UNAVAILABLE, error: json.error ?? 'unavailable' }
+  } catch {
+    return CONFIRM_PENDING_UNAVAILABLE
   }
 }

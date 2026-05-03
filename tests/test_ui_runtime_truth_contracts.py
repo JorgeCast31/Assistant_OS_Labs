@@ -832,5 +832,115 @@ class TestReadinessPanelCodeReadinessRender(unittest.TestCase):
         self.assertIn("not authority", self.src.lower())
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# S-CONFIRM-UI-01 — Confirm queue passive observability contracts.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestConfirmPendingProxy(unittest.TestCase):
+    """The Next.js proxy at /api/confirm/pending must be GET-only and server-auth."""
+
+    def setUp(self) -> None:
+        self.src = _read("app/api/confirm/pending/route.ts")
+
+    def test_proxy_route_exists(self) -> None:
+        self.assertTrue(self.src.strip(), "confirm pending proxy route must exist and not be empty")
+
+    def test_proxy_is_get_only(self) -> None:
+        self.assertIn("export async function GET", self.src)
+        for method in ("POST", "PUT", "DELETE", "PATCH"):
+            self.assertNotIn(
+                f"export async function {method}",
+                self.src,
+                f"confirm pending proxy must not export {method}",
+            )
+
+    def test_proxy_uses_server_auth_headers(self) -> None:
+        self.assertIn("getWebhookHeaders", self.src)
+
+    def test_proxy_no_next_public_secret_usage(self) -> None:
+        self.assertNotIn("NEXT_PUBLIC_ASSISTANT_TOKEN", self.src)
+        self.assertNotIn("NEXT_PUBLIC_WEBHOOK_TOKEN", self.src)
+
+
+class TestConfirmPendingHelper(unittest.TestCase):
+    """getConfirmPending must call local /api/confirm/pending, never webhook directly."""
+
+    def setUp(self) -> None:
+        self.src = _read("lib/api.ts")
+
+    def test_helper_exists(self) -> None:
+        self.assertIn("export async function getConfirmPending", self.src)
+
+    def test_helper_calls_local_proxy_only(self) -> None:
+        idx = self.src.find("export async function getConfirmPending")
+        self.assertNotEqual(idx, -1)
+        body = self.src[idx: idx + 1500]
+        self.assertIn("/api/confirm/pending", body)
+        self.assertNotIn("WEBHOOK_BASE_URL", body)
+        self.assertNotIn("ASSISTANT_TOKEN", body)
+
+
+class TestConfirmFlowQueuePanelContracts(unittest.TestCase):
+    """ConfirmFlowQueuePanel must be passive observability-only UI."""
+
+    def setUp(self) -> None:
+        self.src = _read("components/sovereign/ConfirmFlowQueuePanel.tsx")
+
+    def test_panel_exists(self) -> None:
+        self.assertTrue(self.src.strip(), "ConfirmFlowQueuePanel source must exist")
+
+    def test_panel_has_observability_governed_note(self) -> None:
+        self.assertIn(
+            "observability only; confirmation remains governed",
+            self.src.lower(),
+        )
+
+    def test_panel_has_no_buttons_or_mutation_affordances(self) -> None:
+        for forbidden in ("<button", "onClick", "POST", "DELETE"):
+            self.assertNotIn(
+                forbidden,
+                self.src,
+                f"ConfirmFlowQueuePanel must not include {forbidden}",
+            )
+
+    def test_forbidden_authority_strings_absent(self) -> None:
+        lowered = self.src.lower()
+        for forbidden in ("approve", "execute", "safe_to_apply", "ready_to_confirm", "authorized"):
+            self.assertNotIn(
+                forbidden,
+                lowered,
+                f"ConfirmFlowQueuePanel must not include forbidden authority wording: {forbidden}",
+            )
+
+    def test_panel_does_not_render_payload_or_authority_fields(self) -> None:
+        lowered = self.src.lower()
+        for forbidden in (
+            "plan",
+            "raw_text",
+            "execution_plan",
+            "policy_decision",
+            "governance_verdict",
+        ):
+            self.assertNotIn(
+                forbidden,
+                lowered,
+                f"ConfirmFlowQueuePanel must not render forbidden field: {forbidden}",
+            )
+
+
+class TestSystemViewMountsConfirmFlowQueuePanel(unittest.TestCase):
+    """SystemView must import and render ConfirmFlowQueuePanel."""
+
+    def setUp(self) -> None:
+        self.src = _read("components/views/system-view.tsx")
+
+    def test_system_view_imports_panel(self) -> None:
+        self.assertIn("ConfirmFlowQueuePanel", self.src)
+
+    def test_system_view_renders_panel(self) -> None:
+        self.assertIn("<ConfirmFlowQueuePanel />", self.src)
+
+
 if __name__ == "__main__":
     unittest.main()

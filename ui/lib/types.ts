@@ -521,3 +521,29 @@ export interface CodeReadinessResponse {
   // Fail-soft envelope fields (only present when ok === false)
   error?: string
 }
+
+// ── Confirm flow queue observability (S-CONFIRM-UI-01) ─────────────────────
+
+export interface ConfirmPendingEntry {
+  context_id: string
+  operation: string
+  created_at: string
+  expires_at: string
+  age_seconds: number
+  time_to_expire_seconds: number
+  expired: boolean
+}
+
+export interface ConfirmPendingResponse {
+  ok: boolean
+  source: 'confirm_flow'
+  feature_enabled?: boolean
+  last_health_check?: string
+  note: string
+  pending_count: number
+  expired_pending_count: number
+  oldest_age_seconds?: number | null
+  nearest_expiry_seconds?: number | null
+  pending: ConfirmPendingEntry[]
+  error?: string
+}
