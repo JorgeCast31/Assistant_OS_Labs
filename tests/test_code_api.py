@@ -1642,3 +1642,154 @@ class TestAgentInvocationPersistence:
 
         assert "agent_invocation" in detail
         assert detail["agent_invocation"] is None
+
+
+# ---------------------------------------------------------------------------
+# S-CODE-READINESS-01B — GET /api/code/readiness (read-only)
+# ---------------------------------------------------------------------------
+
+
+class TestHandleCodeReadiness:
+    """Unit tests for handle_code_readiness() — pure wrapper around producer."""
+
+    def test_returns_envelope_with_ok_and_source(self):
+        from assistant_os.api.code_api import handle_code_readiness
+        result = handle_code_readiness()
+        assert result["ok"] is True
+        assert result["source"] == "code_readiness"
+        assert result["domain"] == "CODE"
+
+    def test_envelope_includes_producer_fields(self):
+        from assistant_os.api.code_api import handle_code_readiness
+        result = handle_code_readiness()
+        for field in (
+            "feature_enabled",
+            "last_health_check",
+            "note",
+            "code_api_reachable",
+            "apply_execution_mode",
+            "apply_real_enabled",
+            "runner_backend_probed",
+            "code_capabilities",
+            "code_capability_allowed_count",
+        ):
+            assert field in result, f"missing producer field: {field}"
+
+    def test_note_says_not_authority(self):
+        from assistant_os.api.code_api import handle_code_readiness
+        result = handle_code_readiness()
+        assert "authority" in result["note"].lower()
+
+    def test_no_authority_or_execution_fields(self):
+        from assistant_os.api.code_api import handle_code_readiness
+        result = handle_code_readiness()
+        for forbidden in (
+            "execution_mode",
+            "effective_execution_mode",
+            "governance_verdict",
+            "governance_decision",
+            "policy_decision",
+            "authorized",
+            "approved",
+        ):
+            assert forbidden not in result, (
+                f"readiness envelope leaked authority field: {forbidden}"
+            )
+
+    def test_uses_underlying_producer(self, monkeypatch):
+        from assistant_os.api import code_api as _code_api
+        sentinel = {
+            "domain": "CODE",
+            "feature_enabled": True,
+            "last_health_check": "2026-05-03T00:00:00+00:00",
+            "note": "stub note: not authority",
+            "code_api_reachable": True,
+            "code_api_url": "http://example/health",
+            "code_api_latency_ms": 1,
+            "code_api_error": None,
+            "apply_execution_mode": "stub",
+            "apply_real_enabled": False,
+            "runner_backend_probed": False,
+            "runner_backend_available": None,
+            "runner_backend_latency_ms": None,
+            "runner_backend_error": "stub",
+            "runner_timeout_seconds": 30,
+            "runner_memory_limit": "128m",
+            "runner_cpu_limit": "0.5",
+            "runner_base_image": "python:3.11-slim",
+            "code_capabilities": [],
+            "code_capability_allowed_count": 0,
+            "code_capability_confirm_only_count": 0,
+            "code_capability_blocked_count": 0,
+        }
+        # Patch where the handler imports from.
+        from assistant_os.codeops import readiness as _readiness
+        monkeypatch.setattr(_readiness, "get_code_readiness", lambda: sentinel)
+        result = _code_api.handle_code_readiness()
+        # The wrapper must spread the producer's fields, not invent its own.
+        assert result["last_health_check"] == "2026-05-03T00:00:00+00:00"
+        assert result["apply_execution_mode"] == "stub"
+        assert result["code_api_url"] == "http://example/health"
+
+    def test_does_not_create_executions(self):
+        from assistant_os.api.code_api import (
+            handle_code_readiness, handle_list_executions,
+        )
+        before = len(handle_list_executions().get("executions", []))
+        handle_code_readiness()
+        after = len(handle_list_executions().get("executions", []))
+        assert before == after
+
+
+def test_get_code_readiness_endpoint_returns_envelope(live_server):
+    """HTTP round-trip on GET /api/code/readiness."""
+    with urllib.request.urlopen(f"{live_server}/api/code/readiness") as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read())
+    assert data["ok"] is True
+    assert data["source"] == "code_readiness"
+    assert data["domain"] == "CODE"
+    assert "note" in data and "authority" in data["note"].lower()
+    assert "apply_execution_mode" in data
+    assert isinstance(data["code_capabilities"], list)
+
+
+def test_get_code_readiness_endpoint_post_returns_404(live_server):
+    """The readiness path is registered only for GET; POST must 404."""
+    import urllib.error
+    req = urllib.request.Request(
+        f"{live_server}/api/code/readiness",
+        data=b"{}",
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(req)
+    assert exc_info.value.code == 404
+
+
+def test_get_code_readiness_endpoint_fail_soft_on_producer_error(live_server, monkeypatch):
+    """If the producer raises, the endpoint must return 200 with ok=False envelope."""
+    from assistant_os.codeops import readiness as _readiness
+
+    def boom():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(_readiness, "get_code_readiness", boom)
+    with urllib.request.urlopen(f"{live_server}/api/code/readiness") as resp:
+        assert resp.status == 200
+        data = json.loads(resp.read())
+    assert data["ok"] is False
+    assert data["source"] == "code_readiness"
+    assert data["domain"] == "CODE"
+    assert "error" in data
+    assert "note" in data and "authority" in data["note"].lower()
+
+
+def test_get_code_readiness_endpoint_does_not_create_execution(live_server):
+    from assistant_os.api.code_api import handle_list_executions
+    before = len(handle_list_executions().get("executions", []))
+    with urllib.request.urlopen(f"{live_server}/api/code/readiness") as resp:
+        resp.read()
+    after = len(handle_list_executions().get("executions", []))
+    assert before == after

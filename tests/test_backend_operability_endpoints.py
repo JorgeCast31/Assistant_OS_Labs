@@ -583,6 +583,87 @@ class TestGovernanceStatusEndpoint(unittest.TestCase):
 
         self.assertEqual(first["operational_mode"], second["operational_mode"])
 
+    # -----------------------------------------------------------------
+    # S-CODE-READINESS-01B: GET /code/readiness
+    # -----------------------------------------------------------------
+
+    def test_get_code_readiness_requires_auth(self) -> None:
+        status, _ = self._request("GET", "/code/readiness", token=None)
+        self.assertEqual(status, 401)
+
+    def test_get_code_readiness_invalid_token(self) -> None:
+        status, _ = self._request("GET", "/code/readiness", token="wrong-token")
+        self.assertEqual(status, 401)
+
+    def test_get_code_readiness_returns_envelope(self) -> None:
+        status, data = self._request("GET", "/code/readiness")
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["source"], "code_readiness")
+        self.assertEqual(data["domain"], "CODE")
+        self.assertIs(data["feature_enabled"], True)
+
+    def test_get_code_readiness_contains_note_not_authority(self) -> None:
+        _, data = self._request("GET", "/code/readiness")
+        self.assertIn("note", data)
+        self.assertIn("authority", data["note"].lower())
+
+    def test_get_code_readiness_contains_apply_execution_mode(self) -> None:
+        _, data = self._request("GET", "/code/readiness")
+        self.assertIn("apply_execution_mode", data)
+        self.assertIn(data["apply_execution_mode"], ("stub", "real"))
+
+    def test_get_code_readiness_contains_capabilities(self) -> None:
+        _, data = self._request("GET", "/code/readiness")
+        self.assertIn("code_capabilities", data)
+        self.assertIsInstance(data["code_capabilities"], list)
+        for cap in data["code_capabilities"]:
+            self.assertEqual(cap["domain"], "CODE")
+
+    def test_get_code_readiness_has_no_authority_fields(self) -> None:
+        _, data = self._request("GET", "/code/readiness")
+        for forbidden in (
+            "execution_mode",
+            "effective_execution_mode",
+            "governance_verdict",
+            "governance_decision",
+            "policy_decision",
+            "authorized",
+            "approved",
+        ):
+            self.assertNotIn(forbidden, data,
+                             f"/code/readiness leaked authority field: {forbidden}")
+
+    def test_get_code_readiness_post_method_not_allowed(self) -> None:
+        # The TestGovernanceStatusEndpoint helper does not accept body; the
+        # routing check on the server runs before any body is read, so a
+        # bare POST exercises the same path. Webhook returns 405 (or other
+        # non-2xx) for POST on read-only paths.
+        status, _ = self._request("POST", "/code/readiness")
+        self.assertNotEqual(status, 200)
+
+    def test_get_code_readiness_fail_soft_on_producer_exception(self) -> None:
+        # If the producer raises, the endpoint must still return a structured
+        # envelope (ok=False) rather than a 500 traceback.
+        with patch("assistant_os.codeops.readiness.get_code_readiness",
+                   side_effect=RuntimeError("boom")):
+            status, data = self._request("GET", "/code/readiness")
+        self.assertEqual(status, 200)
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["source"], "code_readiness")
+        self.assertEqual(data["domain"], "CODE")
+        self.assertIn("error", data)
+        self.assertIn("note", data)
+
+    def test_get_code_readiness_does_not_create_executions(self) -> None:
+        # Calling the endpoint must not append to the executions registry.
+        # We verify by counting executions before and after.
+        from assistant_os.api import code_api as _code_api
+        before = len(_code_api.handle_list_executions().get("executions", []))
+        _, _ = self._request("GET", "/code/readiness")
+        after = len(_code_api.handle_list_executions().get("executions", []))
+        self.assertEqual(before, after)
+
 
 if __name__ == "__main__":
     unittest.main()

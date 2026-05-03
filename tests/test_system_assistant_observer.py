@@ -491,5 +491,92 @@ class TestRecentGovernanceSummarySource(unittest.TestCase):
         self.assertEqual(result[0]["reason"], "policy rule applied")
 
 
+# ---------------------------------------------------------------------------
+# S-CODE-READINESS-01C — code_readiness_summary source
+# ---------------------------------------------------------------------------
+
+
+class TestCodeReadinessSummarySource(unittest.TestCase):
+    """code_readiness_summary is included as a passive read-only source."""
+
+    def test_code_readiness_in_snapshot(self) -> None:
+        from assistant_os.system_assistant.observer import observe_system
+        snapshot = observe_system()
+        self.assertIn("code_readiness_summary", snapshot)
+        crs = snapshot["code_readiness_summary"]
+        self.assertIsInstance(crs, dict)
+        self.assertEqual(crs["domain"], "CODE")
+        self.assertEqual(crs["source"], "code_readiness")
+        self.assertIn("apply_execution_mode", crs)
+        self.assertIn("note", crs)
+
+    def test_code_readiness_is_compact_no_full_capability_list(self) -> None:
+        """Observer summary must NOT carry the full capability list."""
+        from assistant_os.system_assistant.observer import observe_system
+        snapshot = observe_system()
+        crs = snapshot["code_readiness_summary"]
+        self.assertNotIn("code_capabilities", crs,
+                         "Observer summary must surface counts only, not full caps.")
+        # Counts MUST be present.
+        self.assertIn("code_capability_allowed_count", crs)
+        self.assertIn("code_capability_confirm_only_count", crs)
+        self.assertIn("code_capability_blocked_count", crs)
+
+    def test_code_readiness_fail_soft(self) -> None:
+        with patch(
+            "assistant_os.system_assistant.observer._read_code_readiness_summary",
+            side_effect=RuntimeError("readiness producer crashed"),
+        ):
+            from assistant_os.system_assistant.observer import observe_system
+            snapshot = observe_system()
+        self.assertIsInstance(snapshot, dict)
+        warnings = snapshot.get("warnings", [])
+        self.assertTrue(
+            any("CODE readiness" in w for w in warnings),
+            f"Expected CODE readiness warning, got: {warnings}",
+        )
+
+    def test_code_readiness_fail_sets_none(self) -> None:
+        with patch(
+            "assistant_os.system_assistant.observer._read_code_readiness_summary",
+            side_effect=RuntimeError("readiness producer crashed"),
+        ):
+            from assistant_os.system_assistant.observer import observe_system
+            snapshot = observe_system()
+        self.assertIsNone(snapshot.get("code_readiness_summary"))
+
+    def test_code_readiness_does_not_call_pipelines_or_runner(self) -> None:
+        """Observer code-readiness path must not execute or call pipelines."""
+        from assistant_os.system_assistant import observer as _observer
+        # Patch any obvious execution surfaces.
+        try:
+            from assistant_os.pipelines import code_pipeline as _cp
+        except ImportError:
+            _cp = None
+        try:
+            from assistant_os.runners import runner_service as _rs
+        except ImportError:
+            _rs = None
+
+        patches = []
+        if _cp is not None:
+            for name in ("run_pipeline", "execute", "handle"):
+                if hasattr(_cp, name):
+                    patches.append(patch.object(_cp, name))
+        if _rs is not None:
+            for name in ("execute", "run", "submit"):
+                if hasattr(_rs, name):
+                    patches.append(patch.object(_rs, name))
+
+        applied = [p.start() for p in patches]
+        try:
+            _observer.observe_system()
+            for fn in applied:
+                fn.assert_not_called()
+        finally:
+            for p in patches:
+                p.stop()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1594,6 +1594,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_cognition_preferences_get()
             return
 
+        # S-CODE-READINESS-01B: read-only CODE readiness surface
+        if path == "/code/readiness":
+            self._handle_code_readiness_get()
+            return
+
         # 405 for everything else
         status, error = _make_json_error(405, "Method not allowed. Use POST.", "MethodNotAllowed")
         self._send_json_response(status, error)
@@ -4361,6 +4366,48 @@ class WebhookHandler(BaseHTTPRequestHandler):
         except Exception as exc:
             status, error = _make_json_error(500, f"Cognition providers error: {exc}", "InternalError")
             self._send_json_response(status, error)
+
+    # -------------------------------------------------------------------------
+    # S-CODE-READINESS-01B: CODE readiness (read-only passive surface)
+    # -------------------------------------------------------------------------
+
+    def _handle_code_readiness_get(self) -> None:
+        """GET /code/readiness — read-only CODE domain readiness summary.
+
+        Wraps assistant_os.codeops.readiness.get_code_readiness() in a stable
+        envelope. No execution, no mutation, no apply. Authority remains with
+        MSO; this surface only reports source availability and configuration.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+        try:
+            from .codeops.readiness import get_code_readiness
+            summary = get_code_readiness()
+            self._send_json_response(
+                200,
+                {
+                    "ok": True,
+                    "source": "code_readiness",
+                    **summary,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-soft per readiness contract
+            self._send_json_response(
+                200,
+                {
+                    "ok": False,
+                    "source": "code_readiness",
+                    "domain": "CODE",
+                    "error": f"readiness producer unavailable: {exc}",
+                    "note": (
+                        "Readiness is source availability and configuration only — "
+                        "it is not authority. Capabilities are governed by MSO."
+                    ),
+                },
+            )
 
     def _handle_cognition_providers_health_get(self) -> None:
         """GET /cognition/providers/health — compact health snapshot for all providers."""

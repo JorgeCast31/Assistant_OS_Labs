@@ -3,6 +3,8 @@
 import { useUIStore } from '@/stores/ui-store'
 import { useSovereignStore } from '@/stores/sovereign-store'
 import { useCognitionStore } from '@/stores/cognition-store'
+import { useCodeReadinessStore } from '@/stores/code-readiness-store'
+import { useCodeReadinessPolling } from '@/hooks/use-code-readiness-polling'
 import type { ReadinessSourceStatus } from '@/lib/sovereign/types'
 import type { HealthStatus, OperationalMode } from '@/lib/types'
 
@@ -94,6 +96,10 @@ export function ReadinessPanel() {
   const { systemData } = useUIStore()
   const { systemState } = useSovereignStore()
   const { providers, pollError, lastPolled } = useCognitionStore()
+
+  // S-CODE-READINESS-01D: passive CODE readiness — read-only.
+  useCodeReadinessPolling()
+  const { readiness: codeReadiness } = useCodeReadinessStore()
 
   const { apiStatus, webhookStatus, operationalMode, activeExecutions } = systemData
   const { agentRegistrySource, capabilitiesSource, registeredAgents } = systemState
@@ -203,6 +209,56 @@ export function ReadinessPanel() {
     cogValue = `0/${totalActive} online`
   }
 
+  // ── CODE Readiness rows (S-CODE-READINESS-01D) ────────────────────────────
+  // Passive observability surface. NEVER renders authority or action affordances.
+  // No buttons. No execution-claim wording. No apply-claim wording.
+  // No permission-claim wording. Render only source/config state.
+  let codeReadyApiDot   = 'bg-idle'
+  let codeReadyApiText  = 'text-tx-muted'
+  let codeReadyApiValue = 'Not yet polled'
+  let codeApplyValue    = '—'
+  let codeApplyText     = 'text-tx-muted'
+  let codeRunnerValue   = '—'
+  let codeRunnerText    = 'text-tx-muted'
+  let codeCapsValue     = '—'
+  let codeCapsText      = 'text-tx-muted'
+
+  if (codeReadiness != null) {
+    if (codeReadiness.code_api_reachable) {
+      codeReadyApiDot   = 'bg-ok'
+      codeReadyApiText  = 'text-ok'
+      codeReadyApiValue = `Reachable (${codeReadiness.code_api_latency_ms} ms)`
+    } else {
+      codeReadyApiDot   = 'bg-err'
+      codeReadyApiText  = 'text-err'
+      codeReadyApiValue = 'Unavailable'
+    }
+
+    const mode = codeReadiness.apply_execution_mode || 'unknown'
+    codeApplyText  = mode === 'real' ? 'text-warn' : 'text-tx-secondary'
+    codeApplyValue = `${mode}${mode === 'stub' ? ' (no real apply)' : ''}`
+
+    if (!codeReadiness.runner_backend_probed) {
+      codeRunnerText  = 'text-tx-muted'
+      codeRunnerValue = 'Not probed (apply mode stub)'
+    } else if (codeReadiness.runner_backend_available === true) {
+      codeRunnerText  = 'text-ok'
+      codeRunnerValue = 'Daemon reachable (transport only)'
+    } else if (codeReadiness.runner_backend_available === false) {
+      codeRunnerText  = 'text-err'
+      codeRunnerValue = 'Daemon unreachable'
+    } else {
+      codeRunnerText  = 'text-tx-muted'
+      codeRunnerValue = 'Unknown'
+    }
+
+    const a = codeReadiness.code_capability_allowed_count
+    const c = codeReadiness.code_capability_confirm_only_count
+    const b = codeReadiness.code_capability_blocked_count
+    codeCapsText  = 'text-tx-secondary'
+    codeCapsValue = `${a} allow / ${c} confirm_only / ${b} blocked`
+  }
+
   return (
     <div className="bg-os-surface border border-os-border rounded-lg divide-y divide-os-border">
       <Row label="Code API"          dotClass={codeApiDot} value={codeApiValue} textClass={codeApiText} />
@@ -212,6 +268,14 @@ export function ReadinessPanel() {
       <Row label="Capabilities"      dotClass={capDot}     value={capValue}     textClass={capText} />
       <Row label="Executions"        dotClass={execDot}    value={execValue}    textClass={execText} />
       <Row label="Cognition"         dotClass={cogDot}     value={cogValue}     textClass={cogText} />
+      {/* CODE Readiness — passive surface. Readiness is not authority. */}
+      <Row label="CODE Readiness · API"        dotClass={codeReadyApiDot} value={codeReadyApiValue} textClass={codeReadyApiText} />
+      <Row label="CODE Readiness · Apply mode" dotClass="bg-idle"          value={codeApplyValue}    textClass={codeApplyText} />
+      <Row label="CODE Readiness · Runner"     dotClass="bg-idle"          value={codeRunnerValue}   textClass={codeRunnerText} />
+      <Row label="CODE Readiness · Capabilities" dotClass="bg-idle"        value={codeCapsValue}     textClass={codeCapsText} />
+      <div className="px-4 py-2 text-[10px] font-mono text-tx-muted">
+        Readiness is not authority. CODE capabilities are governed by MSO.
+      </div>
       <Row
         label="System Assistant"
         dotClass="bg-idle"

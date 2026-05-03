@@ -470,3 +470,54 @@ export interface GovernanceStatusResponse {
   recent_anomaly_count: number
   ephemeral: true
 }
+
+// ── CODE readiness (S-CODE-READINESS-01D) ────────────────────────────────────
+//
+// Read-only passive surface — reflects source availability and configuration
+// for the CODE domain. NEVER carries authority, NEVER triggers execution.
+//
+// Mirror of assistant_os.codeops.readiness.CodeReadinessSummary (Python TypedDict)
+// wrapped in a stable envelope { ok, source, ...summary } by the backend.
+
+export interface CodeCapabilitySummary {
+  action: string
+  domain: 'CODE'
+  mode: 'allow' | 'confirm_only' | 'plan_only' | 'deny'
+  allowed: boolean
+  notes: string
+}
+
+export interface CodeReadinessResponse {
+  ok: boolean
+  source: 'code_readiness'
+  // Identity
+  domain: 'CODE'
+  feature_enabled: boolean
+  last_health_check: string
+  note: string
+  // Code API transport
+  code_api_reachable: boolean
+  code_api_url: string
+  code_api_latency_ms: number
+  code_api_error: string | null
+  // Apply mode
+  apply_execution_mode: 'stub' | 'real'
+  apply_real_enabled: boolean
+  // Runner backend (Docker daemon ping)
+  runner_backend_probed: boolean
+  runner_backend_available: boolean | null
+  runner_backend_latency_ms: number | null
+  runner_backend_error: string | null
+  // Runner config (read-only echo)
+  runner_timeout_seconds: number
+  runner_memory_limit: string
+  runner_cpu_limit: string
+  runner_base_image: string
+  // CODE capabilities
+  code_capabilities: CodeCapabilitySummary[]
+  code_capability_allowed_count: number
+  code_capability_confirm_only_count: number
+  code_capability_blocked_count: number
+  // Fail-soft envelope fields (only present when ok === false)
+  error?: string
+}
