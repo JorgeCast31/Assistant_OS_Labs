@@ -942,5 +942,72 @@ class TestSystemViewMountsConfirmFlowQueuePanel(unittest.TestCase):
         self.assertIn("<ConfirmFlowQueuePanel />", self.src)
 
 
+class TestAuthorityStatusProxyContracts(unittest.TestCase):
+    """Authority status proxy must remain GET-only, server-auth, and read-only."""
+
+    def setUp(self) -> None:
+        self.src = _read("app/api/mso/authority/status/route.ts")
+
+    def test_proxy_exists(self) -> None:
+        self.assertTrue(self.src.strip(), "authority status proxy route must exist and not be empty")
+
+    def test_no_next_public_token(self) -> None:
+        self.assertNotIn("NEXT_PUBLIC_", self.src)
+
+    def test_proxy_is_get_only(self) -> None:
+        self.assertIn("export async function GET", self.src)
+        for method in ("POST", "PUT", "DELETE", "PATCH"):
+            self.assertNotIn(
+                f"export async function {method}",
+                self.src,
+                f"authority status proxy must not export {method}",
+            )
+
+
+class TestAuthorityMatrixPanelContracts(unittest.TestCase):
+    """AuthorityMatrixPanel must be passive and posture-only."""
+
+    def setUp(self) -> None:
+        self.src = _read("components/sovereign/AuthorityMatrixPanel.tsx")
+
+    def test_panel_has_mandatory_posture_copy(self) -> None:
+        self.assertIn(
+            "Authority status is posture, not execution permission.",
+            self.src,
+        )
+
+    def test_panel_does_not_use_police_word(self) -> None:
+        self.assertNotIn("Police", self.src)
+        self.assertNotIn("police", self.src)
+
+    def test_panel_has_no_mutation_affordances(self) -> None:
+        for forbidden in ("<button", "onClick", "method: 'POST'", "method: \"POST\""):
+            self.assertNotIn(
+                forbidden,
+                self.src,
+                f"AuthorityMatrixPanel must not include mutation affordance: {forbidden}",
+            )
+
+    def test_panel_has_no_approve_deny_execute_buttons(self) -> None:
+        # Keep this strict to button affordances only; backend posture words may include deny.
+        lowered = self.src.lower()
+        self.assertNotIn("approve</button", lowered)
+        self.assertNotIn("deny</button", lowered)
+        self.assertNotIn("execute</button", lowered)
+
+
+class TestSystemViewMountsAuthorityMatrixPanel(unittest.TestCase):
+    """SystemView must import and render AuthorityMatrixPanel."""
+
+    def setUp(self) -> None:
+        self.src = _read("components/views/system-view.tsx")
+
+    def test_system_view_imports_panel(self) -> None:
+        self.assertIn("AuthorityMatrixPanel", self.src)
+
+    def test_system_view_renders_panel(self) -> None:
+        self.assertIn("<AuthorityMatrixPanel />", self.src)
+
+
 if __name__ == "__main__":
     unittest.main()
