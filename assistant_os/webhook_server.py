@@ -1599,6 +1599,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_code_readiness_get()
             return
 
+        # S-CONFIRM-FLOW-01B: read-only confirm flow queue observability
+        if path == "/confirm/pending":
+            self._handle_confirm_pending_get()
+            return
+
         # 405 for everything else
         status, error = _make_json_error(405, "Method not allowed. Use POST.", "MethodNotAllowed")
         self._send_json_response(status, error)
@@ -4406,6 +4411,60 @@ class WebhookHandler(BaseHTTPRequestHandler):
                         "Readiness is source availability and configuration only — "
                         "it is not authority. Capabilities are governed by MSO."
                     ),
+                },
+            )
+
+    # -------------------------------------------------------------------------
+    # S-CONFIRM-FLOW-01B: Confirm flow queue observability (read-only)
+    # -------------------------------------------------------------------------
+
+    def _handle_confirm_pending_get(self) -> None:
+        """GET /confirm/pending — read-only confirm flow queue summary.
+
+        Exposes observability over the pending confirmation queue.
+        No execution, no mutation, no approval.  Authority remains with
+        MSO/policy; this surface only reports queue state.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        params = self._parse_query_params()
+        _raw_limit = params.get("limit", "")
+        try:
+            limit = int(_raw_limit)
+        except (ValueError, TypeError):
+            limit = 10
+        limit = max(1, min(50, limit))
+
+        _NOTE_ENDPOINT = (
+            "Confirm flow queue is observability only — confirmation remains governed "
+            "by MSO/policy and consumed by domain confirmation endpoints."
+        )
+        try:
+            from .confirm_flow.readiness import get_confirm_flow_summary
+            summary = get_confirm_flow_summary(limit=limit)
+            self._send_json_response(
+                200,
+                {
+                    "ok": True,
+                    "source": "confirm_flow",
+                    **summary,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-soft
+            self._send_json_response(
+                200,
+                {
+                    "ok": False,
+                    "source": "confirm_flow",
+                    "pending_count": 0,
+                    "expired_pending_count": 0,
+                    "pending": [],
+                    "error": str(exc),
+                    "note": _NOTE_ENDPOINT,
                 },
             )
 

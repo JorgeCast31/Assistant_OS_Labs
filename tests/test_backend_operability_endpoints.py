@@ -664,6 +664,123 @@ class TestGovernanceStatusEndpoint(unittest.TestCase):
         after = len(_code_api.handle_list_executions().get("executions", []))
         self.assertEqual(before, after)
 
+    # -----------------------------------------------------------------
+    # S-CONFIRM-FLOW-01B: GET /confirm/pending
+    # -----------------------------------------------------------------
+
+    def test_get_confirm_pending_requires_auth(self) -> None:
+        status, _ = self._request("GET", "/confirm/pending", token=None)
+        self.assertEqual(status, 401)
+
+    def test_get_confirm_pending_invalid_token(self) -> None:
+        status, _ = self._request("GET", "/confirm/pending", token="invalid-token")
+        self.assertEqual(status, 401)
+
+    def test_get_confirm_pending_valid_auth_returns_ok_and_source(self) -> None:
+        status, data = self._request("GET", "/confirm/pending")
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["source"], "confirm_flow")
+
+    def test_get_confirm_pending_response_shape(self) -> None:
+        _, data = self._request("GET", "/confirm/pending")
+        self.assertIn("pending_count", data)
+        self.assertIn("expired_pending_count", data)
+        self.assertIn("pending", data)
+        self.assertIsInstance(data["pending"], list)
+        self.assertIn("note", data)
+        self.assertIn("confirm", data["note"].lower())
+
+    def test_get_confirm_pending_limit_param_passed(self) -> None:
+        with patch("assistant_os.confirm_flow.readiness.get_confirm_flow_summary") as mock_fn:
+            mock_fn.return_value = {
+                "source": "confirm_flow",
+                "feature_enabled": True,
+                "last_health_check": "2026-01-01T00:00:00+00:00",
+                "note": "observability only",
+                "pending_count": 0,
+                "expired_pending_count": 0,
+                "pending": [],
+            }
+            _, _ = self._request("GET", "/confirm/pending?limit=5")
+        mock_fn.assert_called_once_with(limit=5)
+
+    def test_get_confirm_pending_limit_clamped_high(self) -> None:
+        with patch("assistant_os.confirm_flow.readiness.get_confirm_flow_summary") as mock_fn:
+            mock_fn.return_value = {
+                "source": "confirm_flow",
+                "feature_enabled": True,
+                "last_health_check": "2026-01-01T00:00:00+00:00",
+                "note": "observability only",
+                "pending_count": 0,
+                "expired_pending_count": 0,
+                "pending": [],
+            }
+            _, _ = self._request("GET", "/confirm/pending?limit=999")
+        mock_fn.assert_called_once_with(limit=50)
+
+    def test_get_confirm_pending_invalid_limit_falls_back_to_default(self) -> None:
+        with patch("assistant_os.confirm_flow.readiness.get_confirm_flow_summary") as mock_fn:
+            mock_fn.return_value = {
+                "source": "confirm_flow",
+                "feature_enabled": True,
+                "last_health_check": "2026-01-01T00:00:00+00:00",
+                "note": "observability only",
+                "pending_count": 0,
+                "expired_pending_count": 0,
+                "pending": [],
+            }
+            _, _ = self._request("GET", "/confirm/pending?limit=notanint")
+        mock_fn.assert_called_once_with(limit=10)
+
+    def test_get_confirm_pending_no_forbidden_authority_fields(self) -> None:
+        _, data = self._request("GET", "/confirm/pending")
+        for forbidden in (
+            "plan",
+            "raw_text",
+            "execution_plan",
+            "policy_decision",
+            "authorized",
+            "approved",
+            "ready_to_confirm",
+            "safe_to_apply",
+            "execution_mode",
+            "governance_verdict",
+        ):
+            self.assertNotIn(forbidden, data,
+                             f"/confirm/pending leaked forbidden field: {forbidden}")
+
+    def test_get_confirm_pending_post_not_200(self) -> None:
+        status, _ = self._request("POST", "/confirm/pending")
+        self.assertNotEqual(status, 200)
+
+    def test_get_confirm_pending_fail_soft_on_producer_exception(self) -> None:
+        with patch("assistant_os.confirm_flow.readiness.get_confirm_flow_summary",
+                   side_effect=RuntimeError("store unavailable")):
+            status, data = self._request("GET", "/confirm/pending")
+        self.assertEqual(status, 200)
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["source"], "confirm_flow")
+        self.assertIn("error", data)
+        self.assertIn("note", data)
+        self.assertEqual(data["pending_count"], 0)
+        self.assertEqual(data["pending"], [])
+
+    def test_get_confirm_pending_calls_get_confirm_flow_summary_not_context_store(self) -> None:
+        with patch("assistant_os.confirm_flow.readiness.get_confirm_flow_summary") as mock_fn:
+            mock_fn.return_value = {
+                "source": "confirm_flow",
+                "feature_enabled": True,
+                "last_health_check": "2026-01-01T00:00:00+00:00",
+                "note": "observability only",
+                "pending_count": 0,
+                "expired_pending_count": 0,
+                "pending": [],
+            }
+            status, data = self._request("GET", "/confirm/pending")
+        self.assertEqual(status, 200)
+        mock_fn.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
