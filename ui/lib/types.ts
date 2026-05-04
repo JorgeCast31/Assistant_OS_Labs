@@ -581,3 +581,54 @@ export interface AuthorityStatusResponse {
   counts: AuthorityStatusCounts
   error?: string
 }
+
+// ── Outcome status observability (S-RESULT-OBS-01C-UI-A) ───────────────────
+
+export interface OutcomeStatusQuery {
+  plan_id?: string
+  context_id?: string
+  trace_id?: string
+  execution_id?: string
+}
+
+export interface OutcomeStatusOutcome {
+  status: string
+  result_type?: string | null
+  execution_status?: string | null
+  domain?: string | null
+  action?: string | null
+  message?: string | null
+  error_type?: string | null
+  error_message?: string | null
+}
+
+export interface OutcomeStatusCorrelation {
+  plan_id?: string | null
+  context_id?: string | null
+  trace_id?: string | null
+  task_id?: string | null
+  execution_id?: string | null
+  policy_decision_ref?: string | null
+  governance_ref?: string | null
+  execution_mode?: string | null
+}
+
+export interface OutcomeStatusSources {
+  task_registry?: boolean
+  trace_chain?: boolean
+  context_store_pending?: boolean
+  runner_metadata?: boolean
+}
+
+export interface OutcomeStatusResponse {
+  ok: boolean
+  source: 'outcome_status'
+  note: string
+  found: boolean
+  query: OutcomeStatusQuery
+  outcome: OutcomeStatusOutcome | null
+  correlation: OutcomeStatusCorrelation
+  sources: OutcomeStatusSources
+  source_errors: Array<{ source: string; error: string }>
+  error?: string
+}
