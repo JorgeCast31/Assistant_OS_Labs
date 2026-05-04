@@ -1018,5 +1018,97 @@ class TestSystemViewMountsAuthorityMatrixPanel(unittest.TestCase):
         self.assertIn("<AuthorityMatrixPanel />", self.src)
 
 
+class TestOutcomeStatusProxyContracts(unittest.TestCase):
+    """Outcome status proxy must be GET-only, server-auth, and read-only."""
+
+    def setUp(self) -> None:
+        self.src = _read("app/api/mso/outcome/status/route.ts")
+
+    def test_proxy_route_exists(self) -> None:
+        self.assertTrue(self.src.strip(), "outcome status proxy route must exist and not be empty")
+
+    def test_proxy_uses_server_side_auth(self) -> None:
+        self.assertIn("getWebhookHeaders", self.src)
+
+    def test_proxy_no_next_public_tokens(self) -> None:
+        self.assertNotIn("NEXT_PUBLIC_ASSISTANT_TOKEN", self.src)
+        self.assertNotIn("NEXT_PUBLIC_WEBHOOK_TOKEN", self.src)
+
+    def test_proxy_is_get_only(self) -> None:
+        self.assertIn("export async function GET", self.src)
+        for method in ("POST", "PUT", "PATCH", "DELETE"):
+            self.assertNotIn(
+                f"export async function {method}",
+                self.src,
+                f"outcome status proxy must not export {method}",
+            )
+
+    def test_proxy_forwards_supported_query_params(self) -> None:
+        for name in ("plan_id", "context_id", "trace_id", "execution_id"):
+            self.assertIn(name, self.src, f"outcome status proxy must forward query param: {name}")
+
+    def test_proxy_targets_backend_outcome_status(self) -> None:
+        self.assertIn("/mso/outcome/status", self.src)
+
+    def test_proxy_contains_no_mutation_affordances(self) -> None:
+        for forbidden in ("<button", "onClick", "method: 'POST'", "method: \"POST\""):
+            self.assertNotIn(
+                forbidden,
+                self.src,
+                f"outcome status proxy must not include mutation affordance: {forbidden}",
+            )
+
+
+class TestOutcomeStatusTypesAndHelperContracts(unittest.TestCase):
+    """Outcome status types/helper must stay local-proxy based and read-only."""
+
+    def setUp(self) -> None:
+        self.types_src = _read("lib/types.ts")
+        self.api_src = _read("lib/api.ts")
+
+    def test_types_include_outcome_status_response(self) -> None:
+        self.assertIn("export interface OutcomeStatusResponse", self.types_src)
+
+    def test_helper_exists(self) -> None:
+        self.assertIn("export async function getOutcomeStatus", self.api_src)
+
+    def test_helper_calls_local_proxy(self) -> None:
+        idx = self.api_src.find("export async function getOutcomeStatus")
+        self.assertNotEqual(idx, -1)
+        body = self.api_src[idx: idx + 2000]
+        self.assertIn("/api/mso/outcome/status", body)
+
+    def test_helper_does_not_call_backend_directly(self) -> None:
+        idx = self.api_src.find("export async function getOutcomeStatus")
+        self.assertNotEqual(idx, -1)
+        body = self.api_src[idx: idx + 2000]
+        self.assertNotIn("WEBHOOK_BASE_URL", body)
+        self.assertNotIn("getWebhookBaseUrl", body)
+        self.assertNotIn("http://localhost:8787", body)
+
+    def test_semantic_copy_present_in_fallback(self) -> None:
+        copy = "Outcome status is observational; it does not grant execution permission."
+        self.assertTrue(copy in self.api_src or copy in _read("app/api/mso/outcome/status/route.ts"))
+
+    def test_helper_contains_no_mutation_affordances(self) -> None:
+        idx = self.api_src.find("export async function getOutcomeStatus")
+        self.assertNotEqual(idx, -1)
+        body = self.api_src[idx: idx + 2000].lower()
+        self.assertNotIn("method: 'post'", body)
+        self.assertNotIn('method: "post"', body)
+        self.assertNotIn("<button", body)
+        self.assertNotIn("onclick", body)
+
+    def test_no_action_keywords_as_controls(self) -> None:
+        route_src = _read("app/api/mso/outcome/status/route.ts").lower()
+        idx = self.api_src.find("export async function getOutcomeStatus")
+        helper_src = self.api_src[idx: idx + 2000].lower() if idx != -1 else ""
+        for keyword in ("execute", "approve", "confirm", "apply", "retry"):
+            self.assertNotIn(f"{keyword}</button", route_src)
+            self.assertNotIn(f"{keyword}</button", helper_src)
+            self.assertNotIn(f"on{keyword}", route_src)
+            self.assertNotIn(f"on{keyword}", helper_src)
+
+
 if __name__ == "__main__":
     unittest.main()

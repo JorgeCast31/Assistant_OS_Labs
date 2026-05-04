@@ -17,6 +17,8 @@ import type {
   GovernanceRecentResponse,
   GovernanceStatusResponse,
   AuthorityStatusResponse,
+  OutcomeStatusQuery,
+  OutcomeStatusResponse,
 } from './types'
 
 export const API_BASE_URL =
@@ -841,5 +843,57 @@ export async function getAuthorityStatus(): Promise<AuthorityStatusResponse> {
     return json.ok ? json : { ...AUTHORITY_STATUS_UNAVAILABLE, error: json.error ?? 'unavailable' }
   } catch {
     return AUTHORITY_STATUS_UNAVAILABLE
+  }
+}
+
+const OUTCOME_STATUS_UNAVAILABLE: OutcomeStatusResponse = {
+  ok: false,
+  source: 'outcome_status',
+  note: 'Outcome status is observational; it does not grant execution permission.',
+  found: false,
+  query: {},
+  outcome: {
+    status: 'unknown',
+    result_type: null,
+    execution_status: 'unknown',
+    domain: null,
+    action: null,
+    message: 'Outcome status unavailable',
+    error_type: 'backend_unavailable',
+    error_message: 'Outcome status backend unavailable',
+  },
+  correlation: {},
+  sources: {},
+  source_errors: [],
+  error: 'Outcome status backend unavailable',
+}
+
+/**
+ * GET /api/mso/outcome/status — passive execution outcome observability.
+ * Calls the local Next.js proxy only and never exposes webhook auth in browser.
+ * Returns an unavailable envelope on any error — never throws.
+ */
+export async function getOutcomeStatus(query?: OutcomeStatusQuery): Promise<OutcomeStatusResponse> {
+  const params = new URLSearchParams()
+  if (query?.plan_id) params.set('plan_id', query.plan_id)
+  if (query?.context_id) params.set('context_id', query.context_id)
+  if (query?.trace_id) params.set('trace_id', query.trace_id)
+  if (query?.execution_id) params.set('execution_id', query.execution_id)
+
+  const querySuffix = params.toString()
+  const path = querySuffix
+    ? `/api/mso/outcome/status?${querySuffix}`
+    : '/api/mso/outcome/status'
+
+  try {
+    const res = await fetch(path, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) return OUTCOME_STATUS_UNAVAILABLE
+    const json = await res.json() as OutcomeStatusResponse
+    return json.ok ? json : { ...OUTCOME_STATUS_UNAVAILABLE, error: json.error ?? 'unavailable' }
+  } catch {
+    return OUTCOME_STATUS_UNAVAILABLE
   }
 }
