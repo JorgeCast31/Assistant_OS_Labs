@@ -8,6 +8,7 @@ import { StatusBadge }      from '@/components/shared/status-badge'
 import { SystemChatView }   from '@/components/sovereign/SystemChatView'
 import { ReadinessPanel }   from '@/components/sovereign/ReadinessPanel'
 import { AuthorityMatrixPanel } from '@/components/sovereign/AuthorityMatrixPanel'
+import { OutcomeStatusPanel } from '@/components/sovereign/OutcomeStatusPanel'
 import { ConfirmFlowQueuePanel } from '@/components/sovereign/ConfirmFlowQueuePanel'
 import { GovernanceRecentPanel } from '@/components/sovereign/GovernanceRecentPanel'
 import { GovernanceStatusBand } from '@/components/sovereign/GovernanceStatusBand'
@@ -508,6 +509,15 @@ export function SystemView() {
               Authority Matrix
             </p>
             <AuthorityMatrixPanel />
+          </section>
+        )}
+
+        {!isInitializing && (
+          <section>
+            <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
+              Outcome Status
+            </p>
+            <OutcomeStatusPanel />
           </section>
         )}
 

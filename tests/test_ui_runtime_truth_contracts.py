@@ -1110,5 +1110,70 @@ class TestOutcomeStatusTypesAndHelperContracts(unittest.TestCase):
             self.assertNotIn(f"on{keyword}", helper_src)
 
 
+class TestOutcomeStatusPanelContracts(unittest.TestCase):
+    """OutcomeStatusPanel must remain passive observability-only UI."""
+
+    def setUp(self) -> None:
+        self.panel_src = _read("components/sovereign/OutcomeStatusPanel.tsx")
+        self.store_src = _read("stores/outcome-status-store.ts")
+        self.hook_src = _read("hooks/use-outcome-status-polling.ts")
+        self.system_view_src = _read("components/views/system-view.tsx")
+        self.proxy_src = _read("app/api/mso/outcome/status/route.ts")
+
+    def test_panel_exists(self) -> None:
+        self.assertIn("export function OutcomeStatusPanel", self.panel_src)
+
+    def test_panel_contains_semantic_copy(self) -> None:
+        self.assertIn(
+            "Outcome status is observational; it does not grant execution permission.",
+            self.panel_src,
+        )
+
+    def test_panel_has_no_buttons_or_click_handlers(self) -> None:
+        self.assertNotIn("<button", self.panel_src)
+        self.assertNotIn("onClick", self.panel_src)
+
+    def test_panel_has_no_post_or_mutation(self) -> None:
+        self.assertNotIn("method: \"POST\"", self.panel_src)
+        self.assertNotIn("method: 'POST'", self.panel_src)
+        self.assertNotIn("fetch(", self.panel_src)
+
+    def test_panel_has_no_action_affordance_keywords(self) -> None:
+        lowered = self.panel_src.lower()
+        for keyword in ("approve", "confirm", "execute", "apply", "retry"):
+            self.assertNotIn(f"{keyword}</button", lowered)
+            self.assertNotIn(f"on{keyword}", lowered)
+
+    def test_store_exists(self) -> None:
+        self.assertIn("export const useOutcomeStatusStore", self.store_src)
+
+    def test_hook_exists(self) -> None:
+        self.assertIn("export function useOutcomeStatusPolling", self.hook_src)
+
+    def test_hook_calls_get_outcome_status(self) -> None:
+        self.assertIn("getOutcomeStatus", self.hook_src)
+
+    def test_store_and_hook_use_no_post(self) -> None:
+        self.assertNotIn("POST", self.store_src)
+        self.assertNotIn("method: 'POST'", self.hook_src)
+        self.assertNotIn("method: \"POST\"", self.hook_src)
+
+    def test_system_view_imports_and_renders_panel(self) -> None:
+        self.assertIn("OutcomeStatusPanel", self.system_view_src)
+        self.assertIn("<OutcomeStatusPanel />", self.system_view_src)
+
+    def test_no_direct_backend_webhook_usage_in_panel_store_hook(self) -> None:
+        merged = "\n".join([self.panel_src, self.store_src, self.hook_src])
+        self.assertNotIn("WEBHOOK_BASE_URL", merged)
+        self.assertNotIn("getWebhookBaseUrl", merged)
+        self.assertNotIn("http://localhost:8787", merged)
+
+    def test_no_new_endpoint_or_proxy_mutation_surface(self) -> None:
+        # UI-B must not add write operations to the existing outcome proxy route.
+        self.assertIn("export async function GET", self.proxy_src)
+        for method in ("POST", "PUT", "PATCH", "DELETE"):
+            self.assertNotIn(f"export async function {method}", self.proxy_src)
+
+
 if __name__ == "__main__":
     unittest.main()
