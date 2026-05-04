@@ -18,12 +18,10 @@ function shortenContextId(value: string): string {
 export function ConfirmFlowQueuePanel() {
   useConfirmPendingPolling()
 
-  const { confirmPending, isPolling, lastPolled, pollError } = useConfirmPendingStore((s) => ({
-    confirmPending: s.confirmPending,
-    isPolling: s.isPolling,
-    lastPolled: s.lastPolled,
-    pollError: s.pollError,
-  }))
+  const confirmPending = useConfirmPendingStore((s) => s.confirmPending)
+  const isPolling = useConfirmPendingStore((s) => s.isPolling)
+  const lastPolled = useConfirmPendingStore((s) => s.lastPolled)
+  const pollError = useConfirmPendingStore((s) => s.pollError)
 
   const entries = (confirmPending?.pending ?? []).slice(0, 10)
   const pendingCount = confirmPending?.pending_count ?? 0

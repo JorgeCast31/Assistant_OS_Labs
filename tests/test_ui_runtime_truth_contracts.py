@@ -928,6 +928,13 @@ class TestConfirmFlowQueuePanelContracts(unittest.TestCase):
                 f"ConfirmFlowQueuePanel must not render forbidden field: {forbidden}",
             )
 
+    def test_panel_avoids_object_literal_store_selector(self) -> None:
+        self.assertNotIn(
+            "useConfirmPendingStore((s) => ({",
+            self.src,
+            "ConfirmFlowQueuePanel must avoid object-literal Zustand selectors to prevent unstable snapshots",
+        )
+
 
 class TestSystemViewMountsConfirmFlowQueuePanel(unittest.TestCase):
     """SystemView must import and render ConfirmFlowQueuePanel."""
@@ -1146,6 +1153,13 @@ class TestOutcomeStatusPanelContracts(unittest.TestCase):
 
     def test_store_exists(self) -> None:
         self.assertIn("export const useOutcomeStatusStore", self.store_src)
+
+    def test_panel_avoids_object_literal_store_selector(self) -> None:
+        self.assertNotIn(
+            "useOutcomeStatusStore((s) => ({",
+            self.panel_src,
+            "OutcomeStatusPanel must avoid object-literal Zustand selectors to prevent unstable snapshots",
+        )
 
     def test_hook_exists(self) -> None:
         self.assertIn("export function useOutcomeStatusPolling", self.hook_src)
