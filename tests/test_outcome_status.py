@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from assistant_os.context_store import clear_store, store_pending_plan
+from assistant_os.context_store import clear_store, get_store_size, store_pending_plan
 from assistant_os.contracts import (
     EXECUTION_STATUS_PARTIAL,
     EXECUTION_STATUS_REAL,
@@ -169,6 +169,60 @@ def test_pending_plan_in_context_store_returns_pending_without_consuming() -> No
     assert status["correlation"]["plan_id"] == "plan-pending"
     assert status["correlation"]["execution_mode"] == "confirm"
     assert status["sources"]["context_store_pending"] is True
+
+
+def test_pending_context_store_entry_remains_after_outcome_lookup() -> None:
+    store_pending_plan(
+        "ctx-still-pending",
+        {
+            "plan_id": "plan-still-pending",
+            "trace_id": "trace-still-pending",
+            "domain": "WORK",
+            "action": "WORK_CREATE",
+        },
+        operation="WORK_CREATE",
+        raw_text="pending confirmation must remain stored",
+    )
+    before = get_store_size()
+
+    with patch("assistant_os.context_store.remove_pending_plan", side_effect=AssertionError("must not consume pending")):
+        status = build_outcome_status(context_id="ctx-still-pending")
+
+    after = get_store_size()
+    assert status["outcome"]["status"] == "pending"
+    assert before == 1
+    assert after == before
+
+
+@pytest.mark.parametrize("bad_execution_id", ["../etc/passwd", "../../secret", "a/b", "a\\b", ".."])
+def test_runner_metadata_rejects_path_traversal_execution_ids(bad_execution_id: str) -> None:
+    status = build_outcome_status(execution_id=bad_execution_id)
+
+    assert status["ok"] is True
+    assert status["sources"]["runner_metadata"] is False
+    assert status["outcome"]["status"] != "completed"
+
+
+def test_pending_context_store_raw_text_is_not_exposed() -> None:
+    raw_text = "secret token=abc credential=xyz"
+    store_pending_plan(
+        "ctx-sensitive-raw",
+        {
+            "plan_id": "plan-sensitive-raw",
+            "trace_id": "trace-sensitive-raw",
+            "domain": "WORK",
+            "action": "WORK_CREATE",
+        },
+        operation="WORK_CREATE",
+        raw_text=raw_text,
+    )
+
+    status = build_outcome_status(context_id="ctx-sensitive-raw")
+    dumped = json.dumps(status).lower()
+
+    assert "token=abc" not in dumped
+    assert "credential=xyz" not in dumped
+    assert raw_text not in dumped
 
 
 def test_trace_domain_result_ok_true_returns_completed() -> None:
