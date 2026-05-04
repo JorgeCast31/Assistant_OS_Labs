@@ -954,6 +954,15 @@ class TestAuthorityStatusProxyContracts(unittest.TestCase):
     def test_no_next_public_token(self) -> None:
         self.assertNotIn("NEXT_PUBLIC_", self.src)
 
+    def test_proxy_uses_server_side_auth(self) -> None:
+        self.assertIn(
+            "getWebhookHeaders",
+            self.src,
+            "Authority status proxy must use getWebhookHeaders (server-side injection)",
+        )
+        self.assertNotIn("NEXT_PUBLIC_ASSISTANT_TOKEN", self.src)
+        self.assertNotIn("NEXT_PUBLIC_WEBHOOK_TOKEN", self.src)
+
     def test_proxy_is_get_only(self) -> None:
         self.assertIn("export async function GET", self.src)
         for method in ("POST", "PUT", "DELETE", "PATCH"):
