@@ -674,6 +674,129 @@ class TestGovernanceStatusEndpoint(unittest.TestCase):
         mock_fn.assert_called_once()
 
     # -----------------------------------------------------------------
+    # S-RESULT-OBS-01C: GET /mso/outcome/status
+    # -----------------------------------------------------------------
+
+    def test_get_mso_outcome_status_requires_auth_and_does_not_invoke_producer(self) -> None:
+        with patch("assistant_os.mso.outcome_status.build_outcome_status") as mock_fn:
+            status, _ = self._request("GET", "/mso/outcome/status", token=None)
+
+        self.assertEqual(status, 401)
+        mock_fn.assert_not_called()
+
+    def test_get_mso_outcome_status_valid_auth_found_envelope(self) -> None:
+        with patch("assistant_os.mso.outcome_status.build_outcome_status") as mock_fn:
+            mock_fn.return_value = {
+                "ok": True,
+                "found": True,
+                "query": {"plan_id": "plan-1", "context_id": "", "trace_id": "", "execution_id": ""},
+                "outcome": {"status": "completed"},
+                "correlation": {"plan_id": "plan-1"},
+                "sources": {"trace_chain": True},
+                "source_errors": [],
+            }
+            status, data = self._request("GET", "/mso/outcome/status?plan_id=plan-1")
+
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertTrue(data["found"])
+        self.assertEqual(data["source"], "outcome_status")
+        self.assertEqual(
+            data["note"],
+            "Outcome status is observational; it does not grant execution permission.",
+        )
+
+    def test_get_mso_outcome_status_no_params_returns_not_found_with_note(self) -> None:
+        status, data = self._request("GET", "/mso/outcome/status")
+
+        self.assertEqual(status, 200)
+        self.assertTrue(data["ok"])
+        self.assertFalse(data["found"])
+        self.assertEqual(data["outcome"]["status"], "not_found")
+        self.assertEqual(data["source"], "outcome_status")
+        self.assertIn("does not grant execution permission", data["note"])
+
+    def test_get_mso_outcome_status_fail_soft_on_producer_exception(self) -> None:
+        with patch(
+            "assistant_os.mso.outcome_status.build_outcome_status",
+            side_effect=RuntimeError("secret token traceback password raw_text"),
+        ):
+            status, data = self._request("GET", "/mso/outcome/status?plan_id=plan-1")
+
+        self.assertEqual(status, 200)
+        self.assertFalse(data["ok"])
+        self.assertEqual(data["source"], "outcome_status")
+        self.assertEqual(data["error"], "outcome_status_unavailable")
+        self.assertIn("does not grant execution permission", data["note"])
+        self.assertNotIn("traceback", json.dumps(data).lower())
+
+    def test_get_mso_outcome_status_post_method_not_allowed(self) -> None:
+        status, _ = self._request("POST", "/mso/outcome/status")
+
+        self.assertEqual(status, 405)
+
+    def test_get_mso_outcome_status_forwards_query_params(self) -> None:
+        with patch("assistant_os.mso.outcome_status.build_outcome_status") as mock_fn:
+            mock_fn.return_value = {
+                "ok": True,
+                "found": False,
+                "query": {},
+                "outcome": {"status": "not_found"},
+                "correlation": {},
+                "sources": {},
+                "source_errors": [],
+            }
+            status, _ = self._request(
+                "GET",
+                "/mso/outcome/status?plan_id=plan-1&context_id=ctx-1&trace_id=trace-1&execution_id=exec-1",
+            )
+
+        self.assertEqual(status, 200)
+        mock_fn.assert_called_once_with(
+            plan_id="plan-1",
+            context_id="ctx-1",
+            trace_id="trace-1",
+            execution_id="exec-1",
+        )
+
+    def test_get_mso_outcome_status_fail_soft_response_has_no_sensitive_fields(self) -> None:
+        with patch(
+            "assistant_os.mso.outcome_status.build_outcome_status",
+            side_effect=RuntimeError("token secret password raw_text traceback"),
+        ):
+            status, data = self._request("GET", "/mso/outcome/status?execution_id=exec-1")
+
+        self.assertEqual(status, 200)
+        serialized = json.dumps(data).lower()
+        for forbidden in ("token", "secret", "password", "raw_text", "traceback"):
+            self.assertNotIn(forbidden, serialized)
+
+    def test_get_mso_outcome_status_source_and_note_all_paths(self) -> None:
+        with patch("assistant_os.mso.outcome_status.build_outcome_status") as mock_fn:
+            mock_fn.return_value = {
+                "ok": True,
+                "found": True,
+                "query": {},
+                "outcome": {"status": "completed"},
+                "correlation": {},
+                "sources": {},
+                "source_errors": [],
+            }
+            _, found = self._request("GET", "/mso/outcome/status?plan_id=found")
+
+        _, not_found = self._request("GET", "/mso/outcome/status")
+
+        with patch("assistant_os.mso.outcome_status.build_outcome_status", side_effect=RuntimeError("boom")):
+            _, producer_error = self._request("GET", "/mso/outcome/status?plan_id=boom")
+
+        for data in (found, not_found, producer_error):
+            self.assertEqual(data["source"], "outcome_status")
+            self.assertEqual(
+                data["note"],
+                "Outcome status is observational; it does not grant execution permission.",
+            )
+
+    # -----------------------------------------------------------------
     # S-CODE-READINESS-01B: GET /code/readiness
     # -----------------------------------------------------------------
 

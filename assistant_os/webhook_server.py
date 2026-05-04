@@ -1329,6 +1329,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
         remote = self._get_remote_addr()
         path = self._get_path_without_query()
         
+        # Route: /mso/outcome/status
+        if path == "/mso/outcome/status":
+            status, error = _make_json_error(405, "Method not allowed", "MethodNotAllowed")
+            self._send_json_response(status, error)
+            return
+
         # Route: /command
         if path == "/command":
             self._handle_command(remote)
@@ -1579,6 +1585,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         if path == "/mso/authority/status":
             self._handle_mso_authority_status_get()
+            return
+
+        if path == "/mso/outcome/status":
+            self._handle_mso_outcome_status_get()
             return
 
         if path == "/system-assistant/state":
@@ -1893,6 +1903,44 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     },
                     "error": str(exc),
                     "note": "Authority status unavailable; this does not grant execution permission.",
+                },
+            )
+
+    def _handle_mso_outcome_status_get(self) -> None:
+        """GET /mso/outcome/status — read-only execution outcome observability."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        note = "Outcome status is observational; it does not grant execution permission."
+        params = self._parse_query_params()
+        try:
+            from .mso.outcome_status import build_outcome_status
+
+            summary = build_outcome_status(
+                plan_id=params.get("plan_id"),
+                context_id=params.get("context_id"),
+                trace_id=params.get("trace_id"),
+                execution_id=params.get("execution_id"),
+            )
+            self._send_json_response(
+                200,
+                {
+                    **summary,
+                    "source": "outcome_status",
+                    "note": note,
+                },
+            )
+        except Exception:  # noqa: BLE001 — fail-soft read-only surface
+            self._send_json_response(
+                200,
+                {
+                    "ok": False,
+                    "source": "outcome_status",
+                    "note": note,
+                    "error": "outcome_status_unavailable",
                 },
             )
 
