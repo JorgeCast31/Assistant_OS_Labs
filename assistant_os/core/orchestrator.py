@@ -1054,6 +1054,45 @@ def _store_pending_plan(plan: dict, operation: str, raw_text: str) -> None:
         pass  # Best-effort — never block the confirmation_required response
 
 
+def _publish_confirm_observation(*, plan_id: str, result: DomainResult) -> None:
+    """
+    Publish the terminal MSO observation for a confirmed execution.
+
+    Completes the task lifecycle that was opened by _publish_mso_observation(
+    executed=False) during the pre-confirm pass.  That pass registered the task
+    in task_registry (status='pending') and opened the trace chain.  This
+    function transitions the task to its terminal status and finalises the chain
+    with the actual pipeline result.
+
+    Non-fatal: any exception is logged at DEBUG level and swallowed so that
+    publication failure can never affect the DomainResult returned to the caller.
+    """
+    try:
+        from ..mso.task_registry import transition_task
+        from ..mso.trace_aggregator import finalize_trace_chain
+
+        terminal_status = "completed" if result.get("ok") else "failed"
+        # task_id == plan_id — set in _publish_mso_observation() pass 1 via:
+        #   task_id = plan_id or trace_id or req.get("context_id", "")
+        transition_task(
+            plan_id,
+            to_status=terminal_status,
+            reason=result.get("result_type", ""),
+            result_type=result.get("result_type", ""),
+            error_type=(result.get("error") or {}).get("type", ""),
+            error_message=(result.get("error") or {}).get("message", ""),
+            execution_id=result.get("plan_id", "") or plan_id,
+        )
+        finalize_trace_chain(
+            plan_id,
+            executed=True,
+            result=result,
+            execution_id=result.get("plan_id", "") or plan_id,
+        )
+    except Exception as exc:
+        _log.debug("confirm observation publication failed non-fatally: %s", exc)
+
+
 def _execute_confirmed_plan(plan_id: str, context_id: str) -> DomainResult:
     """
     Execute a previously stored plan identified by plan_id.
@@ -1165,4 +1204,12 @@ def _execute_confirmed_plan(plan_id: str, context_id: str) -> DomainResult:
     # Single-use: remove before executing to prevent replay on pipeline error.
     remove_pending_plan(plan_id)
 
+    pipeline_fn = pipeline
+
+    def _pipeline_with_confirm_observation(plan_obj: dict, context_obj: str) -> DomainResult:
+        result = pipeline_fn(plan_obj, context_obj)
+        _publish_confirm_observation(plan_id=plan_id, result=result)
+        return result
+
+    pipeline = _pipeline_with_confirm_observation
     return pipeline(plan, context_id)
