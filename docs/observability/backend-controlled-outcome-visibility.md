@@ -1,48 +1,42 @@
 # M-OPERABILITY-ALFA-02 — Backend-controlled execution outcome visibility
 
-## 1. Objetivo del milestone
+## 1. Estado actual cerrado
 
-Establecer visibilidad read-only de ciclo completo:
+Milestone cerrado: la observabilidad de outcome quedo habilitada en backend y UI
+sin introducir ejecucion desde frontend.
 
-request -> plan -> confirm -> execute -> outcome observable.
+Cobertura cerrada:
 
-Este milestone agrega observabilidad de outcome sin introducir ejecucion desde UI.
+- backend endpoint
+- proxy/types/helper
+- panel read-only
+- confirmed execution publication
 
-## 2. Componentes ya existentes
+## 2. Flujo observable
 
-- Outcome Status Producer
-- Outcome producer hardening tests
-- Confirm pending queue
-- Authority Matrix
-- Governance status
-- CODE readiness
+request -> pending confirmation -> confirm execution -> outcome completed observable
 
-## 3. Componentes en curso
+## 3. Superficies
 
 - GET /mso/outcome/status
+- /api/mso/outcome/status
+- OutcomeStatusPanel
 
-## 4. Componentes pendientes
+## 4. Invariantes
 
-- Next.js proxy read-only
-- Outcome Panel UI read-only
-- Visual correlation pending -> executed -> outcome
-- Backend-only demo script/checklist
+- outcome observa, no autoriza
+- UI observa, no ejecuta
+- confirm single-use
+- publication fail-soft
 
-## 5. Invariantes
+## 5. Riesgos residuales
 
-- UI read-only
-- no execute button
-- no approve/confirm/apply from UI
-- outcome is observation, not permission
-- authority remains PolicyDecision.execution_mode
-- no token exposure
-- no raw plan/raw_text/stdout/stderr/artifacts
+- execution_status puede quedar unknown
+- observabilidad puede ser efimera
+- UI-C query manual pendiente
 
-## 6. NO-GO explicitos
+## 6. Proximos sprints sugeridos
 
-- UI execution
-- POST from UI
-- /mso/tasks list endpoint
-- Police formal module
-- environment enforcement
-- temporary pass engine
+- backend demo script
+- UI-C query manual
+- execution_status propagation
