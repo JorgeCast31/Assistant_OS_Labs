@@ -16,12 +16,10 @@ function shortAction(value: string): string {
 export function AuthorityMatrixPanel() {
   useAuthorityStatusPolling()
 
-  const { authorityStatus, isPolling, lastPolled, pollError } = useAuthorityStatusStore((s) => ({
-    authorityStatus: s.authorityStatus,
-    isPolling: s.isPolling,
-    lastPolled: s.lastPolled,
-    pollError: s.pollError,
-  }))
+  const authorityStatus = useAuthorityStatusStore((s) => s.authorityStatus)
+  const isPolling = useAuthorityStatusStore((s) => s.isPolling)
+  const lastPolled = useAuthorityStatusStore((s) => s.lastPolled)
+  const pollError = useAuthorityStatusStore((s) => s.pollError)
 
   const counts = authorityStatus?.counts ?? {
     total: 0,

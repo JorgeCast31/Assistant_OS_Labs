@@ -26,12 +26,10 @@ function outcomeViewState(response: OutcomeStatusResponse | null): 'found' | 'no
 export function OutcomeStatusPanel() {
   useOutcomeStatusPolling()
 
-  const { outcomeStatus, isPolling, lastPolled, pollError } = useOutcomeStatusStore((s) => ({
-    outcomeStatus: s.outcomeStatus,
-    isPolling: s.isPolling,
-    lastPolled: s.lastPolled,
-    pollError: s.pollError,
-  }))
+  const outcomeStatus = useOutcomeStatusStore((s) => s.outcomeStatus)
+  const isPolling = useOutcomeStatusStore((s) => s.isPolling)
+  const lastPolled = useOutcomeStatusStore((s) => s.lastPolled)
+  const pollError = useOutcomeStatusStore((s) => s.pollError)
 
   const state = outcomeViewState(outcomeStatus)
   const outcome = outcomeStatus?.outcome
