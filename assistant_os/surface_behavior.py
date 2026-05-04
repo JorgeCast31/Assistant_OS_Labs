@@ -11,6 +11,7 @@ Core constraint:
 """
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any
 
@@ -148,6 +149,33 @@ _MSO_DIRECT_CONVERSATIONAL: frozenset[str] = frozenset({
     "ayuda",
     "help",
 })
+
+_ASSISTANT_CHAT_CONVERSATIONAL: frozenset[str] = frozenset({
+    "hola",
+    "buenos dias",
+    "buenas tardes",
+    "buenas noches",
+    "como estas",
+    "hey",
+})
+
+_ASSISTANT_CHAT_STATUS: frozenset[str] = frozenset({
+    "estado del sistema",
+    "salud del sistema",
+    "que esta activo",
+})
+
+_GITHUB_URL_RE = re.compile(r"https?://github\.com/[^/\s]+/[^/\s]+", re.IGNORECASE)
+_NUMERIC_AMOUNT_RE = re.compile(r"\b\d+(?:[.,]\d+)?\b")
+
+_CODE_CONTEXT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?:analiza|analizar|revisa|revisar|audita|auditar)\b.*\b(?:repo|repositorio|github|codigo|code)\b", re.IGNORECASE),
+    re.compile(r"\b(?:repo|repositorio|github|codigo|code)\b.*\b(?:analiza|analizar|revisa|revisar|audita|auditar)\b", re.IGNORECASE),
+)
+
+_FIN_EXPENSE_INCOMPLETE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?:gaste|gasto|pague|compre)\b", re.IGNORECASE),
+)
 
 # Executive prefixes — these MUST pass through the orchestrator unchanged.
 _MSO_EXECUTIVE_PREFIXES: tuple[str, ...] = (
@@ -384,6 +412,46 @@ def _system_chat_message(normalized: str) -> str:
 
 # ---------------------------------------------------------------------------
 
+def _assistant_chat_message(normalized: str) -> str:
+    if normalized in _ASSISTANT_CHAT_CONVERSATIONAL:
+        return "Hola. Estoy listo para conversar, revisar estado o ayudarte a encaminar una solicitud."
+    if normalized in _ASSISTANT_CHAT_STATUS:
+        return _system_state_summary()
+    return "Necesito un poco mas de contexto para encaminar eso correctamente."
+
+
+def _is_code_context_request(normalized: str) -> bool:
+    return any(pattern.search(normalized) for pattern in _CODE_CONTEXT_PATTERNS)
+
+
+def _has_code_context(normalized: str) -> bool:
+    return bool(_GITHUB_URL_RE.search(normalized)) or bool(re.search(r"(?<!\w)(?:\.\/|\.\.\/|[a-z]:[\\/]|/)[^\s]+", normalized))
+
+
+def _is_incomplete_fin_expense(normalized: str) -> bool:
+    if not any(pattern.search(normalized) for pattern in _FIN_EXPENSE_INCOMPLETE_PATTERNS):
+        return False
+    return not bool(_NUMERIC_AMOUNT_RE.search(normalized))
+
+
+def _is_fin_expense_request(normalized: str) -> bool:
+    return any(pattern.search(normalized) for pattern in _FIN_EXPENSE_INCOMPLETE_PATTERNS)
+
+
+def _is_ambiguous_assistant_chat(normalized: str) -> bool:
+    if normalized in _ASSISTANT_CHAT_CONVERSATIONAL or normalized in _ASSISTANT_CHAT_STATUS:
+        return False
+    if _is_code_context_request(normalized) or _is_incomplete_fin_expense(normalized):
+        return False
+    if _is_fin_expense_request(normalized):
+        return False
+    if _is_executive(normalized):
+        return False
+    return len(normalized.split()) <= 5
+
+
+# ---------------------------------------------------------------------------
+
 _MSO_MACHINE_OPERATOR_SET = frozenset({
     "tienes machine operator", "hay machine operator", "machine operator", "esta activo",
 })
@@ -466,21 +534,25 @@ def _build_surface_response(
     context_id: str,
     identity: Any,
     guard_result: Any,
+    result_type: str = "surface_response",
+    intent: str = "informational_response",
+    missing_fields: list[str] | None = None,
 ) -> dict:
     return {
         "ok": True,
         "message": message,
+        "result_type": result_type,
         "trace_id": context_id,
         "domain": domain,
-        "intent": "informational_response",
+        "intent": intent,
         "mode": "chat",
         "needs_confirmation": False,
-        "missing_fields": [],
+        "missing_fields": missing_fields or [],
         "plan": [],
         "ui_actions": [],
         "session": {"context_id": context_id, "last_domain": domain},
         "audit": {
-            "result_type": "surface_response",
+            "result_type": result_type,
             "domain": domain,
             "execution_mode": "",
             "mso_decided": False,
@@ -530,6 +602,87 @@ def get_surface_behavior_response(
             identity=identity,
             guard_result=guard_result,
         )
+
+    if surface == "assistant_chat":
+        if normalized in _ASSISTANT_CHAT_CONVERSATIONAL:
+            return _build_surface_response(
+                message=_assistant_chat_message(normalized),
+                domain="ASSISTANT",
+                surface=surface,
+                context_id=context_id,
+                identity=identity,
+                guard_result=guard_result,
+                result_type="surface_response",
+                intent="conversational_response",
+            )
+
+        if normalized in _ASSISTANT_CHAT_STATUS:
+            return _build_surface_response(
+                message=_assistant_chat_message(normalized),
+                domain="SYSTEM",
+                surface=surface,
+                context_id=context_id,
+                identity=identity,
+                guard_result=guard_result,
+                result_type="status_response",
+                intent="status_response",
+            )
+
+        if _is_code_context_request(normalized):
+            if _has_code_context(normalized):
+                return _build_surface_response(
+                    message=(
+                        "Puedo revisar ese repositorio, pero esta superficie todavia necesita "
+                        "el flujo CODE URL explicito antes de ejecutarlo."
+                    ),
+                    domain="CODE",
+                    surface=surface,
+                    context_id=context_id,
+                    identity=identity,
+                    guard_result=guard_result,
+                    result_type="needs_context",
+                    intent="needs_context",
+                    missing_fields=["code_route"],
+                )
+            return _build_surface_response(
+                message="Necesito el URL del repositorio o una ruta de codigo para revisarlo.",
+                domain="CODE",
+                surface=surface,
+                context_id=context_id,
+                identity=identity,
+                guard_result=guard_result,
+                result_type="needs_context",
+                intent="needs_context",
+                missing_fields=["repo_url_or_path"],
+            )
+
+        if _is_incomplete_fin_expense(normalized):
+            return _build_surface_response(
+                message="Necesito el monto para registrar ese gasto.",
+                domain="FIN",
+                surface=surface,
+                context_id=context_id,
+                identity=identity,
+                guard_result=guard_result,
+                result_type="clarification",
+                intent="needs_context",
+                missing_fields=["amount"],
+            )
+
+        if _is_ambiguous_assistant_chat(normalized):
+            return _build_surface_response(
+                message="Necesito un poco mas de contexto para encaminar eso correctamente.",
+                domain="UNKNOWN",
+                surface=surface,
+                context_id=context_id,
+                identity=identity,
+                guard_result=guard_result,
+                result_type="clarification",
+                intent="needs_context",
+                missing_fields=["intent"],
+            )
+
+        return None
 
     if surface == "mso_direct":
         if _is_executive(normalized):
