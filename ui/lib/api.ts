@@ -516,6 +516,7 @@ export async function sendChatMessage(
   if (req.conversation_id) body.conversation_id = req.conversation_id
   if (req.action)          body.action           = req.action
   if (req.session_id)      body.session_id       = req.session_id
+  if (req.surface)         body.surface          = req.surface
 
   const res = await fetch('/api/chat/process', {
     method: 'POST',

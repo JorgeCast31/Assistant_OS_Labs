@@ -224,6 +224,82 @@ class TestGetSurfaceBehaviorResponse(unittest.TestCase):
         self.assertEqual(resp["mode"], "chat")
 
 
+class TestAssistantChatSurfaceBehavior(unittest.TestCase):
+    def _mock_identity(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {"principal": "anon"}
+        return m
+
+    def _mock_guard(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {"decision": "allow"}
+        return m
+
+    def _call(self, text):
+        return get_surface_behavior_response(
+            surface="assistant_chat",
+            text=text,
+            context_id="ctx-assistant-chat",
+            identity=self._mock_identity(),
+            guard_result=self._mock_guard(),
+        )
+
+    def _assert_no_execution(self, resp):
+        self.assertFalse(resp["needs_confirmation"])
+        self.assertEqual(resp["plan"], [])
+        self.assertEqual(resp["ui_actions"], [])
+        self.assertFalse(resp["audit"]["mso_decided"])
+        self.assertEqual(resp["audit"]["execution_mode"], "")
+
+    def test_greeting_returns_surface_response(self):
+        resp = self._call("hey")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["result_type"], "surface_response")
+        self.assertEqual(resp["intent"], "conversational_response")
+        self._assert_no_execution(resp)
+
+    def test_system_health_returns_status_response(self):
+        resp = self._call("salud del sistema")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["result_type"], "status_response")
+        self.assertEqual(resp["domain"], "SYSTEM")
+        self._assert_no_execution(resp)
+
+    def test_code_without_context_needs_context(self):
+        resp = self._call("revisa mi código")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["result_type"], "needs_context")
+        self.assertEqual(resp["domain"], "CODE")
+        self.assertEqual(resp["missing_fields"], ["repo_url_or_path"])
+        self._assert_no_execution(resp)
+
+    def test_code_url_does_not_fall_through_to_command(self):
+        resp = self._call("analiza este repo https://github.com/x/y")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["result_type"], "needs_context")
+        self.assertEqual(resp["domain"], "CODE")
+        self._assert_no_execution(resp)
+
+    def test_fin_missing_amount_clarifies(self):
+        resp = self._call("gasté en comida")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["result_type"], "clarification")
+        self.assertEqual(resp["domain"], "FIN")
+        self.assertEqual(resp["missing_fields"], ["amount"])
+        self._assert_no_execution(resp)
+
+    def test_fin_with_amount_passes_through(self):
+        self.assertIsNone(self._call("gasté 15 en comida ayer"))
+
+    def test_unknown_ambiguous_clarifies(self):
+        resp = self._call("algo raro quizá")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["result_type"], "clarification")
+        self.assertEqual(resp["domain"], "UNKNOWN")
+        self.assertEqual(resp["missing_fields"], ["intent"])
+        self._assert_no_execution(resp)
+
+
 # ---------------------------------------------------------------------------
 # Integration tests — via HTTP webhook server
 # ---------------------------------------------------------------------------
@@ -306,6 +382,26 @@ class TestSurfaceBehaviorHTTP(unittest.TestCase):
         self.assertEqual(body["audit"]["result_type"], "surface_response")
         # Message must explain MSO sovereign role
         self.assertIn("mso", body["message"].lower())
+
+    def test_assistant_chat_greeting_http(self):
+        status, body = self._post_chat("Hola", surface="assistant_chat")
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["audit"]["surface"], "assistant_chat")
+        self.assertEqual(body["audit"]["result_type"], "surface_response")
+        self.assertEqual(body["intent"], "conversational_response")
+        self.assertEqual(body["plan"], [])
+        self.assertFalse(body["needs_confirmation"])
+
+    def test_assistant_chat_code_needs_context_http(self):
+        status, body = self._post_chat("analiza un repo github", surface="assistant_chat")
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["audit"]["surface"], "assistant_chat")
+        self.assertEqual(body["audit"]["result_type"], "needs_context")
+        self.assertEqual(body["domain"], "CODE")
+        self.assertEqual(body["plan"], [])
+        self.assertFalse(body["needs_confirmation"])
 
     # Case 4: mso_direct executive request still goes through orchestrator
     def test_mso_direct_executive_governed_http(self):

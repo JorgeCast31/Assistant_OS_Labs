@@ -13,6 +13,7 @@ from assistant_os.contracts import ACTION_COMMAND, normalize_request
 from assistant_os.core.orchestrator import handle_request
 from assistant_os.mso.capability_registry import check_capability, reset_dynamic_capabilities
 from assistant_os.mso.task_registry import list_tasks, reset_task_registry
+from assistant_os.surface_behavior import get_surface_behavior_response
 
 
 CHAT_RESPONSE_TYPES = {
@@ -62,6 +63,33 @@ def _plan_from_result(result: dict) -> dict:
     return (result.get("data") or {}).get("plan") or {}
 
 
+class _AuditStub:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+
+    def to_audit_dict(self) -> dict:
+        return dict(self._payload)
+
+
+def _route_assistant_chat_surface(text: str) -> dict | None:
+    return get_surface_behavior_response(
+        surface="assistant_chat",
+        text=text,
+        context_id="ctx-assistant-chat-test",
+        identity=_AuditStub({"principal": "anon"}),
+        guard_result=_AuditStub({"decision": "allow"}),
+    )
+
+
+def _assert_no_execution_artifacts(result: dict) -> None:
+    assert result["needs_confirmation"] is False
+    assert result["plan"] == []
+    assert result["ui_actions"] == []
+    assert result["audit"]["mso_decided"] is False
+    assert result["audit"]["execution_mode"] == ""
+    assert list_tasks() == []
+
+
 def test_current_gap_hola_routes_to_energy_command_but_registry_blocks_it() -> None:
     result = _route_main_chat_without_surface("Hola")
     plan = _plan_from_result(result)
@@ -72,6 +100,88 @@ def test_current_gap_hola_routes_to_energy_command_but_registry_blocks_it() -> N
     assert plan["action"] == ACTION_COMMAND
     assert governance["capability_mode"] == "deny"
     assert "Capability registry denied" in governance["justification"]
+
+
+@pytest.mark.parametrize("text", ["Hola", "Buenos dias", "Como estas?", "hey"])
+def test_assistant_chat_conversational_returns_surface_response(text: str) -> None:
+    result = _route_assistant_chat_surface(text)
+
+    assert result is not None
+    assert result["result_type"] == "surface_response"
+    assert result["audit"]["result_type"] == "surface_response"
+    assert result["intent"] == "conversational_response"
+    _assert_no_execution_artifacts(result)
+
+
+@pytest.mark.parametrize("text", ["estado del sistema", "salud del sistema", "que esta activo"])
+def test_assistant_chat_status_is_read_only_surface_response(text: str) -> None:
+    result = _route_assistant_chat_surface(text)
+
+    assert result is not None
+    assert result["result_type"] == "status_response"
+    assert result["intent"] == "status_response"
+    assert result["domain"] == "SYSTEM"
+    _assert_no_execution_artifacts(result)
+
+
+@pytest.mark.parametrize("text", ["analiza un repo github", "revisa mi codigo"])
+def test_assistant_chat_code_without_context_needs_context(text: str) -> None:
+    result = _route_assistant_chat_surface(text)
+
+    assert result is not None
+    assert result["result_type"] == "needs_context"
+    assert result["intent"] == "needs_context"
+    assert result["domain"] == "CODE"
+    _assert_no_execution_artifacts(result)
+
+
+def test_assistant_chat_code_with_url_never_falls_to_command() -> None:
+    result = _route_assistant_chat_surface("analiza este repo https://github.com/x/y")
+
+    assert result is not None
+    assert result["result_type"] == "needs_context"
+    assert result["domain"] == "CODE"
+    assert result["plan"] == []
+    assert list_tasks() == []
+
+
+def test_assistant_chat_fin_without_amount_clarifies() -> None:
+    result = _route_assistant_chat_surface("gaste en comida")
+
+    assert result is not None
+    assert result["result_type"] == "clarification"
+    assert result["domain"] == "FIN"
+    assert result["missing_fields"] == ["amount"]
+    _assert_no_execution_artifacts(result)
+
+
+def test_assistant_chat_fin_with_amount_passes_through_to_kernel() -> None:
+    result = _route_assistant_chat_surface("gaste 15 en comida ayer")
+
+    assert result is None
+    assert list_tasks() == []
+
+
+def test_assistant_chat_unknown_ambiguous_clarifies() -> None:
+    result = _route_assistant_chat_surface("algo raro quiza")
+
+    assert result is not None
+    assert result["result_type"] == "clarification"
+    assert result["domain"] == "UNKNOWN"
+    assert result["missing_fields"] == ["intent"]
+    _assert_no_execution_artifacts(result)
+
+
+def test_unknown_surface_preserves_previous_behavior() -> None:
+    result = get_surface_behavior_response(
+        surface="unknown_surface",
+        text="Hola",
+        context_id="ctx-unknown-surface-test",
+        identity=_AuditStub({"principal": "anon"}),
+        guard_result=_AuditStub({"decision": "allow"}),
+    )
+
+    assert result is None
 
 
 @pytest.mark.xfail(

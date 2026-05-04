@@ -1528,6 +1528,9 @@ export function ChatView() {
           ? sessionContextRef.current as SendChatRequest['session_context']
           : undefined,
         session_id: requestSessionId ?? undefined,
+        // S-CHAT-01B: declare surface so backend can apply surface-aware routing.
+        // UI only declares surface — all semantic logic lives in the backend.
+        surface: 'assistant_chat',
       })
 
       // ── Race guard: if session changed while waiting, discard ──────────────

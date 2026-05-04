@@ -1189,5 +1189,78 @@ class TestOutcomeStatusPanelContracts(unittest.TestCase):
             self.assertNotIn(f"export async function {method}", self.proxy_src)
 
 
+class TestChatSurfacePropagation(unittest.TestCase):
+    """S-CHAT-01B — surface='assistant_chat' must be wired end-to-end in the main chat."""
+
+    def setUp(self) -> None:
+        self.types_src    = _read("lib/types.ts")
+        self.api_src      = _read("lib/api.ts")
+        self.chat_src     = _read("components/views/chat-view.tsx")
+        self.route_src    = _read("app/api/chat/process/route.ts")
+
+    # 1. SendChatRequest must declare surface as an optional field.
+    def test_send_chat_request_has_surface_field(self) -> None:
+        self.assertIn(
+            "surface?: string",
+            self.types_src,
+            "SendChatRequest in types.ts must declare 'surface?: string'",
+        )
+
+    # 2. sendChatMessage must forward req.surface to the request body.
+    def test_send_chat_message_propagates_surface(self) -> None:
+        self.assertIn(
+            "req.surface",
+            self.api_src,
+            "sendChatMessage in api.ts must reference req.surface",
+        )
+        self.assertIn(
+            "body.surface",
+            self.api_src,
+            "sendChatMessage in api.ts must assign body.surface",
+        )
+
+    # 3. chat-view.tsx call site must pass surface: 'assistant_chat'.
+    def test_chat_view_sends_assistant_chat_surface(self) -> None:
+        self.assertIn(
+            "surface: 'assistant_chat'",
+            self.chat_src,
+            "chat-view.tsx must pass surface: 'assistant_chat' to sendChatMessage",
+        )
+
+    # 4. Proxy route must still propagate body.surface (regression guard).
+    def test_route_propagates_body_surface(self) -> None:
+        self.assertIn(
+            "body.surface",
+            self.route_src,
+            "app/api/chat/process/route.ts must propagate body.surface to upstream payload",
+        )
+
+    # 5. UI must not contain semantic routing logic (no if-text-includes checks).
+    def test_no_semantic_logic_in_chat_view(self) -> None:
+        forbidden_patterns = [
+            r"text\.includes\(",
+            r"text\.startsWith\(",
+            r"\.toLowerCase\(\).*hola",
+            r"\.toLowerCase\(\).*status",
+        ]
+        for pattern in forbidden_patterns:
+            self.assertIsNone(
+                re.search(pattern, self.chat_src),
+                f"chat-view.tsx must not contain semantic routing pattern: {pattern}",
+            )
+
+    # 6. No new buttons or action surfaces added (structural guard).
+    def test_no_new_action_buttons_in_chat_view(self) -> None:
+        # Count <button elements — file should not have grown by a surface-adding block.
+        # This is a regression floor: if the count exceeds a reasonable cap the
+        # test will prompt review. Current cap is 20 (generous ceiling).
+        button_count = self.chat_src.count("<button")
+        self.assertLessEqual(
+            button_count,
+            20,
+            f"chat-view.tsx contains {button_count} <button elements — review for unintended UI additions",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

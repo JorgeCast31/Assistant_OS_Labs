@@ -243,6 +243,9 @@ export interface SendChatRequest {
   action?: ChatAction
   /** M17: backend session id for persistent history. */
   session_id?: string
+  /** S-CHAT-01B: surface identifier sent to backend for routing context. UI declares
+   * surface only — backend decides all semantic interpretation. */
+  surface?: string
 }
 
 /**
