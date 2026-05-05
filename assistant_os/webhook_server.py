@@ -2763,7 +2763,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # Runs AFTER identity guard (security must pass) but BEFORE the governance
         # gate and orchestrator dispatch. Conversational responses carry no execution,
         # so they bypass governance intentionally — small talk must not be blocked.
-        from .surface_behavior import get_surface_behavior_response as _get_surf_resp
+        from .surface_behavior import (
+            get_assistant_chat_routing_context as _get_assistant_chat_routing_context,
+            get_surface_behavior_response as _get_surf_resp,
+        )
         _surface_resp = _get_surf_resp(
             surface=surface,
             text=text,
@@ -2816,6 +2819,20 @@ class WebhookHandler(BaseHTTPRequestHandler):
                         session_id, _surf_persist_exc,
                     )
             return
+
+        _routing_context = _get_assistant_chat_routing_context(
+            surface=surface,
+            text=text,
+            context_id=_context_id,
+        )
+        if _routing_context is not None:
+            req_metadata = req.get("metadata")
+            if not isinstance(req_metadata, dict):
+                req_metadata = {}
+            req_metadata = dict(req_metadata)
+            # Non-authoritative handoff only. Do not set metadata["action"].
+            req_metadata["routing_context"] = _routing_context
+            req["metadata"] = req_metadata
 
         # ALFA governance gate — checked before ANY kernel dispatch.
         #
@@ -2871,6 +2888,18 @@ class WebhookHandler(BaseHTTPRequestHandler):
             guard_result=guard_result,
             surface=request_surface,
         )
+        if isinstance(request_metadata, dict) and isinstance(request_metadata.get("routing_context"), dict):
+            audit = dict(response_data.get("audit") or {})
+            audit["routing_context"] = {
+                "source": request_metadata["routing_context"].get("source"),
+                "authoritative": request_metadata["routing_context"].get("authoritative"),
+                "intent_type": request_metadata["routing_context"].get("intent_type"),
+                "domain": request_metadata["routing_context"].get("domain"),
+                "action": request_metadata["routing_context"].get("action"),
+                "router_version": request_metadata["routing_context"].get("router_version"),
+                "context_id": request_metadata["routing_context"].get("context_id"),
+            }
+            response_data["audit"] = audit
 
         ui_action_types = [a.get("type", "") for a in response_data.get("ui_actions", [])]
         _log.info(
