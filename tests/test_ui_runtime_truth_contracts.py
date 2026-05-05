@@ -117,6 +117,35 @@ class TestSovereignStoreInitialState(unittest.TestCase):
         )
 
 
+class TestSovereignNavigationContracts(unittest.TestCase):
+    """Sovereign view IDs must match across types, sidebar, shell and store."""
+
+    def setUp(self) -> None:
+        self.types_src = _read("lib/sovereign/types.ts")
+        self.sidebar_src = _read("components/sovereign/SidebarNavigation.tsx")
+        self.shell_src = _read("components/sovereign/SovereignShell.tsx")
+        self.store_src = _read("stores/sovereign-store.ts")
+
+    def test_view_ids_present_in_type_union(self) -> None:
+        for view_id in ("'system'", "'sovereign-status'", "'security'", "'mso'", "'agents'"):
+            self.assertIn(view_id, self.types_src)
+
+    def test_sidebar_declares_expected_zone_ids(self) -> None:
+        for view_id in ("id: 'system'", "id: 'sovereign-status'", "id: 'security'", "id: 'mso'", "id: 'agents'"):
+            self.assertIn(view_id, self.sidebar_src)
+
+    def test_shell_switch_handles_expected_view_ids(self) -> None:
+        for view_id in ("case 'system'", "case 'sovereign-status'", "case 'security'", "case 'mso'", "case 'agents'"):
+            self.assertIn(view_id, self.shell_src)
+
+    def test_store_initial_view_is_valid(self) -> None:
+        self.assertIn("activeView: 'sovereign-status'", self.store_src)
+
+    def test_unknown_view_has_safe_fallback(self) -> None:
+        self.assertIn("default:", self.shell_src)
+        self.assertIn("return <SystemChatView />", self.shell_src)
+
+
 class TestSystemChatViewEndpoints(unittest.TestCase):
     """SystemChatView must only call read-only state endpoint, never execution endpoints."""
 
@@ -936,17 +965,19 @@ class TestConfirmFlowQueuePanelContracts(unittest.TestCase):
         )
 
 
-class TestSystemViewMountsConfirmFlowQueuePanel(unittest.TestCase):
-    """SystemView must import and render ConfirmFlowQueuePanel."""
+class TestSovereignStatusMountsConfirmFlowQueuePanel(unittest.TestCase):
+    """ConfirmFlowQueuePanel belongs to Sovereign Status, not SystemView."""
 
     def setUp(self) -> None:
-        self.src = _read("components/views/system-view.tsx")
+        self.status_src = _read("components/sovereign/SovereignStatusView.tsx")
+        self.system_src = _read("components/views/system-view.tsx")
 
-    def test_system_view_imports_panel(self) -> None:
-        self.assertIn("ConfirmFlowQueuePanel", self.src)
+    def test_status_view_imports_and_renders_panel(self) -> None:
+        self.assertIn("ConfirmFlowQueuePanel", self.status_src)
+        self.assertIn("<ConfirmFlowQueuePanel />", self.status_src)
 
-    def test_system_view_renders_panel(self) -> None:
-        self.assertIn("<ConfirmFlowQueuePanel />", self.src)
+    def test_system_view_does_not_mount_panel(self) -> None:
+        self.assertNotIn("ConfirmFlowQueuePanel", self.system_src)
 
 
 class TestAuthorityStatusProxyContracts(unittest.TestCase):
@@ -1012,17 +1043,19 @@ class TestAuthorityMatrixPanelContracts(unittest.TestCase):
         self.assertNotIn("execute</button", lowered)
 
 
-class TestSystemViewMountsAuthorityMatrixPanel(unittest.TestCase):
-    """SystemView must import and render AuthorityMatrixPanel."""
+class TestSecurityViewMountsAuthorityMatrixPanel(unittest.TestCase):
+    """AuthorityMatrixPanel belongs to Sovereign Security, not SystemView."""
 
     def setUp(self) -> None:
-        self.src = _read("components/views/system-view.tsx")
+        self.security_src = _read("components/sovereign/SecurityView.tsx")
+        self.system_src = _read("components/views/system-view.tsx")
 
-    def test_system_view_imports_panel(self) -> None:
-        self.assertIn("AuthorityMatrixPanel", self.src)
+    def test_security_view_imports_and_renders_panel(self) -> None:
+        self.assertIn("AuthorityMatrixPanel", self.security_src)
+        self.assertIn("<AuthorityMatrixPanel />", self.security_src)
 
-    def test_system_view_renders_panel(self) -> None:
-        self.assertIn("<AuthorityMatrixPanel />", self.src)
+    def test_system_view_does_not_mount_panel(self) -> None:
+        self.assertNotIn("AuthorityMatrixPanel", self.system_src)
 
 
 class TestOutcomeStatusProxyContracts(unittest.TestCase):
@@ -1125,6 +1158,7 @@ class TestOutcomeStatusPanelContracts(unittest.TestCase):
         self.store_src = _read("stores/outcome-status-store.ts")
         self.hook_src = _read("hooks/use-outcome-status-polling.ts")
         self.system_view_src = _read("components/views/system-view.tsx")
+        self.status_view_src = _read("components/sovereign/SovereignStatusView.tsx")
         self.proxy_src = _read("app/api/mso/outcome/status/route.ts")
 
     def test_panel_exists(self) -> None:
@@ -1172,9 +1206,12 @@ class TestOutcomeStatusPanelContracts(unittest.TestCase):
         self.assertNotIn("method: 'POST'", self.hook_src)
         self.assertNotIn("method: \"POST\"", self.hook_src)
 
-    def test_system_view_imports_and_renders_panel(self) -> None:
-        self.assertIn("OutcomeStatusPanel", self.system_view_src)
-        self.assertIn("<OutcomeStatusPanel />", self.system_view_src)
+    def test_sovereign_status_imports_and_renders_panel(self) -> None:
+        self.assertIn("OutcomeStatusPanel", self.status_view_src)
+        self.assertIn("<OutcomeStatusPanel />", self.status_view_src)
+
+    def test_system_view_does_not_mount_panel(self) -> None:
+        self.assertNotIn("OutcomeStatusPanel", self.system_view_src)
 
     def test_no_direct_backend_webhook_usage_in_panel_store_hook(self) -> None:
         merged = "\n".join([self.panel_src, self.store_src, self.hook_src])
