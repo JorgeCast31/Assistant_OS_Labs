@@ -59,6 +59,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import uuid
 from typing import Callable, Optional
 
@@ -78,6 +79,7 @@ from ..contracts import (
     RISK_HIGH,
     EXECUTION_STATUS_REAL,
     EXECUTION_STATUS_STUB,
+    EXECUTION_STATUS_UNAVAILABLE,
 )
 
 _STUB_PREFIX = "[STUB — no real execution] "
@@ -98,6 +100,7 @@ _applied_proposals: set = set()
 # Set via register_review_executor() at app startup for real execution.
 # ---------------------------------------------------------------------------
 _review_executor: Optional[Callable] = None
+_GITHUB_URL_RE = re.compile(r"https?://github\.com/[^/\s]+/[^/\s]+", re.IGNORECASE)
 
 
 def register_review_executor(fn: Optional[Callable]) -> None:
@@ -263,6 +266,19 @@ def _build_executor_context(plan: dict, payload: dict) -> str:
     return f"{base_context}\n\n{advisory_block}"
 
 
+def _read_code_readiness_fail_soft() -> dict:
+    try:
+        from ..codeops import readiness as code_readiness
+
+        snapshot = code_readiness.get_code_readiness()
+        return dict(snapshot) if isinstance(snapshot, dict) else {}
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "code_api_reachable": None,
+            "code_api_error": f"readiness unavailable: {exc}",
+        }
+
+
 # ---------------------------------------------------------------------------
 # Read-only path
 # ---------------------------------------------------------------------------
@@ -278,13 +294,47 @@ def _execute_read_only(plan: dict, context_id: str, result_type: str) -> DomainR
 
     payload: dict = plan.get("domain_payload") or {}
     action = plan.get("action", "")
+    executor_context = _build_executor_context(plan, payload)
+
+    if _review_executor is None and _GITHUB_URL_RE.search(executor_context):
+        readiness = _read_code_readiness_fail_soft()
+        api_state = (
+            "offline"
+            if readiness.get("code_api_reachable") is False
+            else "unknown"
+        )
+        message = (
+            "No puedo revisar ese repositorio remoto todavía: no hay un executor CODE real "
+            f"registrado y el estado de Code API es {api_state}. No leí el contenido del repo. "
+            "Pega el contenido relevante, indica una ruta local/repo path accesible, "
+            "o habilita Code API online con un pipeline real."
+        )
+        return make_domain_result(
+            ok=False,
+            result_type="code_unavailable",
+            domain="CODE",
+            message=message,
+            data={
+                "type": "code_unavailable",
+                "action": action,
+                "target_file": payload.get("target_file", ""),
+                "executor_live": False,
+                "code_api_reachable": readiness.get("code_api_reachable"),
+                "code_api_error": readiness.get("code_api_error"),
+                "repo_read": False,
+            },
+            error={"type": "CodeBackendUnavailable", "message": message},
+            trace_id=plan.get("trace_id"),
+            plan_id=plan.get("plan_id"),
+            execution_status=EXECUTION_STATUS_UNAVAILABLE,
+        )
 
     # Pass the registered executor (or None → stub) into the tool
     tool_result = ReviewCodeTool(executor=_review_executor).execute({
         "action": action,
         "target_file": payload.get("target_file", ""),
         "workspace": payload.get("workspace", ""),
-        "context": _build_executor_context(plan, payload),
+        "context": executor_context,
     })
 
     if not tool_result.ok:
