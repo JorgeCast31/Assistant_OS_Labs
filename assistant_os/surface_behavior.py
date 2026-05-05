@@ -15,6 +15,8 @@ import re
 import unicodedata
 from typing import Any
 
+from .cognition.router import RouterResult, route_text
+
 
 # ---------------------------------------------------------------------------
 # Text normalization
@@ -563,6 +565,127 @@ def _build_surface_response(
     }
 
 
+def _assistant_chat_router_response(
+    *,
+    router_result: RouterResult,
+    normalized: str,
+    surface: str,
+    context_id: str,
+    identity: Any,
+    guard_result: Any,
+) -> dict | None:
+    intent_type = router_result.get("intent_type", "unknown_ambiguous")
+
+    if intent_type == "executable_intent" and router_result.get("should_pass_to_kernel") is True:
+        return None
+
+    if intent_type == "conversational":
+        return _build_surface_response(
+            message=_assistant_chat_message(normalized),
+            domain="ASSISTANT",
+            surface=surface,
+            context_id=context_id,
+            identity=identity,
+            guard_result=guard_result,
+            result_type="surface_response",
+            intent="conversational_response",
+        )
+
+    if intent_type == "capability_summary":
+        return _build_surface_response(
+            message=_capabilities_summary(),
+            domain="ASSISTANT",
+            surface=surface,
+            context_id=context_id,
+            identity=identity,
+            guard_result=guard_result,
+            result_type="surface_response",
+            intent="capability_summary",
+        )
+
+    if intent_type == "read_only_status":
+        return _build_surface_response(
+            message=_system_state_summary(),
+            domain="SYSTEM",
+            surface=surface,
+            context_id=context_id,
+            identity=identity,
+            guard_result=guard_result,
+            result_type="status_response",
+            intent="status_response",
+        )
+
+    if intent_type == "needs_context":
+        return _build_surface_response(
+            message=_assistant_chat_needs_context_message(router_result),
+            domain=router_result.get("domain") or "UNKNOWN",
+            surface=surface,
+            context_id=context_id,
+            identity=identity,
+            guard_result=guard_result,
+            result_type="clarification",
+            intent="needs_context",
+            missing_fields=router_result.get("missing_fields") or ["intent"],
+        )
+
+    return _build_surface_response(
+        message=_assistant_chat_unknown_message(router_result),
+        domain="UNKNOWN",
+        surface=surface,
+        context_id=context_id,
+        identity=identity,
+        guard_result=guard_result,
+        result_type="clarification",
+        intent="needs_context",
+        missing_fields=["intent"],
+    )
+
+
+def _assistant_chat_router_fail_closed_response(
+    *,
+    surface: str,
+    context_id: str,
+    identity: Any,
+    guard_result: Any,
+) -> dict:
+    return _build_surface_response(
+        message="Necesito un poco mas de contexto para encaminar eso correctamente.",
+        domain="UNKNOWN",
+        surface=surface,
+        context_id=context_id,
+        identity=identity,
+        guard_result=guard_result,
+        result_type="clarification",
+        intent="needs_context",
+        missing_fields=["intent"],
+    )
+
+
+def _assistant_chat_needs_context_message(router_result: RouterResult) -> str:
+    domain = router_result.get("domain")
+    missing = set(router_result.get("missing_fields") or [])
+    if domain == "CODE" and "repo_url" in missing:
+        return "Necesito el URL del repositorio o una ruta de codigo para revisarlo."
+    if domain == "FIN" and "amount" in missing:
+        return "Necesito el monto para registrar ese gasto."
+    if domain == "WORK" and "task_title" in missing:
+        return "Necesito el titulo de la tarea para crearla."
+    return "Necesito un poco mas de contexto para encaminar eso correctamente."
+
+
+def _assistant_chat_unknown_message(router_result: RouterResult) -> str:
+    flags = set(router_result.get("safety_flags") or [])
+    if flags.intersection({"social_engineering", "prompt_injection"}):
+        return "No puedo encaminar solicitudes que intentan saltarse reglas o instrucciones del sistema."
+    return "Necesito un poco mas de contexto para encaminar eso correctamente."
+
+
+def _assistant_chat_router_text(text: str, normalized: str) -> str:
+    if re.search(r"\b(?:como esta|estado|salud)\b.*\bsistema\b", normalized):
+        return "como esta el sistema"
+    return text
+
+
 # ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
@@ -629,32 +752,18 @@ def get_surface_behavior_response(
             )
 
         if _is_code_context_request(normalized):
-            if _has_code_context(normalized):
+            if not _has_code_context(normalized):
                 return _build_surface_response(
-                    message=(
-                        "Puedo revisar ese repositorio, pero esta superficie todavia necesita "
-                        "el flujo CODE URL explicito antes de ejecutarlo."
-                    ),
+                    message="Necesito el URL del repositorio o una ruta de codigo para revisarlo.",
                     domain="CODE",
                     surface=surface,
                     context_id=context_id,
                     identity=identity,
                     guard_result=guard_result,
-                    result_type="needs_context",
+                    result_type="clarification",
                     intent="needs_context",
-                    missing_fields=["code_route"],
+                    missing_fields=["repo_url"],
                 )
-            return _build_surface_response(
-                message="Necesito el URL del repositorio o una ruta de codigo para revisarlo.",
-                domain="CODE",
-                surface=surface,
-                context_id=context_id,
-                identity=identity,
-                guard_result=guard_result,
-                result_type="needs_context",
-                intent="needs_context",
-                missing_fields=["repo_url_or_path"],
-            )
 
         if _is_incomplete_fin_expense(normalized):
             return _build_surface_response(
@@ -669,20 +778,24 @@ def get_surface_behavior_response(
                 missing_fields=["amount"],
             )
 
-        if _is_ambiguous_assistant_chat(normalized):
-            return _build_surface_response(
-                message="Necesito un poco mas de contexto para encaminar eso correctamente.",
-                domain="UNKNOWN",
+        try:
+            router_result = route_text(_assistant_chat_router_text(text, normalized))
+        except Exception:
+            return _assistant_chat_router_fail_closed_response(
                 surface=surface,
                 context_id=context_id,
                 identity=identity,
                 guard_result=guard_result,
-                result_type="clarification",
-                intent="needs_context",
-                missing_fields=["intent"],
             )
 
-        return None
+        return _assistant_chat_router_response(
+            router_result=router_result,
+            normalized=normalized,
+            surface=surface,
+            context_id=context_id,
+            identity=identity,
+            guard_result=guard_result,
+        )
 
     if surface == "mso_direct":
         if _is_executive(normalized):
