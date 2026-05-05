@@ -230,15 +230,16 @@ def _machine_operator_summary() -> str:
 
     if mo_state == "unavailable":
         return (
-            "Machine Operator está disponible en modo simulación. "
-            "La capa MSO está activa y procesa decisiones localmente, "
+            "Machine Operator está configurado en modo simulación. "
+            "La capa MSO procesa decisiones localmente, "
             "pero la conexión con el gateway externo (OpenClaw) no está configurada. "
             "Toda ejecución pasa por política → plan → confirmación."
         )
     if mo_state == "available":
         return (
-            "Machine Operator está activo. Evalúo solicitudes contra la política de gobernanza, "
-            "genero planes de ejecución y requiero confirmación explícita antes de actuar. "
+            "Machine Operator está configurado. Sin verificación de reachability en este resumen. "
+            "Evalúo solicitudes contra la política de gobernanza, genero planes de ejecución "
+            "y requiero confirmación explícita antes de actuar. "
             "¿Tienes alguna solicitud ejecutiva?"
         )
     return (
@@ -278,9 +279,9 @@ def _capabilities_summary() -> str:
         active = [c["id"] for c in capabilities if c.get("status") == "active"][:6]
         parts: list[str] = []
         if domains:
-            parts.append(f"Dominios activos: {', '.join(domains)}.")
+            parts.append(f"Dominios registrados: {', '.join(domains)}.")
         if active:
-            parts.append(f"Capacidades disponibles: {', '.join(active)}.")
+            parts.append(f"Capacidades registradas: {', '.join(active)}.")
         if features.get("machine_operator"):
             parts.append("Machine Operator habilitado.")
         if features.get("runner_enforced"):
@@ -307,9 +308,9 @@ def _agents_summary() -> str:
             f"- {a['name']} ({a.get('domain', '?')}): {a.get('description') or 'sin descripción'}"
             for a in agents[:8]
         ]
-        return f"Agentes disponibles ({len(agents)}):\n" + "\n".join(lines)
+        return f"Agentes registrados ({len(agents)}):\n" + "\n".join(lines)
     except Exception:
-        return "Agentes del sistema disponibles. Consulta el panel de sistema para detalles."
+        return "Agentes del sistema registrados/configurados. Consulta el panel de sistema para detalles."
 
 
 def _system_state_summary() -> str:
@@ -317,12 +318,12 @@ def _system_state_summary() -> str:
         from .operability import build_mso_state_response
         state = build_mso_state_response()
         mode = state.get("operational_mode", "UNKNOWN")
-        agents_avail = state.get("agents_available", 0)
+        agents_registered = state.get("agents_registered", state.get("agents_available", 0))
         pending = state.get("pending_confirmations", 0)
         active = state.get("active_executions", 0)
         parts = [f"Modo operacional: {mode}."]
-        if agents_avail:
-            parts.append(f"Agentes disponibles: {agents_avail}.")
+        if agents_registered:
+            parts.append(f"Agentes registrados/configurados: {agents_registered}.")
         if pending:
             parts.append(f"Confirmaciones pendientes: {pending}.")
         if active:
@@ -414,7 +415,7 @@ def _system_chat_message(normalized: str) -> str:
             "y la procesaré a través del flujo de gobernanza."
         )
 
-    return "Sistema operativo disponible. ¿En qué puedo ayudarte?"
+    return "Sistema operativo cargado. ¿En qué puedo ayudarte?"
 
 
 # ---------------------------------------------------------------------------
@@ -526,7 +527,7 @@ def _mso_conversational_message(normalized: str) -> str:
             "¿Qué información necesitas?"
         )
 
-    return "MSO disponible. Las solicitudes ejecutivas pasan por gobernanza antes de ejecutarse."
+    return "MSO registrado. Las solicitudes ejecutivas pasan por gobernanza antes de ejecutarse."
 
 
 # ---------------------------------------------------------------------------

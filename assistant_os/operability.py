@@ -254,6 +254,9 @@ def build_mso_state_response() -> dict[str, Any]:
             "frozen": snapshot.operational_mode == "FROZEN",
             "restrictions": restrictions,
         },
+        "agents_registered": len(build_agents_registry_response()["agents"]),
+        # Backward-compatible field name; callers should phrase this as
+        # registered/configured unless they have health probe evidence.
         "agents_available": len(build_agents_registry_response()["agents"]),
         "pending_confirmations": pending_confirmations,
         "active_executions": len(snapshot.running_executions),

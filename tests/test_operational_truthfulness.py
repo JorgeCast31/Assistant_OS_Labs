@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
-
 from assistant_os.contracts import normalize_request
 from assistant_os.core.orchestrator import handle_request
 from assistant_os.mso.task_registry import reset_task_registry
@@ -55,13 +53,6 @@ def _message_text(result: dict) -> str:
     return "\n".join(parts).lower()
 
 
-@pytest.mark.xfail(
-    reason=(
-        "CODE_REVIEW currently returns a successful stub review instead of "
-        "truthfully reporting offline/unreadable remote content."
-    ),
-    strict=True,
-)
 def test_code_review_url_with_code_api_offline_reports_unavailable_not_repo_review() -> None:
     with patch(
         "assistant_os.codeops.readiness.get_code_readiness",
@@ -84,13 +75,6 @@ def test_code_review_url_with_code_api_offline_reports_unavailable_not_repo_revi
     assert "revisado el repo" not in text
 
 
-@pytest.mark.xfail(
-    reason=(
-        "A GitHub URL without a real remote-content reader currently falls "
-        "through to the CODE_REVIEW stub instead of asking for files/content."
-    ),
-    strict=True,
-)
 def test_github_url_without_repo_access_asks_for_content_or_real_pipeline() -> None:
     result = _route_code_review_url()
     text = _message_text(result)
@@ -103,13 +87,6 @@ def test_github_url_without_repo_access_asks_for_content_or_real_pipeline() -> N
     assert any(term in text for term in ("archivo", "contenido", "repo path", "no puedo leer"))
 
 
-@pytest.mark.xfail(
-    reason=(
-        "System status currently labels registered agents as available even "
-        "without health/reachability evidence."
-    ),
-    strict=True,
-)
 def test_agent_registry_count_does_not_call_registered_agents_available() -> None:
     from assistant_os.surface_behavior import _system_state_summary
 
@@ -129,13 +106,6 @@ def test_agent_registry_count_does_not_call_registered_agents_available() -> Non
     assert "registrados" in message or "sin probe" in message or "estado no verificado" in message
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Machine Operator wording can say available/active from adapter/config "
-        "state without an explicit reachability probe."
-    ),
-    strict=True,
-)
 def test_machine_operator_does_not_claim_reachable_without_probe() -> None:
     from assistant_os.surface_behavior import _machine_operator_summary
 
