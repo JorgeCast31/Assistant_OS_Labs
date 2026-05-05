@@ -543,6 +543,9 @@ class TestSurfaceBehaviorHTTP(unittest.TestCase):
         self.assertEqual(routing_context["action"], "CODE_REVIEW")
         self.assertEqual(routing_context["router_version"], "v0_deterministic")
         self.assertNotEqual(body["audit"].get("action"), "CODE_REVIEW")
+        self.assertEqual(body["domain"], "CODE")
+        self.assertNotEqual(body.get("domain"), "EIPROTA")
+        self.assertNotEqual((body.get("data") or {}).get("action"), "COMMAND")
 
     def test_assistant_chat_code_url_http_transports_routing_context_metadata(self):
         captured: dict = {}

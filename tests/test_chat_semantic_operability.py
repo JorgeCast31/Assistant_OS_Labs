@@ -59,6 +59,37 @@ def _route_main_chat_without_surface(text: str) -> dict:
     return handle_request(normalize_request(text=text))
 
 
+def _route_assistant_chat_with_routing_context(text: str, routing_context: dict) -> dict:
+    return handle_request(
+        normalize_request(
+            text=text,
+            metadata={
+                "surface": "assistant_chat",
+                "routing_context": routing_context,
+            },
+        )
+    )
+
+
+def _code_review_routing_context() -> dict:
+    return {
+        "source": "cognitive_router_v0",
+        "authoritative": False,
+        "intent_type": "executable_intent",
+        "domain": "CODE",
+        "action": "CODE_REVIEW",
+        "entities": {"repo_url": "https://github.com/jorgecast31/tti-lab"},
+        "missing_fields": [],
+        "confidence": 0.91,
+        "should_pass_to_kernel": True,
+        "safety_flags": [],
+        "routing_reason": "repo URL detected",
+        "router_version": "v0_deterministic",
+        "context_id": "ctx-chat-semantic-routing",
+        "created_at": "2026-05-04T00:00:00+00:00",
+    }
+
+
 def _plan_from_result(result: dict) -> dict:
     return (result.get("data") or {}).get("plan") or {}
 
@@ -143,6 +174,18 @@ def test_assistant_chat_code_with_url_passes_through_to_kernel() -> None:
 
     assert result is None
     assert list_tasks() == []
+
+
+def test_assistant_chat_code_url_routing_context_prevents_command_reclassification() -> None:
+    result = _route_assistant_chat_with_routing_context(
+        "Analiza un repo github https://github.com/JorgeCast31/TTI-LAB",
+        _code_review_routing_context(),
+    )
+    plan = _plan_from_result(result)
+
+    assert result["domain"] == "CODE"
+    assert result["result_type"] != "plan_confirmation_required"
+    assert plan.get("action") != ACTION_COMMAND
 
 
 def test_assistant_chat_fin_without_amount_clarifies() -> None:
