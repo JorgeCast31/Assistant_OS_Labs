@@ -2759,6 +2759,62 @@ class WebhookHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if (
+            surface == "assistant_chat"
+            and not _pending_confirm_plan_id
+            and isinstance(session_data.get("context_request"), dict)
+        ):
+            from .cognition.context_resolver import resolve_context_request
+            from .surface_behavior import _build_surface_response as _build_context_surface_response
+
+            _resolution = resolve_context_request(
+                session_data["context_request"],
+                text,
+                context_id=_context_id,
+            )
+            _resolution_status = _resolution.get("status")
+            _resolved_context = _resolution.get("context_request")
+
+            if _resolution_status == "cancelled":
+                _context_resp = _build_context_surface_response(
+                    message="Contexto cancelado. Puedes iniciar una solicitud nueva.",
+                    domain="ASSISTANT",
+                    surface=surface,
+                    context_id=_context_id,
+                    identity=request_identity,
+                    guard_result=guard_result,
+                    result_type="surface_response",
+                    intent="context_cancelled",
+                    missing_fields=[],
+                )
+                self._send_json_response(200, _context_resp)
+                return
+
+            if _resolution_status != "expired" and isinstance(_resolved_context, dict):
+                _missing = list(_resolved_context.get("missing_fields") or [])
+                _complete = _resolution_status == "complete"
+                _message = (
+                    "Contexto completo. No ejecuto nada todavia; envia la solicitud final para continuar."
+                    if _complete
+                    else str(_resolved_context.get("prompted_question") or "Necesito un poco mas de contexto.")
+                )
+                _context_resp = _build_context_surface_response(
+                    message=_message,
+                    domain=str(_resolved_context.get("domain") or "UNKNOWN"),
+                    surface=surface,
+                    context_id=_context_id,
+                    identity=request_identity,
+                    guard_result=guard_result,
+                    result_type="clarification",
+                    intent="needs_context",
+                    missing_fields=_missing,
+                    context_request=_resolved_context,
+                )
+                if _complete:
+                    _context_resp["session"].pop("context_request", None)
+                self._send_json_response(200, _context_resp)
+                return
+
         # Surface behavior layer: short-circuit pure conversational inputs.
         # Runs AFTER identity guard (security must pass) but BEFORE the governance
         # gate and orchestrator dispatch. Conversational responses carry no execution,

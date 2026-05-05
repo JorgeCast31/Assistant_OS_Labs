@@ -15,6 +15,10 @@ import re
 import unicodedata
 from typing import Any
 
+from .cognition.context_resolver import (
+    make_code_repo_context_request,
+    maybe_create_fin_context_request,
+)
 from .cognition.router import RouterResult, route_text
 from .contracts import now_iso
 
@@ -540,7 +544,20 @@ def _build_surface_response(
     result_type: str = "surface_response",
     intent: str = "informational_response",
     missing_fields: list[str] | None = None,
+    context_request: dict | None = None,
 ) -> dict:
+    session = {"context_id": context_id, "last_domain": domain}
+    audit = {
+        "result_type": result_type,
+        "domain": domain,
+        "execution_mode": "",
+        "mso_decided": False,
+        "surface": surface,
+    }
+    if context_request is not None:
+        session["context_request"] = dict(context_request)
+        audit["context_request"] = dict(context_request)
+
     return {
         "ok": True,
         "message": message,
@@ -553,14 +570,8 @@ def _build_surface_response(
         "missing_fields": missing_fields or [],
         "plan": [],
         "ui_actions": [],
-        "session": {"context_id": context_id, "last_domain": domain},
-        "audit": {
-            "result_type": result_type,
-            "domain": domain,
-            "execution_mode": "",
-            "mso_decided": False,
-            "surface": surface,
-        },
+        "session": session,
+        "audit": audit,
         "identity": identity.to_audit_dict(),
         "guard": guard_result.to_audit_dict(),
     }
@@ -815,6 +826,7 @@ def get_surface_behavior_response(
 
         if _is_code_context_request(normalized):
             if not _has_code_context(normalized):
+                context_request = make_code_repo_context_request(text, context_id)
                 return _build_surface_response(
                     message="Necesito el URL del repositorio o una ruta de codigo para revisarlo.",
                     domain="CODE",
@@ -825,7 +837,23 @@ def get_surface_behavior_response(
                     result_type="clarification",
                     intent="needs_context",
                     missing_fields=["repo_url"],
+                    context_request=context_request,
                 )
+
+        fin_context_request = maybe_create_fin_context_request(text, normalized, context_id)
+        if fin_context_request is not None:
+            return _build_surface_response(
+                message=fin_context_request["prompted_question"],
+                domain="FIN",
+                surface=surface,
+                context_id=context_id,
+                identity=identity,
+                guard_result=guard_result,
+                result_type="clarification",
+                intent="needs_context",
+                missing_fields=fin_context_request["missing_fields"],
+                context_request=fin_context_request,
+            )
 
         if _is_incomplete_fin_expense(normalized):
             return _build_surface_response(

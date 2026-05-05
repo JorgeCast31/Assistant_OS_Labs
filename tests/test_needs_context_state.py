@@ -94,13 +94,6 @@ def _assert_no_execution_artifacts(response: dict) -> None:
     assert list_tasks() == []
 
 
-@pytest.mark.xfail(
-    reason=(
-        "FIN assistant_chat does not yet persist a non-executable "
-        "context_request for missing responsable/itbms."
-    ),
-    strict=True,
-)
 def test_fin_missing_fields_creates_non_executable_context_request(chat_server) -> None:
     _, port = chat_server
     response = _post_chat_no_fin_write(port, "Gasté 15 en comida ayer")
@@ -108,14 +101,13 @@ def test_fin_missing_fields_creates_non_executable_context_request(chat_server) 
 
     assert context_request["domain"] == "FIN"
     assert set(context_request["missing_fields"]) == {"responsable", "itbms"}
+    assert context_request["non_executable"] is True
     assert context_request["executable"] is False
+    forbidden = {"plan_id", "confirm_plan_id", "task_id", "execution_mode", "execution_status"}
+    assert forbidden.isdisjoint(context_request)
     _assert_no_execution_artifacts(response)
 
 
-@pytest.mark.xfail(
-    reason="Follow-up text is not yet resolved against a pending FIN context_request.",
-    strict=True,
-)
 def test_fin_followup_completes_itbms_but_not_responsable(chat_server) -> None:
     _, port = chat_server
     first = _post_chat_no_fin_write(port, "Gasté 15 en comida ayer")
@@ -129,10 +121,6 @@ def test_fin_followup_completes_itbms_but_not_responsable(chat_server) -> None:
     _assert_no_execution_artifacts(followup)
 
 
-@pytest.mark.xfail(
-    reason="Follow-up text is not yet resolved against a pending FIN context_request.",
-    strict=True,
-)
 def test_fin_second_followup_completes_responsable_and_all_required_fields(chat_server) -> None:
     _, port = chat_server
     first = _post_chat_no_fin_write(port, "Gasté 15 en comida ayer")
@@ -147,10 +135,6 @@ def test_fin_second_followup_completes_responsable_and_all_required_fields(chat_
     _assert_no_execution_artifacts(third)
 
 
-@pytest.mark.xfail(
-    reason="CODE assistant_chat clarification does not yet persist context_request state.",
-    strict=True,
-)
 def test_code_missing_repo_url_creates_context_request(chat_server) -> None:
     _, port = chat_server
     response = _post_chat(port, "Analiza un repo github")
@@ -163,10 +147,6 @@ def test_code_missing_repo_url_creates_context_request(chat_server) -> None:
     _assert_no_execution_artifacts(response)
 
 
-@pytest.mark.xfail(
-    reason="Follow-up URL is not yet resolved against a pending CODE context_request.",
-    strict=True,
-)
 def test_code_followup_github_url_completes_repo_url_without_executing(chat_server) -> None:
     _, port = chat_server
     first = _post_chat(port, "Analiza un repo github")
