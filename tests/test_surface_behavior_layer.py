@@ -300,8 +300,16 @@ class TestAssistantChatSurfaceBehavior(unittest.TestCase):
         self.assertEqual(resp["missing_fields"], ["amount"])
         self._assert_no_execution(resp)
 
-    def test_fin_with_amount_passes_through(self):
-        self.assertIsNone(self._call("gasté 15 en comida ayer"))
+    def test_fin_with_amount_missing_human_fields_creates_context_request(self):
+        resp = self._call("gasté 15 en comida ayer")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["result_type"], "clarification")
+        self.assertEqual(resp["domain"], "FIN")
+        self.assertEqual(resp["missing_fields"], ["responsable", "itbms"])
+        context_request = resp["session"]["context_request"]
+        self.assertTrue(context_request["non_executable"])
+        self.assertFalse(context_request["executable"])
+        self._assert_no_execution(resp)
 
     def test_router_host_open_passes_through(self):
         self.assertIsNone(self._call("Abre notepad"))

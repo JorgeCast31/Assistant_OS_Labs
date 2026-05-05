@@ -198,11 +198,15 @@ def test_assistant_chat_fin_without_amount_clarifies() -> None:
     _assert_no_execution_artifacts(result)
 
 
-def test_assistant_chat_fin_with_amount_passes_through_to_kernel() -> None:
+def test_assistant_chat_fin_with_amount_missing_human_fields_needs_context() -> None:
     result = _route_assistant_chat_surface("gaste 15 en comida ayer")
 
-    assert result is None
-    assert list_tasks() == []
+    assert result is not None
+    assert result["result_type"] == "clarification"
+    assert result["domain"] == "FIN"
+    assert result["missing_fields"] == ["responsable", "itbms"]
+    assert result["session"]["context_request"]["non_executable"] is True
+    _assert_no_execution_artifacts(result)
 
 
 def test_assistant_chat_host_open_passes_through_to_kernel() -> None:
