@@ -3,17 +3,12 @@
 import { useState, useEffect } from 'react'
 import { useUIStore }       from '@/stores/ui-store'
 import { useSystemPolling } from '@/hooks/use-system-polling'
-import { useReadinessSourcePolling } from '@/hooks/use-readiness-source-polling'
 import { StatusBadge }      from '@/components/shared/status-badge'
 import { SystemChatView }   from '@/components/sovereign/SystemChatView'
-import { ReadinessPanel }   from '@/components/sovereign/ReadinessPanel'
-import { AuthorityMatrixPanel } from '@/components/sovereign/AuthorityMatrixPanel'
-import { OutcomeStatusPanel } from '@/components/sovereign/OutcomeStatusPanel'
-import { ConfirmFlowQueuePanel } from '@/components/sovereign/ConfirmFlowQueuePanel'
 import { GovernanceRecentPanel } from '@/components/sovereign/GovernanceRecentPanel'
 import { GovernanceStatusBand } from '@/components/sovereign/GovernanceStatusBand'
 import { FREEZE_CONTROL, RUNTIME_ENDPOINTS, freezeSystem, restoreSystem } from '@/lib/api'
-import type { HealthStatus, OperationalMode, SystemEvent } from '@/lib/types'
+import type { HealthStatus, OperationalMode } from '@/lib/types'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -59,20 +54,6 @@ const MODE_DESCRIPTIONS: Record<OperationalMode, string> = {
   UNKNOWN:  'Unable to determine system state. Backend may be unreachable.',
 }
 
-// ── Event type styling ────────────────────────────────────────────────────────
-
-const EVENT_TYPE_STYLES: Record<string, { icon: string; color: string }> = {
-  execution_started:    { icon: '▶',  color: 'text-accent' },
-  execution_completed:  { icon: '✓',  color: 'text-ok' },
-  execution_failed:     { icon: '✕',  color: 'text-err' },
-  system_frozen:        { icon: '❄',  color: 'text-err' },
-  system_degraded:      { icon: '⚠',  color: 'text-warn' },
-  system_normal:        { icon: '●',  color: 'text-ok' },
-  kill_switch_activated: { icon: '⛔', color: 'text-err' },
-  task_transition:      { icon: '⇄',  color: 'text-accent' },
-  governance:           { icon: '⚖',  color: 'text-warn' },
-}
-
 // ── ServiceCard ───────────────────────────────────────────────────────────────
 
 function ServiceCard({
@@ -91,27 +72,6 @@ function ServiceCard({
         <p className="text-[10px] font-mono text-tx-muted mt-0.5">{subtitle}</p>
       </div>
       <StatusBadge status={status} label={STATUS_LABEL[status]} dot size="md" />
-    </div>
-  )
-}
-
-// ── StatTile ──────────────────────────────────────────────────────────────────
-
-function StatTile({
-  label,
-  value,
-  accent,
-}: {
-  label: string
-  value: string | number
-  accent?: boolean
-}) {
-  return (
-    <div className="bg-os-surface border border-os-border rounded-lg p-4">
-      <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider mb-1">{label}</p>
-      <p className={`text-2xl font-mono font-semibold ${accent ? 'text-accent' : 'text-tx-primary'}`}>
-        {value}
-      </p>
     </div>
   )
 }
@@ -320,53 +280,18 @@ function ModeControlButton({
   )
 }
 
-// ── EventLog ──────────────────────────────────────────────────────────────────
-
-function EventLog({ events }: { events: SystemEvent[] }) {
-  if (events.length === 0) {
-    return (
-      <div className="bg-os-surface border border-os-border rounded-lg p-4">
-        <p className="text-xs font-mono text-tx-muted text-center">No recent events</p>
-      </div>
-    )
-  }
-
-  return (
-    <div className="bg-os-surface border border-os-border rounded-lg divide-y divide-os-border">
-      {events.map((event) => {
-        const style = EVENT_TYPE_STYLES[event.type] ?? { icon: '●', color: 'text-tx-muted' }
-        return (
-          <div key={event.id} className="px-4 py-2.5 flex items-start gap-3">
-            <span className={`text-sm flex-shrink-0 mt-0.5 ${style.color}`}>{style.icon}</span>
-            <div className="flex-1 min-w-0">
-              <p className="text-xs font-mono text-tx-primary truncate">{event.message}</p>
-              <p className="text-[10px] font-mono text-tx-muted mt-0.5">
-                {fmtTimestamp(event.timestamp)}
-              </p>
-            </div>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
 // ── SystemView ────────────────────────────────────────────────────────────────
 
 export function SystemView() {
   const { systemData, isSystemRefreshing } = useUIStore()
   const { refresh } = useSystemPolling()
-  useReadinessSourcePolling()
 
   const {
     apiStatus,
     webhookStatus,
-    activeExecutions,
-    needsReview,
     lastUpdated,
     error,
     operationalMode,
-    recentEvents,
   } = systemData
 
   const isInitializing = apiStatus === 'unknown' && webhookStatus === 'unknown'
@@ -460,74 +385,6 @@ export function SystemView() {
                 status={webhookStatus}
               />
             </div>
-          </section>
-        )}
-
-        {/* Execution counters */}
-        {!isInitializing && (
-          <section>
-            <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
-              Executions
-            </p>
-            <div className="grid grid-cols-2 gap-3">
-              <StatTile
-                label="Active"
-                value={activeExecutions}
-                accent={activeExecutions > 0}
-              />
-              <StatTile
-                label="Needs Review"
-                value={needsReview}
-                accent={needsReview > 0}
-              />
-            </div>
-          </section>
-        )}
-
-        {/* Readiness Sources */}
-        {!isInitializing && (
-          <section>
-            <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
-              Readiness Sources
-            </p>
-            <ReadinessPanel />
-          </section>
-        )}
-
-        {!isInitializing && (
-          <section>
-            <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
-              Confirm Queue
-            </p>
-            <ConfirmFlowQueuePanel />
-          </section>
-        )}
-
-        {!isInitializing && (
-          <section>
-            <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
-              Authority Matrix
-            </p>
-            <AuthorityMatrixPanel />
-          </section>
-        )}
-
-        {!isInitializing && (
-          <section>
-            <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
-              Outcome Status
-            </p>
-            <OutcomeStatusPanel />
-          </section>
-        )}
-
-        {/* Phase 0: Event Log */}
-        {!isInitializing && (
-          <section>
-            <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
-              Recent Events
-            </p>
-            <EventLog events={recentEvents} />
           </section>
         )}
 

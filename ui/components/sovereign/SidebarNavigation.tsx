@@ -40,6 +40,26 @@ function IconSystem() {
   )
 }
 
+function IconSovereignStatus() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <path d="M3 13.5h12" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <path d="M4 11l2.5-3 2 2 3-5 2.5 3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx="6.5" cy="8" r="1" fill="currentColor" />
+      <circle cx="11.5" cy="5" r="1" fill="currentColor" />
+    </svg>
+  )
+}
+
+function IconSecurity() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <path d="M9 2.5l5 2v3.7c0 3.1-1.8 5.8-5 7.3-3.2-1.5-5-4.2-5-7.3V4.5l5-2z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      <path d="M7 9l1.3 1.3L11.5 7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
 function IconMSO() {
   return (
     <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
@@ -83,6 +103,30 @@ const ZONES: ZoneConfig[] = [
       inactive: 'text-slate-500',
       border: 'border-teal-400/30',
       bg: 'bg-teal-400/10',
+    },
+  },
+  {
+    id: 'sovereign-status',
+    label: 'Sovereign Status',
+    sublabel: 'Readiness & Observability',
+    icon: <IconSovereignStatus />,
+    color: {
+      active: 'text-cyan-400',
+      inactive: 'text-slate-500',
+      border: 'border-cyan-400/30',
+      bg: 'bg-cyan-400/10',
+    },
+  },
+  {
+    id: 'security',
+    label: 'Security',
+    sublabel: 'Police & Authority',
+    icon: <IconSecurity />,
+    color: {
+      active: 'text-rose-400',
+      inactive: 'text-slate-500',
+      border: 'border-rose-400/30',
+      bg: 'bg-rose-400/10',
     },
   },
   {

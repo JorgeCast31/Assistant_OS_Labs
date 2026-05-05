@@ -8,6 +8,8 @@ export { TopStatusBar } from './TopStatusBar'
 
 // Views
 export { SystemChatView } from './SystemChatView'
+export { SovereignStatusView } from './SovereignStatusView'
+export { SecurityView } from './SecurityView'
 export { MSOView } from './MSOView'
 export { AgentPanel } from './AgentPanel'
 export { MachineOperatorConsole } from './MachineOperatorConsole'

@@ -119,7 +119,7 @@ interface SovereignState {
 
 export const useSovereignStore = create<SovereignState>((set, get) => ({
   // Navigation
-  activeView: 'system',
+  activeView: 'sovereign-status',
   activeAgent: null,
 
   // Messages

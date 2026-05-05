@@ -5,11 +5,14 @@ import { useSovereignStore } from '@/stores/sovereign-store'
 import { checkWebhookHealth } from '@/lib/api'
 import type { SystemHealth } from '@/lib/sovereign/types'
 import { useReadinessSourcePolling } from '@/hooks/use-readiness-source-polling'
+import { useCognitionPolling } from '@/hooks/use-cognition-polling'
 import { SidebarNavigation } from './SidebarNavigation'
 import { TopStatusBar } from './TopStatusBar'
 import { SystemChatView } from './SystemChatView'
 import { MSOView } from './MSOView'
 import { AgentPanel } from './AgentPanel'
+import { SovereignStatusView } from './SovereignStatusView'
+import { SecurityView } from './SecurityView'
 
 function toSovereignHealth(s: string): SystemHealth {
   if (s === 'ok')   return 'healthy'
@@ -24,6 +27,7 @@ export function SovereignShell() {
 
   // Agent registry + capabilities polling (extracted to reusable hook)
   useReadinessSourcePolling()
+  useCognitionPolling()
 
   // Webhook health polling — separate concern not shared with SystemView
   useEffect(() => {
@@ -40,6 +44,10 @@ export function SovereignShell() {
     switch (activeView) {
       case 'system':
         return <SystemChatView />
+      case 'sovereign-status':
+        return <SovereignStatusView />
+      case 'security':
+        return <SecurityView />
       case 'mso':
         return <MSOView />
       case 'agents':
