@@ -17,6 +17,7 @@ from assistant_os.config import WEBHOOK_TOKEN
 from assistant_os.surface_behavior import (
     _normalize,
     _is_executive,
+    get_assistant_chat_routing_context,
     get_surface_behavior_response,
     _SYSTEM_CHAT_CONVERSATIONAL,
     _MSO_DIRECT_CONVERSATIONAL,
@@ -330,6 +331,98 @@ class TestAssistantChatSurfaceBehavior(unittest.TestCase):
         self.assertEqual(resp["domain"], "UNKNOWN")
         self._assert_no_execution(resp)
 
+    def test_code_url_generates_non_authoritative_routing_context(self):
+        ctx = get_assistant_chat_routing_context(
+            surface="assistant_chat",
+            text="analiza este repo https://github.com/x/y",
+            context_id="ctx-route-code",
+        )
+
+        self.assertIsNotNone(ctx)
+        self.assertEqual(ctx["source"], "cognitive_router_v0")
+        self.assertFalse(ctx["authoritative"])
+        self.assertEqual(ctx["intent_type"], "executable_intent")
+        self.assertEqual(ctx["domain"], "CODE")
+        self.assertEqual(ctx["action"], "CODE_REVIEW")
+        self.assertEqual(ctx["entities"]["repo_url"], "https://github.com/x/y")
+        self.assertEqual(ctx["context_id"], "ctx-route-code")
+        self.assertIn("created_at", ctx)
+
+    def test_fin_complete_generates_non_authoritative_routing_context(self):
+        ctx = get_assistant_chat_routing_context(
+            surface="assistant_chat",
+            text="gasté 15 en comida ayer",
+            context_id="ctx-route-fin",
+        )
+
+        self.assertIsNotNone(ctx)
+        self.assertFalse(ctx["authoritative"])
+        self.assertEqual(ctx["domain"], "FIN")
+        self.assertEqual(ctx["action"], "FIN_EXPENSE")
+        self.assertEqual(ctx["entities"]["amount"], "15")
+
+    def test_unknown_does_not_generate_routing_context(self):
+        ctx = get_assistant_chat_routing_context(
+            surface="assistant_chat",
+            text="xyzzy random text",
+            context_id="ctx-route-unknown",
+        )
+
+        self.assertIsNone(ctx)
+
+    def test_needs_context_does_not_generate_executable_routing_context(self):
+        ctx = get_assistant_chat_routing_context(
+            surface="assistant_chat",
+            text="analiza un repo github",
+            context_id="ctx-route-needs-context",
+        )
+
+        self.assertIsNone(ctx)
+
+    def test_command_action_is_omitted_from_routing_context(self):
+        fake_router_result = {
+            "intent_type": "executable_intent",
+            "domain": "WORK",
+            "action": "COMMAND",
+            "confidence": 0.99,
+            "missing_fields": [],
+            "entities": {},
+            "should_pass_to_kernel": True,
+            "routing_reason": "test-only malformed router output",
+            "safety_flags": [],
+            "router_version": "v0_deterministic",
+            "advisory_used": False,
+            "advisory_latency_ms": 0.0,
+        }
+        with patch("assistant_os.surface_behavior.route_text", return_value=fake_router_result):
+            ctx = get_assistant_chat_routing_context(
+                surface="assistant_chat",
+                text="abre algo",
+                context_id="ctx-route-command",
+            )
+
+        self.assertIsNone(ctx)
+
+    def test_non_assistant_surfaces_do_not_invoke_router_handoff(self):
+        with patch("assistant_os.surface_behavior.route_text") as route_mock:
+            self.assertIsNone(get_assistant_chat_routing_context(
+                surface="system_chat",
+                text="analiza este repo https://github.com/x/y",
+                context_id="ctx-route-system",
+            ))
+            self.assertIsNone(get_assistant_chat_routing_context(
+                surface="mso_direct",
+                text="analiza este repo https://github.com/x/y",
+                context_id="ctx-route-mso",
+            ))
+            self.assertIsNone(get_assistant_chat_routing_context(
+                surface="",
+                text="analiza este repo https://github.com/x/y",
+                context_id="ctx-route-none",
+            ))
+
+        route_mock.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # Integration tests — via HTTP webhook server
@@ -433,6 +526,57 @@ class TestSurfaceBehaviorHTTP(unittest.TestCase):
         self.assertEqual(body["domain"], "CODE")
         self.assertEqual(body["plan"], [])
         self.assertFalse(body["needs_confirmation"])
+
+    def test_assistant_chat_code_url_http_exposes_routing_context_audit(self):
+        status, body = self._post_chat(
+            "analiza un repo github https://github.com/JorgeCast31/TTI-LAB",
+            surface="assistant_chat",
+        )
+
+        self.assertEqual(status, 200)
+        routing_context = body["audit"].get("routing_context")
+        self.assertIsInstance(routing_context, dict)
+        self.assertEqual(routing_context["source"], "cognitive_router_v0")
+        self.assertFalse(routing_context["authoritative"])
+        self.assertEqual(routing_context["intent_type"], "executable_intent")
+        self.assertEqual(routing_context["domain"], "CODE")
+        self.assertEqual(routing_context["action"], "CODE_REVIEW")
+        self.assertEqual(routing_context["router_version"], "v0_deterministic")
+        self.assertNotEqual(body["audit"].get("action"), "CODE_REVIEW")
+
+    def test_assistant_chat_code_url_http_transports_routing_context_metadata(self):
+        captured: dict = {}
+
+        def _fake_handle_request(req):
+            captured["req"] = req
+            return {
+                "ok": True,
+                "result_type": "plan_generated",
+                "domain": "TEST",
+                "message": "stubbed kernel response",
+                "data": {"type": "plan_generated", "plan": {}},
+            }
+
+        with patch("assistant_os.core.orchestrator.handle_request", side_effect=_fake_handle_request):
+            status, body = self._post_chat(
+                "analiza un repo github https://github.com/JorgeCast31/TTI-LAB",
+                surface="assistant_chat",
+            )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        metadata = captured["req"]["metadata"]
+        self.assertNotIn("action", metadata)
+        routing_context = metadata["routing_context"]
+        self.assertEqual(routing_context["source"], "cognitive_router_v0")
+        self.assertFalse(routing_context["authoritative"])
+        self.assertEqual(routing_context["intent_type"], "executable_intent")
+        self.assertEqual(routing_context["domain"], "CODE")
+        self.assertEqual(routing_context["action"], "CODE_REVIEW")
+        self.assertEqual(
+            routing_context["entities"]["repo_url"],
+            "https://github.com/jorgecast31/tti-lab",
+        )
 
     # Case 4: mso_direct executive request still goes through orchestrator
     def test_mso_direct_executive_governed_http(self):

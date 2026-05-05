@@ -16,6 +16,7 @@ import unicodedata
 from typing import Any
 
 from .cognition.router import RouterResult, route_text
+from .contracts import now_iso
 
 
 # ---------------------------------------------------------------------------
@@ -684,6 +685,67 @@ def _assistant_chat_router_text(text: str, normalized: str) -> str:
     if re.search(r"\b(?:como esta|estado|salud)\b.*\bsistema\b", normalized):
         return "como esta el sistema"
     return text
+
+
+def _build_routing_context(router_result: RouterResult, context_id: str) -> dict | None:
+    if router_result.get("intent_type") != "executable_intent":
+        return None
+    if router_result.get("should_pass_to_kernel") is not True:
+        return None
+
+    action = str(router_result.get("action") or "")
+    action_upper = action.upper()
+    if action_upper == "COMMAND" or action_upper.endswith("_COMMAND"):
+        return None
+
+    return {
+        "source": "cognitive_router_v0",
+        "authoritative": False,
+        "intent_type": "executable_intent",
+        "domain": router_result.get("domain") or "UNKNOWN",
+        "action": action,
+        "entities": dict(router_result.get("entities") or {}),
+        "missing_fields": list(router_result.get("missing_fields") or []),
+        "confidence": router_result.get("confidence", 0.0),
+        "safety_flags": list(router_result.get("safety_flags") or []),
+        "routing_reason": router_result.get("routing_reason") or "",
+        "router_version": router_result.get("router_version") or "v0_deterministic",
+        "context_id": context_id,
+        "created_at": now_iso(),
+    }
+
+
+def get_assistant_chat_routing_context(
+    *,
+    surface: str,
+    text: str,
+    context_id: str,
+) -> dict | None:
+    """Return a non-authoritative routing context for assistant_chat pass-through.
+
+    This helper is request-local and stateless. It never returns execution
+    authority and never creates plans, tasks, confirmations, or side effects.
+    """
+    if surface != "assistant_chat" or not text:
+        return None
+
+    normalized = _normalize(text)
+    if not normalized:
+        return None
+
+    if normalized in _ASSISTANT_CHAT_CONVERSATIONAL or normalized in _ASSISTANT_CHAT_STATUS:
+        return None
+    if _is_code_context_request(normalized) and not _has_code_context(normalized):
+        return None
+    if _is_incomplete_fin_expense(normalized):
+        return None
+
+    try:
+        router_result = route_text(_assistant_chat_router_text(text, normalized))
+    except Exception:
+        return None
+
+    return _build_routing_context(router_result, context_id)
 
 
 # ---------------------------------------------------------------------------
