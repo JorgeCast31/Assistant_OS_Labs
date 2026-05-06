@@ -1,3 +1,12 @@
+> [!WARNING]
+> **Historical / Conceptual Specification**
+> This document is historical/conceptual reference material. It is not the current source of truth for runtime behavior.
+> Current source of truth: code in `assistant_os/` and `ui/`, plus `README.md`, `docs/RUNTIME_TOPOLOGY.md`, and `docs/CHAT.md`.
+
+<!-- agent:do-not-treat-as-source-of-truth -->
+
+---
+
 # SYSTEM_ASSISTANT
 
 ## 1. Definition
