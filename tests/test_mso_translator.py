@@ -86,6 +86,92 @@ class TestMsoTranslator(unittest.TestCase):
         self.assertEqual(request["metadata"]["action"], ACTION_BASIC_COGNITIVE_EXECUTION)
         self.assertEqual(request["metadata"]["translation_rule"], "delegate_basic_cognitive_execution")
 
+    def test_delegated_request_includes_mso_principal_id(self):
+        from assistant_os.mso.translator import translate_intent_to_canonical_request
+
+        request = translate_intent_to_canonical_request(
+            self._intent(delegation_recommendation="delegate_basic_cognitive_execution"),
+            original_text="state summary",
+            delegation_task=self._delegation(),
+        )
+        self.assertEqual(request.get("principal_id"), "mso:sovereign")
+
+    def test_delegated_request_includes_mso_subject_state(self):
+        from assistant_os.mso.translator import translate_intent_to_canonical_request
+
+        request = translate_intent_to_canonical_request(
+            self._intent(delegation_recommendation="delegate_basic_cognitive_execution"),
+            original_text="state summary",
+            delegation_task=self._delegation(),
+        )
+        self.assertEqual(request.get("subject_state"), "active")
+
+    def test_delegated_request_includes_execute_action_type(self):
+        from assistant_os.mso.translator import translate_intent_to_canonical_request
+
+        request = translate_intent_to_canonical_request(
+            self._intent(delegation_recommendation="delegate_basic_cognitive_execution"),
+            original_text="state summary",
+            delegation_task=self._delegation(),
+        )
+        self.assertEqual(request.get("action_type"), "execute")
+
+    def test_response_request_includes_mso_principal_id(self):
+        from assistant_os.mso.translator import translate_intent_to_canonical_request
+
+        request = translate_intent_to_canonical_request(
+            self._intent(delegation_recommendation="none"),
+            original_text="what can you do",
+        )
+        self.assertEqual(request.get("principal_id"), "mso:sovereign")
+
+    def test_response_request_includes_mso_subject_state(self):
+        from assistant_os.mso.translator import translate_intent_to_canonical_request
+
+        request = translate_intent_to_canonical_request(
+            self._intent(delegation_recommendation="none"),
+            original_text="what can you do",
+        )
+        self.assertEqual(request.get("subject_state"), "active")
+
+    def test_response_request_includes_read_action_type(self):
+        from assistant_os.mso.translator import translate_intent_to_canonical_request
+
+        request = translate_intent_to_canonical_request(
+            self._intent(delegation_recommendation="none"),
+            original_text="what can you do",
+        )
+        self.assertEqual(request.get("action_type"), "read")
+
+    def test_principal_id_is_stable_across_translator_paths(self):
+        from assistant_os.mso.translator import translate_intent_to_canonical_request
+
+        delegated_request = translate_intent_to_canonical_request(
+            self._intent(delegation_recommendation="delegate_basic_cognitive_execution"),
+            original_text="state summary",
+            delegation_task=self._delegation(),
+        )
+        response_request = translate_intent_to_canonical_request(
+            self._intent(delegation_recommendation="none"),
+            original_text="state summary",
+        )
+        self.assertEqual(delegated_request.get("principal_id"), response_request.get("principal_id"))
+
+    def test_translator_does_not_set_guard_decision(self):
+        from assistant_os.mso.translator import translate_intent_to_canonical_request
+
+        delegated_request = translate_intent_to_canonical_request(
+            self._intent(delegation_recommendation="delegate_basic_cognitive_execution"),
+            original_text="state summary",
+            delegation_task=self._delegation(),
+        )
+        response_request = translate_intent_to_canonical_request(
+            self._intent(delegation_recommendation="none"),
+            original_text="state summary",
+        )
+        self.assertNotIn("guard_decision", delegated_request)
+        self.assertNotIn("guard_decision", response_request)
+
 
 if __name__ == "__main__":
     unittest.main()
