@@ -1,5 +1,7 @@
 # Assistant OS
 
+For external coding agents, read AGENTS.md first.
+
 Multi-agent personal assistant system with a split local runtime: webhook/backend, Code API, Next.js UI, and optional/external machine-operator and local-LLM services.
 
 ## Quick Start
