@@ -283,6 +283,12 @@ class RunnerAPI:
             # Apply output policy (non-fatal — errors must not mask execution result)
             _apply_output_policy(result, authorized_plan, audit_log, execution_id, plan_id)
 
+            # Inspect output for sensitive content (non-fatal; never blocks execution)
+            _apply_output_inspection(result, audit_log, execution_id, plan_id)
+
+            # Apply persistence governance to exposed/persisted output (non-fatal)
+            _apply_persistence_policy(result, audit_log, execution_id, plan_id)
+
             # Collect artifacts before workspace is cleaned up
             _collect_artifacts(result, workspace, audit_log, execution_id, plan_id)
 
@@ -627,6 +633,93 @@ def _collect_artifacts(
                     size_bytes=0,
                     rejection_reason=rejected.get("reason", ""),
                 ))
+    except Exception:
+        pass
+
+
+def _apply_output_inspection(
+    result: ExecutionResult,
+    audit_log: Any,
+    execution_id: str,
+    plan_id: str,
+) -> None:
+    """
+    Inspect output streams and store a non-blocking inspection_result.
+
+    Emits OUTPUT_SENSITIVE for non-safe output classifications.
+    Never raises; inspection cannot block already-authorized execution.
+    """
+    try:
+        from ..output.inspector import OutputInspector  # noqa: PLC0415
+        from .audit import AuditEventType, OutputSensitiveEvent  # noqa: PLC0415
+
+        if result.output_record is not None:
+            stdout_to_inspect = result.output_record.stdout
+            stderr_to_inspect = result.output_record.stderr
+        else:
+            stdout_to_inspect = result.stdout or ""
+            stderr_to_inspect = result.stderr or ""
+
+        inspection = OutputInspector().inspect(stdout_to_inspect, stderr_to_inspect)
+        result.inspection_result = inspection
+
+        if audit_log is not None and inspection.has_flags() and execution_id:
+            audit_log.emit(OutputSensitiveEvent(
+                event_type=AuditEventType.OUTPUT_SENSITIVE,
+                execution_id=execution_id,
+                plan_id=plan_id,
+                timestamp=time.time(),
+                classification=inspection.classification,
+                flag_count=len(inspection.flags),
+                flag_types=tuple(sorted(inspection.flag_types())),
+            ))
+    except Exception:
+        pass
+
+
+def _apply_persistence_policy(
+    result: ExecutionResult,
+    audit_log: Any,
+    execution_id: str,
+    plan_id: str,
+) -> None:
+    """
+    Decide and apply persisted/exposed output form from inspection metadata.
+
+    Never raises; persistence policy is non-fatal and cannot block execution.
+    """
+    try:
+        from ..output.persistence_policy import decide_persistence  # noqa: PLC0415
+        from .audit import AuditEventType, OutputRedactedEvent  # noqa: PLC0415
+
+        if result.output_record is not None:
+            raw_stdout = result.output_record.stdout
+            raw_stderr = result.output_record.stderr
+        else:
+            raw_stdout = result.stdout or ""
+            raw_stderr = result.stderr or ""
+
+        decision = decide_persistence(raw_stdout, raw_stderr, result.inspection_result)
+
+        result.persisted_stdout = decision.stdout
+        result.persisted_stderr = decision.stderr
+        result.persistence_mode = decision.mode
+        result.was_redacted = decision.was_redacted
+
+        if decision.mode != "raw" and audit_log is not None and execution_id:
+            audit_log.emit(OutputRedactedEvent(
+                event_type=AuditEventType.OUTPUT_REDACTED,
+                execution_id=execution_id,
+                plan_id=plan_id,
+                timestamp=time.time(),
+                persistence_mode=decision.mode,
+                was_redacted=decision.was_redacted,
+                was_truncated=decision.was_truncated,
+                original_stdout_bytes=len(raw_stdout.encode("utf-8", errors="replace")),
+                original_stderr_bytes=len(raw_stderr.encode("utf-8", errors="replace")),
+                persisted_stdout_bytes=len(decision.stdout.encode("utf-8", errors="replace")),
+                persisted_stderr_bytes=len(decision.stderr.encode("utf-8", errors="replace")),
+            ))
     except Exception:
         pass
 

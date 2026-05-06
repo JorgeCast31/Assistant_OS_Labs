@@ -461,6 +461,64 @@ def handle_execution_report(execution_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _inspect_execution_output(
+    report: Optional[Dict[str, Any]],
+    exec_dir: Path,
+) -> Optional[Dict[str, Any]]:
+    """
+    Compute output inspection + governed normalized output for execution detail.
+
+    Non-fatal: any error returns None.
+    """
+    try:
+        from ..output.inspector import OutputInspector
+        from ..output.persistence_policy import decide_persistence
+
+        stdout = ""
+        stderr = ""
+
+        if report:
+            test_result = report.get("test_result") or {}
+            stdout_path = test_result.get("stdout_path")
+            stderr_path = test_result.get("stderr_path")
+            if stdout_path:
+                try:
+                    stdout = Path(stdout_path).read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    pass
+            if stderr_path:
+                try:
+                    stderr = Path(stderr_path).read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    pass
+
+        if not stdout and not stderr:
+            log_path = exec_dir / "runner.log"
+            if log_path.exists():
+                try:
+                    stderr = log_path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    pass
+
+        if not stdout and not stderr:
+            return None
+
+        inspection = OutputInspector().inspect(stdout, stderr)
+        decision = decide_persistence(stdout, stderr, inspection)
+
+        result = inspection.to_dict()
+        result["normalized_output"] = {
+            "stdout": decision.stdout,
+            "stderr": decision.stderr,
+        }
+        result["persistence_mode"] = decision.mode
+        result["was_redacted"] = decision.was_redacted
+        result["was_truncated"] = decision.was_truncated
+        return result
+    except Exception:
+        return None
+
+
 def handle_get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
     """Return metadata + report + log for one execution. None if not found."""
     safe_id = _safe_exec_id(execution_id)
@@ -520,6 +578,7 @@ def handle_get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
 
     # agent_invocation — read from metadata.json if persisted; None for older executions.
     agent_invocation: Optional[Dict[str, Any]] = metadata.get("agent_invocation")
+    inspection_data = _inspect_execution_output(report, exec_dir)
 
     return {
         "ok": True,
@@ -534,6 +593,7 @@ def handle_get_execution(execution_id: str) -> Optional[Dict[str, Any]]:
         "agent_invocation":     agent_invocation,
         "rerun_of":             metadata.get("rerun_of"),
         "has_snapshot":         "request_snapshot" in metadata,
+        "inspection":           inspection_data,
     }
 
 

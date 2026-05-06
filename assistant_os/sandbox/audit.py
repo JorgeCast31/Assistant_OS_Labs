@@ -59,6 +59,8 @@ class AuditEventType:
 
     # Output governance
     OUTPUT_TRUNCATED    = "output_truncated"
+    OUTPUT_SENSITIVE    = "output_sensitive"
+    OUTPUT_REDACTED     = "output_redacted"
 
     # Artifact lifecycle
     ARTIFACT_COLLECTED  = "artifact_collected"
@@ -245,6 +247,80 @@ class OutputEvent:
             "retained_bytes": self.retained_bytes,
             "policy_id": self.policy_id,
             "classification": self.classification,
+        }
+
+
+# ---------------------------------------------------------------------------
+# OutputSensitiveEvent
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class OutputSensitiveEvent:
+    """
+    Emitted when output inspection detects non-safe content.
+
+    NEVER includes output content. Only classification metadata is stored.
+    """
+
+    event_type: str
+    execution_id: str
+    plan_id: str
+    timestamp: float
+    classification: str
+    flag_count: int
+    flag_types: tuple
+
+    def to_dict(self) -> dict:
+        return {
+            "event_type": self.event_type,
+            "execution_id": self.execution_id,
+            "plan_id": self.plan_id,
+            "timestamp": self.timestamp,
+            "classification": self.classification,
+            "flag_count": self.flag_count,
+            "flag_types": list(self.flag_types),
+        }
+
+
+# ---------------------------------------------------------------------------
+# OutputRedactedEvent
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class OutputRedactedEvent:
+    """
+    Emitted when persistence governance mutates output (redacted/truncated).
+
+    NEVER includes output content. Only byte counters and mode metadata.
+    """
+
+    event_type: str
+    execution_id: str
+    plan_id: str
+    timestamp: float
+    persistence_mode: str
+    was_redacted: bool
+    was_truncated: bool
+    original_stdout_bytes: int = 0
+    original_stderr_bytes: int = 0
+    persisted_stdout_bytes: int = 0
+    persisted_stderr_bytes: int = 0
+
+    def to_dict(self) -> dict:
+        return {
+            "event_type": self.event_type,
+            "execution_id": self.execution_id,
+            "plan_id": self.plan_id,
+            "timestamp": self.timestamp,
+            "persistence_mode": self.persistence_mode,
+            "was_redacted": self.was_redacted,
+            "was_truncated": self.was_truncated,
+            "original_stdout_bytes": self.original_stdout_bytes,
+            "original_stderr_bytes": self.original_stderr_bytes,
+            "persisted_stdout_bytes": self.persisted_stdout_bytes,
+            "persisted_stderr_bytes": self.persisted_stderr_bytes,
         }
 
 

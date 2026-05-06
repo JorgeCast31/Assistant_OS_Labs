@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
+    from ..output.models import InspectionResult
     from .artifact_policy import ArtifactManifest
     from .output_policy import OutputRecord
 
@@ -127,6 +128,11 @@ class ExecutionResult:
     metadata: Optional["ExecutionMetadata"] = field(default=None, repr=False)
     manifest: Optional[object] = field(default=None, repr=False)   # ArtifactManifest
     output_record: Optional["OutputRecord"] = field(default=None, repr=False)
+    inspection_result: Optional["InspectionResult"] = field(default=None, repr=False)
+    persisted_stdout: Optional[str] = field(default=None, repr=False)
+    persisted_stderr: Optional[str] = field(default=None, repr=False)
+    persistence_mode: str = "raw"
+    was_redacted: bool = False
 
     @classmethod
     def make_internal_error(cls, error: str = "internal backend error") -> "ExecutionResult":
@@ -164,14 +170,16 @@ class ExecutionResult:
         d: dict = {
             "apply_mode": self.apply_mode,
             "exit_code": self.exit_code,
-            "stdout": self.stdout,
-            "stderr": self.stderr,
+            "stdout": self.persisted_stdout if self.persisted_stdout is not None else self.stdout,
+            "stderr": self.persisted_stderr if self.persisted_stderr is not None else self.stderr,
             "duration_ms": self.duration_ms,
             "truncated": self.truncated,
             "artifacts": list(self.artifacts),
             "timed_out": self.timed_out,
             "error": self.error,
             "ok": self.ok,
+            "persistence_mode": self.persistence_mode,
+            "was_redacted": self.was_redacted,
         }
         if self.metadata is not None:
             d["metadata"] = self.metadata.to_dict()
@@ -179,4 +187,6 @@ class ExecutionResult:
             d["manifest"] = self.manifest.to_dict()
         if self.output_record is not None:
             d["output_record"] = self.output_record.to_dict()
+        if self.inspection_result is not None:
+            d["inspection_result"] = self.inspection_result.to_dict()
         return d
