@@ -1,3 +1,12 @@
+> [!WARNING]
+> **Historical / Conceptual Specification**
+> This document is historical/conceptual reference material. It is not the current source of truth for runtime behavior.
+> Current source of truth: code in `assistant_os/` and `ui/`, plus `README.md`, `docs/RUNTIME_TOPOLOGY.md`, and `docs/CHAT.md`.
+
+<!-- agent:do-not-treat-as-source-of-truth -->
+
+---
+
 # ANTI_DRIFT_CHECKS
 
 These are forbidden patterns that indicate semantic drift in the system's architecture. Each pattern must be detected and blocked during code review and documentation audit. Any instance found must be reported as a critical finding, not corrected silently.
