@@ -34,9 +34,31 @@ _RUNNER_BASE: Path = Path(__file__).resolve().parent.parent.parent / "var" / "ru
 _PREFLIGHT_FAILURES_LOG: Path = _RUNNER_BASE.parent / "preflight_failures.log"
 
 # Patterns always excluded when copying the repo into workspace.
-# .git is always excluded: it is large, contains sensitive history,
-# and Slice 2 operations work on files only — not git internals.
-_WORKSPACE_IGNORE_BASE = shutil.ignore_patterns(".git", ".git/*")
+# .git is excluded: it is large, contains sensitive history, and Slice 2
+# operations work on files only — not git internals.
+# The remaining patterns exclude heavy runtime artifacts that are irrelevant
+# to test execution and would waste disk space or cause recursive copies.
+_WORKSPACE_IGNORE_BASE = shutil.ignore_patterns(
+    # VCS internals
+    ".git",
+    ".git/*",
+    # Python runtime artifacts
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+    # Node / frontend build artifacts
+    "node_modules",
+    ".next",
+    "tsconfig.tsbuildinfo",
+    # Runner execution artifacts — defence-in-depth alongside _make_copy_ignore
+    "var",
+    # Claude Code internals (worktrees, session state)
+    ".claude",
+    # Runtime output directories
+    "logs",
+    "tests_generated",
+)
 
 
 def _make_copy_ignore(repo_path: Path, execution_dir: Path):
