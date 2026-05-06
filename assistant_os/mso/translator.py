@@ -11,6 +11,9 @@ from .delegation import validate_delegation_task, validate_sovereign_intent
 
 _ALLOWED_DELEGATION_RECOMMENDATIONS = frozenset({"none", "delegate_basic_cognitive_execution"})
 
+_MSO_PRINCIPAL_ID = "mso:sovereign"
+_MSO_SUBJECT_STATE = "active"
+
 
 class TranslatorValidationError(ValueError):
     """Explicit deterministic translator rejection."""
@@ -94,6 +97,14 @@ def _validate_translation_inputs(
             )
 
 
+def _apply_mso_identity_context(req: CanonicalRequest, *, action_type: str) -> CanonicalRequest:
+    """Attach identity context only for policy input shaping, never authority."""
+    req["principal_id"] = _MSO_PRINCIPAL_ID
+    req["subject_state"] = _MSO_SUBJECT_STATE
+    req["action_type"] = action_type
+    return req
+
+
 def _translate_delegated_intent(
     intent: SovereignIntent,
     *,
@@ -101,7 +112,7 @@ def _translate_delegated_intent(
     context_id: str,
     delegation_task: DelegationTask,
 ) -> CanonicalRequest:
-    return normalize_request(
+    req = normalize_request(
         text=original_text,
         context_id=context_id or intent.session_id,
         metadata={
@@ -118,6 +129,7 @@ def _translate_delegated_intent(
             },
         },
     )
+    return _apply_mso_identity_context(req, action_type="execute")
 
 
 def _translate_response_intent(
@@ -126,7 +138,7 @@ def _translate_response_intent(
     original_text: str,
     context_id: str,
 ) -> CanonicalRequest:
-    return normalize_request(
+    req = normalize_request(
         text=original_text,
         context_id=context_id or intent.session_id,
         metadata={
@@ -134,6 +146,7 @@ def _translate_response_intent(
             "translation_rule": "respond_passthrough",
         },
     )
+    return _apply_mso_identity_context(req, action_type="read")
 
 
 def translate_intent_to_canonical_request(
