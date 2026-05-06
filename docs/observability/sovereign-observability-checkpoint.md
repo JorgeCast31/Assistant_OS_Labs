@@ -58,3 +58,4 @@ Incluye:
 - Task/trace memory puede no ser durable.
 - Confirm flow observable no implica que el resultado posterior sea consultable aun.
 - UI no debe inventar estado si backend no lo expone.
+- **Debt arquitectonica:** [Truthfulness Observability Gap Report](../operability/truthfulness-gap-report.md) documenta la falta de un shape unificado para los readiness probes.
