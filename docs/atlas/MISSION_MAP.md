@@ -9,6 +9,7 @@
 | Mission Core | [mission-core-contract.md](../mission/mission-core-contract.md) | ✅ Closed |
 | Mission Query Seam | [mission-query-seam-contract.md](../mission/mission-query-seam-contract.md) | ✅ Closed |
 | MissionExecutionCandidate | [mission-execution-candidate-contract.md](../mission/mission-execution-candidate-contract.md) | ✅ Closed |
+| Candidate Audit Trail | [candidate-audit-contract.md](../mission/candidate-audit-contract.md) | ✅ Closed |
 
 ## Mission Lifecycle (navigational)
 
@@ -25,7 +26,13 @@ Query Seam       ──── translates mission into queryable form
 ExecutionCandidate ── selects candidate action for Police evaluation
       │
       ▼
-Police           ──── ALLOW / DENY
+PoliceEvaluation ──── ALLOW creates MissionExecutionCandidate
+      │
+      ▼
+CandidateAudit   ──── snapshots candidate creation event
+      │
+      ▼
+Police Gate      ──── future token-bound decision point
       │
       ▼
 Pipeline / Agent execution
@@ -43,5 +50,5 @@ The Query Seam is the explicit boundary between mission definition and execution
 
 | Layer | Status |
 |---|---|
-| Candidate audit trail | 🔲 Pending |
+| Candidate audit persistence | 🔲 Pending |
 | MCO/MSO orchestration layer | 🔲 Pending |
