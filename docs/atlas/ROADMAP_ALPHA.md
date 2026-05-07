@@ -10,16 +10,17 @@
 | Mission Core | [mission-core-contract.md](../mission/mission-core-contract.md) |
 | Mission Query Seam | [mission-query-seam-contract.md](../mission/mission-query-seam-contract.md) |
 | MissionExecutionCandidate | [mission-execution-candidate-contract.md](../mission/mission-execution-candidate-contract.md) |
+| Candidate Audit Trail | [candidate-audit-contract.md](../mission/candidate-audit-contract.md) |
 | PoliceEvaluation v0 | [police-core-contract.md](../police/police-core-contract.md) |
 | PoliceDecision | [police-core-contract.md](../police/police-core-contract.md) |
 | Agent Permission Bridge | [agent-permission-contract.md](../agents/agent-permission-contract.md) |
 
 ## Pending Alpha Layers
 
-### 1. Candidate Audit
+### 1. Candidate Audit Persistence
 
-- Durable log of evaluated candidates with outcome, timestamp, and verdict
-- Required for operability and incident reconstruction
+- Durable storage for candidate audit records
+- Contract-level candidate audit record is closed in `S-CANDIDATE-AUDIT-01`
 - Depends on: Police persistence layer
 
 ### 2. Police Persistence

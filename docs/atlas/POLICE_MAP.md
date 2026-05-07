@@ -19,7 +19,7 @@ Incoming request
 PoliceEvaluation  ──── reads Policy rules (immutable)
       │
       ▼
-PoliceDecision    ──── ALLOW / DENY (binary, no ambiguity)
+PoliceDecision    ──── permitted / denied / deferred (token-bound gate vocabulary)
       │
       ▼
 TokenGate         ──── verifies token binding before execution
@@ -32,6 +32,7 @@ Agent / Pipeline
 
 | Layer | Status |
 |---|---|
+| Candidate audit persistence | 🔲 Pending |
 | Police persistence | 🔲 Pending |
 | Police query / showroom | 🔲 Pending |
 | Token-bound gate (full) | 🔲 Pending |
@@ -39,7 +40,11 @@ Agent / Pipeline
 
 ## Police Invariants
 
-- Decision is binary: ALLOW or DENY. Never ambiguous.
+- PoliceEvaluation vocabulary: ALLOW / DENY / REQUIRES_CONFIRMATION.
+- PoliceDecision vocabulary: permitted / denied / deferred.
+- PoliceEvaluation.ALLOW is not execution authorization.
+- PoliceDecision.permitted is the future token-bound gate result.
+- PoliceEvaluation and PoliceDecision vocabularies must never be collapsed.
 - Denial is hard-stop. No fallback execution.
 - Token gate fires after decision, never before.
 - Police does not modify Policy.
