@@ -1299,5 +1299,183 @@ class TestChatSurfacePropagation(unittest.TestCase):
         )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# S-POLICE-SURFACE-00A — Static UI truth contracts for Police/Candidate terms.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Future vocabulary contract (test-local only):
+# - PoliceEvaluation: ALLOW / DENY / REQUIRES_CONFIRMATION
+# - PoliceDecision: permitted / denied / deferred
+# - MissionExecutionCandidate: pending_gate
+POLICE_EVALUATION_VOCAB = ("ALLOW", "DENY", "REQUIRES_CONFIRMATION")
+POLICE_DECISION_VOCAB = ("permitted", "denied", "deferred")
+MISSION_EXECUTION_CANDIDATE_GATE = ("pending_gate",)
+
+POLICE_SURFACE_CURRENT_FILES = (
+    "lib/types.ts",
+    "components/sovereign/SecurityView.tsx",
+    "components/sovereign/AuthorityMatrixPanel.tsx",
+    "components/sovereign/GovernanceStatusBand.tsx",
+    "components/sovereign/GovernanceRecentPanel.tsx",
+)
+
+POLICE_SURFACE_FUTURE_FILES = (
+    "components/sovereign/PoliceSurfacePanel.tsx",
+    "components/sovereign/PoliceDecisionPanel.tsx",
+    "components/sovereign/PoliceEvaluationPanel.tsx",
+    "components/sovereign/MissionExecutionCandidatePanel.tsx",
+    "components/sovereign/CandidateAuditRecordPanel.tsx",
+    "components/sovereign/AgentPermissionProfilePanel.tsx",
+)
+
+
+def _iter_lines(rel: str):
+    for idx, line in enumerate(_read(rel).splitlines(), start=1):
+        yield idx, line
+
+
+def _existing_future_surface_files() -> list[str]:
+    return [rel for rel in POLICE_SURFACE_FUTURE_FILES if (UI_ROOT / rel).exists()]
+
+
+class TestPoliceDecisionVocabularyNotCollapsed(unittest.TestCase):
+    """Police/Candidate authority vocabularies must remain semantically separated."""
+
+    def test_police_decision_and_evaluation_vocabulary_separation(self) -> None:
+        for rel in POLICE_SURFACE_CURRENT_FILES:
+            for line_no, line in _iter_lines(rel):
+                lowered = line.lower()
+
+                if "policedecision" in lowered:
+                    for forbidden in ("allow", "deny", "requires_confirmation"):
+                        if forbidden in lowered:
+                            self.fail(
+                                f"{rel}:{line_no} collapses PoliceDecision with PoliceEvaluation term '{forbidden}': "
+                                f"{line.strip()}"
+                            )
+
+                if "policeevaluation" in lowered:
+                    for forbidden in ("permitted", "denied", "deferred"):
+                        if forbidden in lowered:
+                            self.fail(
+                                f"{rel}:{line_no} collapses PoliceEvaluation with PoliceDecision term '{forbidden}': "
+                                f"{line.strip()}"
+                            )
+
+                if "pending_gate" in lowered and any(
+                    term in lowered for term in ("authorized", "approved", "execution enabled")
+                ):
+                    self.fail(
+                        f"{rel}:{line_no} collapses pending_gate with authorization wording: {line.strip()}"
+                    )
+
+
+class TestPoliceEvaluationAllowNotAuthorization(unittest.TestCase):
+    """PoliceEvaluation.ALLOW must not be represented as execution authorization."""
+
+    def test_allow_not_mapped_to_authorization_language(self) -> None:
+        forbidden = (
+            "authorized",
+            "authorization",
+            "execution enabled",
+            "ready to execute",
+            "permitted",
+        )
+        for rel in POLICE_SURFACE_CURRENT_FILES:
+            for line_no, line in _iter_lines(rel):
+                lowered = line.lower()
+                if "policeevaluation" in lowered and "allow" in lowered:
+                    for word in forbidden:
+                        if word in lowered:
+                            self.fail(
+                                f"{rel}:{line_no} maps PoliceEvaluation.ALLOW to authorization '{word}': "
+                                f"{line.strip()}"
+                            )
+
+
+class TestMissionExecutionCandidatePendingGateNotApproved(unittest.TestCase):
+    """MissionExecutionCandidate pending_gate must not be shown as approved/authorized."""
+
+    def test_pending_gate_not_approved_authorized_or_permitted(self) -> None:
+        forbidden = ("authorized", "approved", "permitted", "ready to execute", "execution enabled")
+        for rel in POLICE_SURFACE_CURRENT_FILES:
+            for line_no, line in _iter_lines(rel):
+                lowered = line.lower()
+                if ("pending_gate" in lowered or "pending_gate" in line) and any(
+                    word in lowered for word in forbidden
+                ):
+                    self.fail(
+                        f"{rel}:{line_no} maps pending_gate to authorization semantics: {line.strip()}"
+                    )
+
+
+class TestPoliceSurfaceNoMutationAffordances(unittest.TestCase):
+    """Police/Candidate terms must not carry action or mutation affordances in UI text."""
+
+    def test_model_mentions_are_read_only(self) -> None:
+        subject_terms = (
+            "policeevaluation",
+            "policedecision",
+            "missionexecutioncandidate",
+            "pending_gate",
+            "candidateauditrecord",
+            "agentpermissionprofile",
+        )
+        forbidden = (
+            "onclick",
+            "button",
+            "approve",
+            "deny",
+            "authorize",
+            "execute",
+            "launch",
+            "post",
+            "put",
+            "patch",
+            "delete",
+        )
+        scan_files = _existing_future_surface_files() or list(POLICE_SURFACE_CURRENT_FILES)
+
+        for rel in scan_files:
+            for line_no, line in _iter_lines(rel):
+                lowered = line.lower()
+                if any(term in lowered for term in subject_terms) and any(
+                    token in lowered for token in forbidden
+                ):
+                    self.fail(
+                        f"{rel}:{line_no} combines model term with mutation/action affordance: {line.strip()}"
+                    )
+
+
+class TestAgentPermissionProfileScopeOnly(unittest.TestCase):
+    """AgentPermissionProfile must remain scope-only and non-executional."""
+
+    def test_agent_permission_profile_has_no_execution_language(self) -> None:
+        forbidden = (
+            "execute",
+            "launch",
+            "authorize execution",
+            "runner",
+            "pipeline",
+            "machine operator",
+        )
+        for rel in POLICE_SURFACE_CURRENT_FILES:
+            for line_no, line in _iter_lines(rel):
+                lowered = line.lower()
+                if "agentpermissionprofile" in lowered and any(word in lowered for word in forbidden):
+                    self.fail(
+                        f"{rel}:{line_no} mixes AgentPermissionProfile with execution wording: {line.strip()}"
+                    )
+
+
+class TestPoliceSurfaceFutureVocabularyDocumentedInComments(unittest.TestCase):
+    """Positive guard: future vocabulary is documented in this test module."""
+
+    def test_expected_vocab_constants_are_present(self) -> None:
+        self.assertEqual(POLICE_EVALUATION_VOCAB, ("ALLOW", "DENY", "REQUIRES_CONFIRMATION"))
+        self.assertEqual(POLICE_DECISION_VOCAB, ("permitted", "denied", "deferred"))
+        self.assertEqual(MISSION_EXECUTION_CANDIDATE_GATE, ("pending_gate",))
+
+
 if __name__ == "__main__":
     unittest.main()
