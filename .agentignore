@@ -24,3 +24,17 @@ tests/test_code_api.py
 tests/test_machine_operator_pipeline.py
 tests/test_host_http.py
 tests/test_fin_plan.py
+
+# Historical sprint planning / non-canonical MSO worklogs
+docs/mso/
+
+# Agent task worklogs / early snapshots
+agent_context/
+
+# Closed milestone reports / baseline snapshots
+docs/ALFA_FLIGHT_*.md
+docs/PHASE1_BASELINE.md
+
+# Internal cleanup/testing notes, not canonical architecture
+docs/cleanup/
+docs/testing/
