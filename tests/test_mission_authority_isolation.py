@@ -2,8 +2,9 @@ import ast
 import dataclasses
 import inspect
 
+import assistant_os.missions as mission_package
 from assistant_os.missions import models, service, store
-from assistant_os.missions.models import Mission, MissionActivity, MissionBlueprint, MissionEvent, Workstream
+from assistant_os.missions.models import Mission, MissionActivity, MissionBlueprint, MissionEvent, MissionStatus, Workstream
 from assistant_os.missions.service import MissionRegistry
 
 
@@ -54,10 +55,33 @@ FORBIDDEN_SOURCE_STRINGS = (
     "waiting_for_confirmation",
 )
 
+FORBIDDEN_STATUS_VOCABULARY = (
+    "confirmation",
+    "execute",
+    "dispatch",
+    "trigger",
+    "run_",
+    "approval",
+    "policy",
+    "governance",
+    "capability",
+)
+
+FORBIDDEN_REGISTRY_ATTRIBUTES = (
+    "orchestrator",
+    "pipeline",
+    "runner",
+    "policy",
+    "executor",
+    "grant",
+    "capability",
+)
+
 
 def mission_source() -> str:
     return "\n".join(
         [
+            inspect.getsource(mission_package),
             inspect.getsource(models),
             inspect.getsource(store),
             inspect.getsource(service),
@@ -87,6 +111,20 @@ def test_mission_model_fields_have_no_authority_like_names() -> None:
     for model_type in model_types:
         field_names = {field.name for field in dataclasses.fields(model_type)}
         assert field_names.isdisjoint(FORBIDDEN_MODEL_FIELD_NAMES)
+
+
+def test_mission_status_values_have_no_authority_or_execution_vocabulary() -> None:
+    for status in MissionStatus:
+        for forbidden in FORBIDDEN_STATUS_VOCABULARY:
+            assert forbidden not in status.value
+
+
+def test_registry_instance_attributes_have_no_authority_like_names() -> None:
+    registry = MissionRegistry()
+    attribute_names = set(vars(registry))
+
+    for forbidden in FORBIDDEN_REGISTRY_ATTRIBUTES:
+        assert all(forbidden not in attribute_name for attribute_name in attribute_names)
 
 
 def imported_modules(source: str) -> set[str]:

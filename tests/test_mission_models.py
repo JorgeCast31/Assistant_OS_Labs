@@ -1,7 +1,10 @@
+import dataclasses
+
 from assistant_os.missions.models import (
     Mission,
     MissionActivity,
     MissionBlueprint,
+    MissionEvent,
     MissionStatus,
     Workstream,
 )
@@ -54,3 +57,19 @@ def test_blueprint_workstreams_and_activities_can_be_represented() -> None:
     assert blueprint.mission_id == mission.mission_id
     assert blueprint.workstreams[0].activities[0].workstream_id == workstream.workstream_id
     assert blueprint.workstreams[0].activities[0].dependencies == ["mission-created"]
+
+
+def test_mission_event_is_directly_immutable() -> None:
+    event = MissionEvent(
+        mission_id="mission_test",
+        event_type="noted",
+        message="Mission event is immutable.",
+        actor="test",
+    )
+
+    try:
+        event.message = "mutated"
+    except dataclasses.FrozenInstanceError:
+        pass
+    else:
+        raise AssertionError("MissionEvent should reject direct mutation")
