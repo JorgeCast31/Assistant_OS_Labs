@@ -44,11 +44,35 @@ export function AgentPermissionProfilePanel() {
           <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Agent ID</p>
           <p className="text-sm font-mono text-tx-secondary break-words">{profile.agent_id}</p>
         </div>
-        <div>
+        <div className="col-span-2 md:col-span-4">
           <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Capabilities</p>
-          <p className="text-sm font-mono text-tx-secondary break-words">
-            {profile.declared_capabilities.join(', ')}
-          </p>
+          <ul className="mt-1 space-y-1">
+            {profile.declared_capabilities.map((capability) => (
+              <li key={capability} className="text-sm font-mono text-tx-secondary break-words">
+                {capability}
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div className="col-span-2">
+          <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Tools</p>
+          <ul className="mt-1 space-y-1">
+            {profile.permitted_tools.map((tool) => (
+              <li key={tool} className="text-sm font-mono text-tx-secondary break-words">
+                {tool}
+              </li>
+            ))}
+          </ul>
+        </div>
+        <div className="col-span-2">
+          <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Environments</p>
+          <ul className="mt-1 space-y-1">
+            {profile.permitted_environments.map((environment) => (
+              <li key={environment} className="text-sm font-mono text-tx-secondary break-words">
+                {environment}
+              </li>
+            ))}
+          </ul>
         </div>
       </div>
     </section>

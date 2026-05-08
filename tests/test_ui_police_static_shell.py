@@ -109,6 +109,9 @@ class TestStaticPoliceShowroomShell(unittest.TestCase):
         src = _read(PANEL_FILES["AgentPermissionProfilePanel"])
         self.assertIn("permitted_tools:", src)
         self.assertIn("permitted_environments:", src)
+        self.assertIn("profile.declared_capabilities", src)
+        self.assertIn("profile.permitted_tools", src)
+        self.assertIn("profile.permitted_environments", src)
         self.assertNotIn("['per' + 'mitted_tools']", src)
         self.assertNotIn("['per' + 'mitted_environments']", src)
 
