@@ -15,6 +15,7 @@
 | PoliceDecision | [police-core-contract.md](../police/police-core-contract.md) |
 | Agent Permission Bridge | [agent-permission-contract.md](../agents/agent-permission-contract.md) |
 | S-PERSISTENCE-01-ALPHA | [audit-sink-contract.md](../persistence/audit-sink-contract.md) |
+| S-MSO-ORCHESTRATION-01 | [mso-candidate-orchestration-contract.md](../mso/mso-candidate-orchestration-contract.md) |
 
 ## Pending Alpha Layers
 
@@ -35,6 +36,12 @@
 - Read-only query interface over Police and candidate audit history
 - Operator-facing: "show me why this was denied"
 - Depends on: audit persistence and future query contracts
+
+### 3a. MSO Candidate Gate Follow-Up
+
+- Candidate-only MSO orchestration stops at `PENDING_GATE`
+- No runtime, API, UI, token gate, CODE, runner, or Machine Operator wiring exists here
+- Depends on: future Police gate and Police query contracts
 
 ### 4. UI Surface
 
