@@ -34,7 +34,8 @@ class JsonlAuditStore:
 
         if not self._path.suffix:
             raise ValueError(
-                f"JsonlAuditStore path must point to a file: {path!r}"
+                "JsonlAuditStore path must point to a file, "
+                f"not a directory-like path: {path!r}"
             )
 
         if create_parent and not self._path.parent.exists():
