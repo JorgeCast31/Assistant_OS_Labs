@@ -16,6 +16,7 @@
 | Agent Permission Bridge | [agent-permission-contract.md](../agents/agent-permission-contract.md) |
 | S-PERSISTENCE-01-ALPHA | [audit-sink-contract.md](../persistence/audit-sink-contract.md) |
 | S-MSO-ORCHESTRATION-01 | [mso-candidate-orchestration-contract.md](../mso/mso-candidate-orchestration-contract.md) |
+| S-MSO-ORCHESTRATION-02 | [mso-audit-wiring-contract.md](../mso/mso-audit-wiring-contract.md) |
 
 ## Pending Alpha Layers
 
@@ -40,6 +41,8 @@
 ### 3a. MSO Candidate Gate Follow-Up
 
 - Candidate-only MSO orchestration stops at `PENDING_GATE`
+- Audit wiring now records Police and candidate audit facts through typed stores
+- No candidate object store exists yet
 - No runtime, API, UI, token gate, CODE, runner, or Machine Operator wiring exists here
 - Depends on: future Police gate and Police query contracts
 
@@ -80,14 +83,20 @@
 - `AuditSink`
 - `PoliceAuditEventStore`
 - `CandidateAuditRecordStore`
-- `MissionEventStore`
 
-It does not add:
+`S-MSO-ORCHESTRATION-02` adds:
+
+- `OrchestrationAuditRouter`
+- `persist_orchestration_result`
+- typed audit persistence wiring for candidate orchestration
+
+These layers do not add:
 
 - `DurableMissionStore`
 - `MissionEventStore`
+- `MissionExecutionCandidateStore`
 - SQLite
-- runtime, MSO, API, UI, token gate, CODE, runner, or Machine Operator wiring
+- runtime, API, UI, token gate, CODE, runner, or Machine Operator wiring
 
 ## Sequencing Notes
 

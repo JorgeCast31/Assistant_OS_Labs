@@ -29,6 +29,7 @@ MSO
 | Mission query seam | [mission-query-seam-contract.md](../mission/mission-query-seam-contract.md) |
 | Mission execution candidate | [mission-execution-candidate-contract.md](../mission/mission-execution-candidate-contract.md) |
 | MSO candidate orchestration seam | [mso-candidate-orchestration-contract.md](../mso/mso-candidate-orchestration-contract.md) |
+| MSO audit wiring | [mso-audit-wiring-contract.md](../mso/mso-audit-wiring-contract.md) |
 
 ## Forbidden Patterns
 
@@ -37,3 +38,4 @@ MSO
 - Soft-failing past a blocked verdict
 - Mutating Policy at runtime
 - Treating candidate creation as execution permission
+- Treating audit records or audit stores as authority

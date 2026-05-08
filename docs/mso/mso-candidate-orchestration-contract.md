@@ -38,6 +38,12 @@ Persistence must not be used to reconstruct objects that were just created in th
 
 Persistence is observation, not authority. The seam never reads audit storage to decide what to do.
 
+## MSO Audit Wiring
+
+`S-MSO-ORCHESTRATION-02` adds [MSO audit wiring](mso-audit-wiring-contract.md) beside this seam. `OrchestrationAuditRouter` composes the existing typed audit stores for durable observation of orchestration results.
+
+The candidate orchestration seam still depends only on `AuditSink`. It does not import concrete audit stores and does not choose persistence paths.
+
 ## Future Layers
 
 PoliceDecision and token-gate verification are future layers. Runner, CODE, and Machine Operator work are also future layers.
