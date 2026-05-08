@@ -14,26 +14,27 @@
 | PoliceEvaluation v0 | [police-core-contract.md](../police/police-core-contract.md) |
 | PoliceDecision | [police-core-contract.md](../police/police-core-contract.md) |
 | Agent Permission Bridge | [agent-permission-contract.md](../agents/agent-permission-contract.md) |
+| S-PERSISTENCE-01-ALPHA | [audit-sink-contract.md](../persistence/audit-sink-contract.md) |
 
 ## Pending Alpha Layers
 
-### 1. Candidate Audit Persistence
+### 1. Durable Mission Persistence
 
-- Durable storage for candidate audit records
-- Contract-level candidate audit record is closed in `S-CANDIDATE-AUDIT-01`
-- Depends on: Police persistence layer
+- No `DurableMissionStore` exists yet
+- Must not treat audit records as mutable mission state
+- Depends on: a future mission persistence contract
 
-### 2. Police Persistence
+### 2. SQLite Persistence
 
-- Persist Police verdicts with enough context for audit replay
-- Must not mutate Policy retroactively
-- Unblocks: Candidate audit, Police showroom
+- No SQLite layer exists yet
+- JSONL audit persistence is the only alpha persistence added by `S-PERSISTENCE-01-ALPHA`
+- Depends on: explicit storage contract
 
 ### 3. Police Query / Showroom
 
-- Read-only query interface over Police verdict history
+- Read-only query interface over Police and candidate audit history
 - Operator-facing: "show me why this was denied"
-- Depends on: Police persistence
+- Depends on: audit persistence and future query contracts
 
 ### 4. UI Surface
 
@@ -64,6 +65,22 @@
 - Protocol for MCO-initiated missions under MSO authority
 - Prevents MCO from acting outside delegated scope
 - Depends on: Machine Operator governance
+
+## Alpha Persistence Status
+
+`S-PERSISTENCE-01-ALPHA` adds:
+
+- `AuditSink`
+- `PoliceAuditEventStore`
+- `CandidateAuditRecordStore`
+- `MissionEventStore`
+
+It does not add:
+
+- `DurableMissionStore`
+- `MissionEventStore`
+- SQLite
+- runtime, MSO, API, UI, token gate, CODE, runner, or Machine Operator wiring
 
 ## Sequencing Notes
 

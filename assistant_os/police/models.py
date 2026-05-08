@@ -90,7 +90,7 @@ class PoliceEvaluation:
     audit_event_id: str = field(default_factory=_new_id)
 
 
-@dataclass
+@dataclass(frozen=True)
 class PoliceAuditEvent:
     request_id: str
     evaluation_id: str
