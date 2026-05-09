@@ -558,19 +558,24 @@ class TestRegistryIntegration:
         assert agent["output_contract"] == "HostActionResult"
         assert callable(agent["entrypoint"])
 
-    def test_host_launcher_entrypoint_delegates_to_execute(self):
+    def test_host_launcher_entrypoint_blocks_direct_call_without_authority_context(self):
+        """Direct registry call without a valid Police token must be rejected closed.
+
+        HOST_AGENT_ID is activated (gate 1 clears), but no authority context /
+        token is provided, so the token-bound Police Gate fires and denies.
+        """
         from assistant_os.agents.registry import get_agent
 
         req = _active_request(app_name="notepad", execution_id="exec-reg-1")
-        mock_proc = MagicMock()
-        mock_proc.pid = 5050
 
-        with patch("subprocess.Popen", return_value=mock_proc):
+        with patch("subprocess.Popen") as mock_popen:
             agent = get_agent("host_launcher")
             result = agent["entrypoint"](req)
 
-        assert result.ok is True
-        assert result.pid == 5050
+        assert result.ok is False
+        assert result.error is not None
+        assert "Police" in result.error or "token" in result.error.lower()
+        mock_popen.assert_not_called()
 
     def test_host_launcher_entrypoint_respects_gates(self):
         """Entrypoint must enforce all gates — not bypass them.
