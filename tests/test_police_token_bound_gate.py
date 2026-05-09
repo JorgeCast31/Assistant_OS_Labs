@@ -192,11 +192,28 @@ class TestPoliceGateIntegrationWithMSOGovernance(unittest.TestCase):
     """Integration: Police Gate respects MSO Governance context."""
 
     def test_police_gate_respects_governance_ref_presence(self):
-        """Police Gate requires governance_ref for authorization."""
-        request_with_gov = _request(governance_ref="gov-001")
+        """Police Gate requires governance_ref for authorization.
+
+        Two distinct token refs are used so the first PERMITTED decision does
+        not spend the token used by the second call.  Tokens are single-use;
+        reusing the same ref for both calls would cause the second to be denied
+        for TOKEN_ALREADY_CONSUMED rather than GOVERNANCE_REF_MISSING.
+        """
+        from assistant_os.police.token_registry import register_token
+
+        register_token("gov-test-token-with", binding_ref="binding-valid-001")
+        register_token("gov-test-token-without", binding_ref="binding-valid-001")
+
+        request_with_gov = _request(
+            governance_ref="gov-001",
+            token_ref="gov-test-token-with",
+        )
         decision_with_gov = check(request_with_gov)
 
-        request_without_gov = _request(governance_ref=None)
+        request_without_gov = _request(
+            governance_ref=None,
+            token_ref="gov-test-token-without",
+        )
         decision_without_gov = check(request_without_gov)
 
         self.assertIsInstance(decision_with_gov, PoliceDecision)
