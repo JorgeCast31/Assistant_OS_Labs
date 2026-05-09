@@ -13,7 +13,6 @@ against the police-internal token registry.  The following tests are promoted:
 
 Remaining xfails require infrastructure not yet built:
   - CAPABILITY_OUT_OF_SCOPE: no formal schema for capability_name values
-  - PLAN_BINDING_FAILURE: no plan registry
   - TEMPORAL_RESTRICTION: no temporal restriction infrastructure
 """
 import pytest
@@ -30,6 +29,7 @@ from assistant_os.police.token_registry import (
     _STATUS_SPENT,
     register_token,
 )
+from assistant_os.police.authorized_plan_registry import register_authorized_plan_ref
 
 _XFAIL_PENDING = pytest.mark.xfail(
     reason="Requires registry or infrastructure not yet implemented in this sprint",
@@ -95,9 +95,57 @@ def test_binding_mismatch_denies():
     assert decision.reason is PoliceReason.BINDING_MISMATCH
 
 
-@_XFAIL_PENDING
 def test_plan_binding_failure_denies():
     decision = check(_request(authorized_plan_ref="unbound-plan-ref"))
+
+    assert decision.outcome is PoliceOutcome.DENIED
+    assert decision.reason is PoliceReason.PLAN_BINDING_FAILURE
+
+
+def test_missing_authorized_plan_ref_denies():
+    decision = check(_request(authorized_plan_ref=None))
+
+    assert decision.outcome is PoliceOutcome.DENIED
+    assert decision.reason is PoliceReason.PLAN_BINDING_FAILURE
+
+
+def test_authorized_plan_ref_execution_mismatch_denies():
+    register_authorized_plan_ref(
+        "plan-exec-mismatch",
+        execution_id="different-exec",
+        token_ref="token-ref-1",
+        binding_ref="binding-ref-1",
+    )
+
+    decision = check(_request(authorized_plan_ref="plan-exec-mismatch"))
+
+    assert decision.outcome is PoliceOutcome.DENIED
+    assert decision.reason is PoliceReason.PLAN_BINDING_FAILURE
+
+
+def test_authorized_plan_ref_binding_mismatch_denies():
+    register_authorized_plan_ref(
+        "plan-binding-mismatch",
+        execution_id="exec-1",
+        token_ref="token-ref-1",
+        binding_ref="different-binding",
+    )
+
+    decision = check(_request(authorized_plan_ref="plan-binding-mismatch"))
+
+    assert decision.outcome is PoliceOutcome.DENIED
+    assert decision.reason is PoliceReason.PLAN_BINDING_FAILURE
+
+
+def test_authorized_plan_ref_token_mismatch_denies():
+    register_authorized_plan_ref(
+        "plan-token-mismatch",
+        execution_id="exec-1",
+        token_ref="different-token",
+        binding_ref="binding-ref-1",
+    )
+
+    decision = check(_request(authorized_plan_ref="plan-token-mismatch"))
 
     assert decision.outcome is PoliceOutcome.DENIED
     assert decision.reason is PoliceReason.PLAN_BINDING_FAILURE
@@ -130,13 +178,75 @@ def test_all_checks_pass_allows():
     assert decision.permitted is True
 
 
+def test_registered_authorized_plan_ref_allows_when_context_is_valid():
+    register_token("plan-valid-token", binding_ref="plan-valid-binding")
+    register_authorized_plan_ref(
+        "plan-valid-ref",
+        execution_id="exec-plan-valid",
+        token_ref="plan-valid-token",
+        binding_ref="plan-valid-binding",
+    )
+
+    decision = check(_request(
+        execution_id="exec-plan-valid",
+        token_ref="plan-valid-token",
+        binding_ref="plan-valid-binding",
+        authorized_plan_ref="plan-valid-ref",
+    ))
+
+    assert decision.outcome is PoliceOutcome.PERMITTED
+    assert decision.reason is PoliceReason.ALLOWED
+    assert decision.permitted is True
+
+
+def test_plan_binding_failure_does_not_consume_token():
+    register_token("plan-retry-token", binding_ref="plan-retry-binding")
+
+    first_decision = check(_request(
+        execution_id="exec-plan-retry",
+        token_ref="plan-retry-token",
+        binding_ref="plan-retry-binding",
+        authorized_plan_ref="missing-plan-ref",
+    ))
+
+    register_authorized_plan_ref(
+        "plan-retry-ref",
+        execution_id="exec-plan-retry",
+        token_ref="plan-retry-token",
+        binding_ref="plan-retry-binding",
+    )
+    second_decision = check(_request(
+        execution_id="exec-plan-retry",
+        token_ref="plan-retry-token",
+        binding_ref="plan-retry-binding",
+        authorized_plan_ref="plan-retry-ref",
+    ))
+
+    assert first_decision.outcome is PoliceOutcome.DENIED
+    assert first_decision.reason is PoliceReason.PLAN_BINDING_FAILURE
+    assert second_decision.outcome is PoliceOutcome.PERMITTED
+    assert second_decision.reason is PoliceReason.ALLOWED
+
+
 def test_token_consumed_exactly_once():
     # Register a fresh token for single-use enforcement.
     # conftest does not pre-seed "single-use-token-ref".
     register_token("single-use-token-ref", binding_ref="binding-ref-1")
+    register_authorized_plan_ref(
+        "single-use-plan-ref",
+        execution_id="exec-1",
+        token_ref="single-use-token-ref",
+        binding_ref="binding-ref-1",
+    )
 
-    first_decision = check(_request(token_ref="single-use-token-ref"))
-    second_decision = check(_request(token_ref="single-use-token-ref"))
+    first_decision = check(_request(
+        token_ref="single-use-token-ref",
+        authorized_plan_ref="single-use-plan-ref",
+    ))
+    second_decision = check(_request(
+        token_ref="single-use-token-ref",
+        authorized_plan_ref="single-use-plan-ref",
+    ))
 
     assert first_decision.outcome is PoliceOutcome.PERMITTED
     assert second_decision.outcome is PoliceOutcome.DENIED

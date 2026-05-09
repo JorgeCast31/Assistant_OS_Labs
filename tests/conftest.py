@@ -22,6 +22,10 @@ from assistant_os.police.token_registry import (
     _reset_for_testing,
     register_token,
 )
+from assistant_os.police.authorized_plan_registry import (
+    _reset_for_testing as _reset_authorized_plan_registry_for_testing,
+    register_authorized_plan_ref,
+)
 
 # Token refs used by the three police gate test file factories, paired with
 # the binding_ref their factories supply by default.
@@ -31,12 +35,27 @@ _COMMON_ACTIVE_TOKENS: dict[str, str] = {
     "token-1":         "binding-1",          # test_police_gate_contract.py
 }
 
+_COMMON_ACTIVE_PLANS: dict[str, tuple[str, str, str]] = {
+    "plan-ref-1": ("exec-1", "token-ref-1", "binding-ref-1"),
+    "plan-valid-001": ("exec-test-001", "token-valid-001", "binding-valid-001"),
+    "plan-1": ("exec-1", "token-1", "binding-1"),
+}
+
 
 @pytest.fixture(autouse=True)
 def _police_token_registry_isolation():
     """Reset and pre-seed the police token registry before each test."""
     _reset_for_testing()
+    _reset_authorized_plan_registry_for_testing()
     for token_ref, binding_ref in _COMMON_ACTIVE_TOKENS.items():
         register_token(token_ref, binding_ref=binding_ref)
+    for plan_ref, (execution_id, token_ref, binding_ref) in _COMMON_ACTIVE_PLANS.items():
+        register_authorized_plan_ref(
+            plan_ref,
+            execution_id=execution_id,
+            token_ref=token_ref,
+            binding_ref=binding_ref,
+        )
     yield
     _reset_for_testing()
+    _reset_authorized_plan_registry_for_testing()

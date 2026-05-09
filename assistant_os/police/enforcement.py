@@ -1,7 +1,19 @@
 """Police Token-Bound Gate Implementation — S-POLICE-CORE-04"""
 
+from .authorized_plan_registry import _lookup as _lookup_authorized_plan
 from .gate_models import PoliceDecision, PoliceGateRequest, PoliceOutcome, PoliceReason
 from .token_registry import _lookup, _mark_spent, _STATUS_EXPIRED, _STATUS_SPENT
+
+
+def _plan_binding_denied(request: PoliceGateRequest, detail: str) -> PoliceDecision:
+    return PoliceDecision(
+        execution_id=request.execution_id,
+        trace_id=request.trace_id,
+        outcome=PoliceOutcome.DENIED,
+        reason=PoliceReason.PLAN_BINDING_FAILURE,
+        detail=detail,
+        permitted=False,
+    )
 
 
 def check(request: PoliceGateRequest) -> PoliceDecision:
@@ -99,6 +111,44 @@ def check(request: PoliceGateRequest) -> PoliceDecision:
                 f"the registered binding for this token."
             ),
             permitted=False,
+        )
+
+    # V4.6: Plan reference must be known and bound to this request.
+    if not request.authorized_plan_ref:
+        return _plan_binding_denied(
+            request,
+            "Authorized plan reference missing. Plan binding is required.",
+        )
+
+    _plan_entry = _lookup_authorized_plan(request.authorized_plan_ref)
+    if _plan_entry is None:
+        return _plan_binding_denied(
+            request,
+            "Authorized plan reference is not recognized. Plan was never registered.",
+        )
+
+    if _plan_entry.get("status") != "active":
+        return _plan_binding_denied(
+            request,
+            "Authorized plan reference is not active.",
+        )
+
+    if _plan_entry.get("execution_id") != request.execution_id:
+        return _plan_binding_denied(
+            request,
+            "Authorized plan execution_id does not match this request.",
+        )
+
+    if _plan_entry.get("token_ref") != request.token_ref:
+        return _plan_binding_denied(
+            request,
+            "Authorized plan token_ref does not match this request.",
+        )
+
+    if _plan_entry.get("binding_ref") != request.binding_ref:
+        return _plan_binding_denied(
+            request,
+            "Authorized plan binding_ref does not match this request.",
         )
 
     # V5: Capability name must be present
