@@ -52,7 +52,10 @@ def test_police_reason_values_are_exact():
     assert PoliceReason.TOKEN_EXPIRED.value == "token_expired"
     assert PoliceReason.TOKEN_ALREADY_CONSUMED.value == "token_already_consumed"
     assert PoliceReason.BINDING_MISMATCH.value == "binding_mismatch"
+    assert PoliceReason.BINDING_REF_MISSING.value == "binding_ref_missing"
     assert PoliceReason.PLAN_BINDING_FAILURE.value == "plan_binding_failure"
+    assert PoliceReason.GOVERNANCE_REF_MISSING.value == "governance_ref_missing"
+    assert PoliceReason.POLICY_DECISION_REF_MISSING.value == "policy_decision_ref_missing"
     assert PoliceReason.CAPABILITY_OUT_OF_SCOPE.value == "capability_out_of_scope"
     assert PoliceReason.TEMPORAL_RESTRICTION.value == "temporal_restriction"
     assert PoliceReason.CONFIRMATION_REQUIRED.value == "confirmation_required"
@@ -197,21 +200,106 @@ def test_police_decision_source_does_not_contain_v0_scope_fields():
     assert "denied_environments" not in source
 
 
-def test_enforcement_check_raises_not_implemented_error():
+def test_enforcement_check_denies_missing_token_ref():
+    """Test that check() denies requests with missing token_ref (direct-call bypass)."""
     request = PoliceGateRequest(
         execution_id="exec-1",
-        operation_key="op.read",
-        token_ref="token-ref-1",
-        binding_ref="binding-ref-1",
-        authorized_plan_ref="plan-ref-1",
-        capability_name="read",
-        governance_ref="governance-ref-1",
-        policy_decision_ref="policy-ref-1",
+        operation_key="op.host_execute",
+        token_ref=None,  # Direct-call path lacks token
+        binding_ref=None,
+        authorized_plan_ref=None,
+        capability_name="host.notepad",
+        governance_ref=None,
+        policy_decision_ref=None,
         trace_id="trace-1",
     )
 
-    with pytest.raises(
-        NotImplementedError,
-        match="Token-bound Police gate is not implemented until S-POLICE-CORE-03",
-    ):
-        check(request)
+    decision = check(request)
+
+    assert decision.outcome == PoliceOutcome.DENIED
+    assert decision.reason == PoliceReason.TOKEN_MISSING
+    assert decision.permitted is False
+
+
+def test_enforcement_check_denies_missing_governance_ref():
+    """Test that check() denies requests with missing governance_ref."""
+    request = PoliceGateRequest(
+        execution_id="exec-1",
+        operation_key="op.host_execute",
+        token_ref="token-1",
+        binding_ref=None,
+        authorized_plan_ref=None,
+        capability_name="host.notepad",
+        governance_ref=None,  # Missing MSO governance context
+        policy_decision_ref=None,
+        trace_id="trace-1",
+    )
+
+    decision = check(request)
+
+    assert decision.outcome == PoliceOutcome.DENIED
+    assert decision.reason == PoliceReason.GOVERNANCE_REF_MISSING
+    assert decision.permitted is False
+
+
+def test_enforcement_check_denies_missing_policy_decision_ref():
+    """Test that check() denies requests with missing policy_decision_ref."""
+    request = PoliceGateRequest(
+        execution_id="exec-1",
+        operation_key="op.host_execute",
+        token_ref="token-1",
+        binding_ref=None,
+        authorized_plan_ref=None,
+        capability_name="host.notepad",
+        governance_ref="governance-1",
+        policy_decision_ref=None,  # Missing policy decision context
+        trace_id="trace-1",
+    )
+
+    decision = check(request)
+
+    assert decision.outcome == PoliceOutcome.DENIED
+    assert decision.reason == PoliceReason.POLICY_DECISION_REF_MISSING
+    assert decision.permitted is False
+
+
+def test_enforcement_check_denies_missing_binding_ref():
+    """Test that check() denies requests with missing binding_ref."""
+    request = PoliceGateRequest(
+        execution_id="exec-1",
+        operation_key="op.host_execute",
+        token_ref="token-1",
+        binding_ref=None,  # Missing token-to-action binding
+        authorized_plan_ref=None,
+        capability_name="host.notepad",
+        governance_ref="governance-1",
+        policy_decision_ref="policy-1",
+        trace_id="trace-1",
+    )
+
+    decision = check(request)
+
+    assert decision.outcome == PoliceOutcome.DENIED
+    assert decision.reason == PoliceReason.BINDING_REF_MISSING
+    assert decision.permitted is False
+
+
+def test_enforcement_check_permits_complete_authorization_context():
+    """Test that check() permits when all authorization context is present."""
+    request = PoliceGateRequest(
+        execution_id="exec-1",
+        operation_key="op.host_execute",
+        token_ref="token-1",
+        binding_ref="binding-1",
+        authorized_plan_ref="plan-1",
+        capability_name="host.notepad",
+        governance_ref="governance-1",
+        policy_decision_ref="policy-1",
+        trace_id="trace-1",
+    )
+
+    decision = check(request)
+
+    assert decision.outcome == PoliceOutcome.PERMITTED
+    assert decision.reason == PoliceReason.ALLOWED
+    assert decision.permitted is True
