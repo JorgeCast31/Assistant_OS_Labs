@@ -48,6 +48,10 @@ Required fields (operational minimum):
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, List
+from uuid import uuid4
+
+from ..police.enforcement import check
+from ..police.gate_models import PoliceGateRequest, PoliceOutcome
 
 
 # ---------------------------------------------------------------------------
@@ -126,12 +130,46 @@ def _host_launcher_entrypoint(request: Any) -> Any:
     Input : HostActionRequest
     Output: HostActionResult
 
-    Delegates to execute_host_action without altering any control logic.
+    S-POLICE-CORE-03: Before delegating to execute_host_action, validate that
+    the request has proper authorization context via the Police Gate.
+
+    Direct-call requests (registry → entrypoint) lack MSO governance context
+    (token_ref, governance_ref, policy_decision_ref, binding_ref) and are
+    therefore fail-closed by the Police Gate.
+
+    Delegates to execute_host_action only if Police permits.
     All invariant enforcement (confirmed, ACTIVE, allowlist, audit) lives
     in host_agent.execute_host_action — this is a thin named boundary only.
     Import is deferred to avoid circular imports at load time.
     """
-    from .host_agent import execute_host_action
+    from .host_agent import HostActionResult, execute_host_action
+
+    # S-POLICE-CORE-03: Police Gate check before execution
+    # Direct-call requests have no authorization context; Police Gate will DENY.
+    police_request = PoliceGateRequest(
+        execution_id=request.execution_id,
+        operation_key="op.host_execute",
+        token_ref=None,  # Not available in direct-call path
+        binding_ref=None,  # Not available in direct-call path
+        authorized_plan_ref=None,  # Not available in direct-call path
+        capability_name=f"host.{request.action}",
+        governance_ref=None,  # Not available in direct-call path
+        policy_decision_ref=None,  # Not available in direct-call path
+        trace_id=str(uuid4()),
+    )
+
+    police_decision = check(police_request)
+
+    # Fail-closed: if Police does not PERMIT, return error result without executing
+    if police_decision.outcome != PoliceOutcome.PERMITTED:
+        return HostActionResult(
+            ok=False,
+            action=request.action,
+            execution_id=request.execution_id,
+            error=f"Police Gate rejected execution: {police_decision.reason.value} — {police_decision.detail}",
+            error_code=None,  # Generic rejection; specific error_code is host_agent responsibility
+        )
+
     return execute_host_action(request)
 
 
@@ -143,12 +181,55 @@ def _machine_operator_entrypoint(request: Any) -> Any:
     Input : machine_operator_request dict (capability_name, arguments, policy_context, budget, …)
     Output: DomainResult
 
+    S-POLICE-CORE-03: Before delegating to the MACHINE_OPERATOR pipeline, validate
+    that the request has proper authorization context via the Police Gate.
+
+    Direct-call requests (registry → entrypoint) lack MSO governance context
+    (token_ref, governance_ref, policy_decision_ref, binding_ref) and are
+    therefore fail-closed by the Police Gate.
+
     Wraps the raw request into the canonical plan envelope and delegates
     to the MACHINE_OPERATOR domain pipeline without altering any control logic.
+    Only delegates if Police permits.
     Import is deferred to avoid circular imports at load time.
     """
-    from ..contracts import ACTION_MACHINE_OPERATOR_EXECUTE
+    from ..contracts import (
+        ACTION_MACHINE_OPERATOR_EXECUTE,
+        RESULT_TYPE_MACHINE_OPERATOR_ACTION,
+        make_domain_result,
+    )
     from ..pipelines.machine_operator_pipeline import execute as _mo_execute
+
+    # S-POLICE-CORE-03: Police Gate check before execution
+    # Direct-call requests have no authorization context; Police Gate will DENY.
+    capability_name = request.get("capability_name", "machine_operator.unknown")
+    police_request = PoliceGateRequest(
+        execution_id=request.get("execution_id", str(uuid4())),
+        operation_key="op.machine_operator_execute",
+        token_ref=None,  # Not available in direct-call path
+        binding_ref=None,  # Not available in direct-call path
+        authorized_plan_ref=None,  # Not available in direct-call path
+        capability_name=capability_name,
+        governance_ref=None,  # Not available in direct-call path
+        policy_decision_ref=None,  # Not available in direct-call path
+        trace_id=str(uuid4()),
+    )
+
+    police_decision = check(police_request)
+
+    # Fail-closed: if Police does not PERMIT, return error DomainResult without executing
+    if police_decision.outcome != PoliceOutcome.PERMITTED:
+        return make_domain_result(
+            ok=False,
+            result_type=RESULT_TYPE_MACHINE_OPERATOR_ACTION,
+            domain="MACHINE_OPERATOR",
+            message=f"Police Gate rejected execution: {police_decision.reason.value}",
+            error={
+                "type": "police_gate_denied",
+                "message": police_decision.detail,
+            },
+        )
+
     plan = {
         "action": ACTION_MACHINE_OPERATOR_EXECUTE,
         "domain": "MACHINE_OPERATOR",

@@ -209,7 +209,8 @@ class TestT1HostRegistryDirectCallBlockedWhenAgentNotActive(unittest.TestCase):
 
         # Gate 2 fires: agent not active → execution refused
         self.assertFalse(result.ok)
-        self.assertEqual(result.error_code, HostErrorCode.CONTROL_PLANE_BLOCKED)
+        self.assertIsNone(result.error_code)  # Police Gate rejection, not domain-level
+        self.assertIn("Police Gate rejected execution", result.error)  # FASE 3: direct-call blocked
 
         # No governance or policy was needed — the bypass gap is real:
         # only an internal host_agent gate stopped execution
@@ -273,7 +274,7 @@ class TestT2MachineOperatorRegistryDirectCallRejectsUnknownCapability(unittest.T
 
         # Pipeline policy gate fires: unknown capability → policy violation
         self.assertFalse(result["ok"])
-        self.assertEqual(result["error"]["type"], "MachineOperatorPolicyViolation")
+        self.assertEqual(result["error"]["type"], "police_gate_denied")  # FASE 3: Police Gate enforcement
 
         # CHARACTERIZATION GAP: no governance was consulted.
         # A BLOCKED governance decision would NOT have reached this gate.
@@ -496,11 +497,10 @@ class TestT5PlaywrightRuntimeHasNoSovereignGateInternally(unittest.TestCase):
 
 class TestT6HostBlockedViaOrchestratorButNotViaRegistry(unittest.TestCase):
     """
-    T6: Contrast test proving the bypass is real, not default behavior.
+    T6: Characterization of FASE 3 Police Gate enforcement — direct-call registry path is now properly secured.
 
-    Orchestrator path + BLOCKED governance → RESULT_TYPE_PLAN_GENERATED.
-    Registry path + BLOCKED governance (mocked but not consulted) → execute_host_action
-    internal gates fire (CONTROL_PLANE_BLOCKED), not plan_generated.
+    FASE 3 enforcement: Both orchestrator and registry paths now respect governance.
+    Registry path is secured by Police Gate before reaching domain logic.
 
     The same governance BLOCK that stops the orchestrator path is invisible
     to the registry path — demonstrating the gap is structural, not incidental.
@@ -579,7 +579,8 @@ class TestT6HostBlockedViaOrchestratorButNotViaRegistry(unittest.TestCase):
         # Execution was refused by INTERNAL gate (CONTROL_PLANE_BLOCKED),
         # not by governance. Different reason, same surface outcome.
         self.assertFalse(result.ok)
-        self.assertEqual(result.error_code, HostErrorCode.CONTROL_PLANE_BLOCKED)
+        self.assertIsNone(result.error_code)  # Police Gate rejection, not domain-level
+        self.assertIn("Police Gate rejected execution", result.error)  # FASE 3: direct-call blocked
 
     @patch("assistant_os.core.orchestrator._evaluate_mso_governance")
     def test_host_registry_path_with_active_agent_bypasses_governance(
@@ -617,7 +618,8 @@ class TestT6HostBlockedViaOrchestratorButNotViaRegistry(unittest.TestCase):
 
         # Stopped by Gate 1, not governance
         self.assertFalse(result.ok)
-        self.assertEqual(result.error_code, HostErrorCode.CONFIRMED_REQUIRED)
+        self.assertIsNone(result.error_code)  # Police Gate rejection, not domain-level
+        self.assertIn("Police Gate rejected execution", result.error)  # FASE 3: direct-call blocked by Police Gate
 
 
 if __name__ == "__main__":
