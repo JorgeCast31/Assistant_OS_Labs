@@ -3,6 +3,8 @@
 import { useUIStore } from '@/stores/ui-store'
 import { useSystemPolling } from '@/hooks/use-system-polling'
 import { ExecutionNotOpenPanel } from './ExecutionNotOpenPanel'
+import { ConfirmFlowQueuePanel } from './ConfirmFlowQueuePanel'
+import { OutcomeStatusPanel } from './OutcomeStatusPanel'
 import type { SystemEvent } from '@/lib/types'
 
 function fmtTimestamp(iso: string | null): string {
@@ -198,6 +200,18 @@ export function SovereignStatusView() {
               <ChainRow label="CODE/docs Pilot" status="Next" tone="warn" />
               <ChainRow label="HOST/MACHINE_OPERATOR" status="Guarded" tone="muted" />
               <ChainRow label="OpenClaw" status="Disabled" tone="muted" />
+            </div>
+          </section>
+        )}
+
+        {!isInitializing && (
+          <section>
+            <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
+              Runtime Truth Panels
+            </p>
+            <div className="grid gap-4 lg:grid-cols-2">
+              <OutcomeStatusPanel />
+              <ConfirmFlowQueuePanel />
             </div>
           </section>
         )}
