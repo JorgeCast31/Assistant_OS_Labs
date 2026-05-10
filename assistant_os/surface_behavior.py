@@ -578,6 +578,63 @@ def _build_surface_response(
     }
 
 
+def _build_plan_request_provider_context() -> dict:
+    """
+    Return cognitive-only provider metadata for plan_request responses.
+
+    Never makes network calls. Never returns execution authority.
+    Fail-closed: if provider lookup raises, returns a safe unavailable context.
+    """
+    try:
+        from .mso.seat_model_provider_registry import get_seated_provider, describe_seated_provider
+        provider = get_seated_provider()
+        if provider is not None:
+            seated_dict = provider.to_dict()
+        else:
+            seated_dict = None
+        return {
+            "seated_provider": seated_dict,
+            "provider_description": describe_seated_provider(),
+            "cognitive_only": True,
+            "used_execution": False,
+            "non_executing": True,
+        }
+    except Exception:
+        return {
+            "seated_provider": None,
+            "provider_description": "No cognitive provider is currently seated/configured.",
+            "cognitive_only": True,
+            "used_execution": False,
+            "non_executing": True,
+        }
+
+
+def _plan_request_message(provider_context: dict) -> str:
+    """Build the plan_request message including seated provider info."""
+    description = provider_context.get("provider_description") or ""
+    seated = provider_context.get("seated_provider")
+
+    if seated and seated.get("is_available"):
+        provider_note = (
+            f"Proveedor cognitivo en el seat: {seated['provider_name']} "
+            f"({seated['model_name']}) — modo plan-only, sin ejecucion."
+        )
+    elif description:
+        provider_note = description
+    else:
+        provider_note = "No hay proveedor cognitivo configurado en el seat."
+
+    return (
+        f"{provider_note} "
+        "Solicitud de plan recibida. El sistema puede describir los pasos "
+        "de un plan para esta operacion, pero no ejecutara ninguna accion. "
+        "Para ejecutar una operacion real se requiere: PolicyDecision aprobada, "
+        "CapabilityToken emitido, OperationBinding firmado, "
+        "AuthorizedPlan registrado y Police Gate habilitado. "
+        "Describe la operacion que deseas planificar."
+    )
+
+
 def _assistant_chat_router_response(
     *,
     router_result: RouterResult,
@@ -629,15 +686,9 @@ def _assistant_chat_router_response(
         )
 
     if intent_type == "plan_request":
-        return _build_surface_response(
-            message=(
-                "Solicitud de plan recibida. El sistema puede describir los pasos "
-                "de un plan para esta operacion, pero no ejecutara ninguna accion. "
-                "Para ejecutar una operacion real se requiere: PolicyDecision aprobada, "
-                "CapabilityToken emitido, OperationBinding firmado, "
-                "AuthorizedPlan registrado y Police Gate habilitado. "
-                "Describe la operacion que deseas planificar."
-            ),
+        provider_context = _build_plan_request_provider_context()
+        response = _build_surface_response(
+            message=_plan_request_message(provider_context),
             domain="ASSISTANT",
             surface=surface,
             context_id=context_id,
@@ -646,6 +697,8 @@ def _assistant_chat_router_response(
             result_type="surface_response",
             intent="plan_request",
         )
+        response["provider_context"] = provider_context
+        return response
 
     if intent_type == "needs_context":
         return _build_surface_response(
