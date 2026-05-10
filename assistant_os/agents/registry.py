@@ -50,8 +50,13 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List
 from uuid import uuid4
 
+from ..mso.police_delegated_seat_validator import (
+    install_mso_delegated_seat_validator,
+)
 from ..police.enforcement import check
 from ..police.gate_models import PoliceGateRequest, PoliceOutcome
+
+install_mso_delegated_seat_validator()
 
 
 # ---------------------------------------------------------------------------
