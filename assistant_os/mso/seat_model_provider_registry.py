@@ -251,6 +251,113 @@ def describe_seated_provider() -> str:
     return f"Seated provider: {name} / {model} [{status}]"
 
 
+def make_orchestration_proposal(
+    *,
+    user_intent: str,
+    domain: str = "UNKNOWN",
+    requested_action: str = "",
+    capability_name: str = "",
+    capability_scope: tuple[str, ...] = (),
+    risk_level: str = "unknown",
+    delegated_seat_ref: Optional[str] = None,
+) -> "MSOExecutionProposal":
+    """
+    Produce a structured non-executing orchestration proposal from the seated provider.
+
+    If the provider is available, its description is included as a plan step.
+    If the provider is unavailable, a safe deterministic fallback is returned.
+
+    This function NEVER:
+    - calls a runner or pipeline
+    - executes commands
+    - mutates files
+    - sets execution_allowed=True
+
+    The returned proposal is always:
+    - cognitive_only: True
+    - used_execution: False
+    - execution_allowed: False
+    - next_required_authority: (PolicyDecision, CapabilityToken, OperationBinding,
+                                AuthorizedPlan, PoliceGate)
+
+    Parameters
+    ----------
+    user_intent : str
+        The original user request or intent.
+    domain : str
+        Classified domain (e.g., "CODE", "FIN", "WORK", "ASSISTANT", "UNKNOWN").
+    requested_action : str
+        Specific action within domain. Empty if unknown.
+    capability_name : str
+        Required capability name for execution. Empty if not applicable.
+    capability_scope : tuple[str, ...]
+        Capability scope values required for execution.
+    risk_level : str
+        "low" | "medium" | "high" | "unknown"
+    delegated_seat_ref : Optional[str]
+        The seat reference associated with this proposal, for traceability.
+
+    Returns
+    -------
+    MSOExecutionProposal
+        Immutable cognitive-only proposal. Never an execution result.
+    """
+    from .execution_proposal import (
+        MSOExecutionProposal,
+        build_execution_proposal,
+        build_safe_fallback_proposal,
+    )
+
+    provider = get_seated_provider()
+
+    if provider is None:
+        return build_safe_fallback_proposal(
+            user_intent=user_intent,
+            reason="No cognitive provider is currently seated/configured.",
+            delegated_seat_ref=delegated_seat_ref,
+        )
+
+    if not provider.is_available:
+        return build_safe_fallback_proposal(
+            user_intent=user_intent,
+            reason=f"Provider {provider.provider_name.value!r} is {provider.availability}.",
+            delegated_seat_ref=delegated_seat_ref,
+        )
+
+    # Provider is available: build a structured proposal with provider metadata.
+    provider_description = describe_seated_provider()
+    plan_steps: tuple[str, ...] = (
+        f"Cognitive provider: {provider_description}",
+        f"Domain classified as: {domain}",
+        f"Requested action: {requested_action or '(not resolved)'}",
+        f"Required capability: {capability_name or '(not declared)'}",
+        "Execution requires: PolicyDecision → CapabilityToken → OperationBinding "
+        "→ AuthorizedPlan → PoliceGate.",
+        "This proposal is cognitive-only. No execution has occurred.",
+    )
+
+    notes = (
+        f"Proposal produced by seated provider: {provider.provider_name.value} "
+        f"/ {provider.model_name or '(model unknown)'}. "
+        "Human confirmation is required before any execution can proceed."
+    )
+
+    return build_execution_proposal(
+        user_intent=user_intent,
+        domain=domain,
+        requested_action=requested_action,
+        capability_name=capability_name,
+        capability_scope=capability_scope,
+        risk_level=risk_level,
+        requires_human_confirmation=True,
+        delegated_seat_ref=delegated_seat_ref,
+        provider_name=provider.provider_name.value,
+        model_name=provider.model_name or None,
+        plan_steps=plan_steps,
+        notes=notes,
+    )
+
+
 def make_plan_response(*, delegated_seat_ref: Optional[str] = None) -> ModelProviderResponse:
     """
     Return a cognitive-only plan response from the seated provider.
