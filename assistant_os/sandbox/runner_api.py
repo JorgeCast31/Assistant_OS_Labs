@@ -210,6 +210,10 @@ class RunnerAPI:
                 runtime_profile=(
                     authorized_plan.runtime_profile if authorized_plan else runtime
                 ),
+                delegated_seat_ref=(
+                    authorized_plan.delegated_seat_ref
+                    if authorized_plan else ""
+                ),
                 container_id=container_name,
             )
             if registry is not None:
@@ -466,6 +470,7 @@ def _emit_execution_event(
             container_id=container_name,
             authorized_plan_hash=run.authorized_plan_hash if run else "",
             policy_id=run.policy_id if run else "",
+            delegated_seat_ref=run.delegated_seat_ref if run else "",
         ))
     except Exception:
         pass
@@ -752,6 +757,9 @@ def _build_execution_metadata(
     authorized_plan_hash = (
         authorized_plan.authorized_plan_hash if authorized_plan else ""
     )
+    delegated_seat_ref = (
+        authorized_plan.delegated_seat_ref if authorized_plan else ""
+    )
 
     # Stream sizes: prefer governed values from output_record (post-policy).
     if result.output_record is not None:
@@ -768,6 +776,7 @@ def _build_execution_metadata(
         plan_id=plan_id,
         policy_id=policy_id,
         authorized_plan_hash=authorized_plan_hash,
+        delegated_seat_ref=delegated_seat_ref,
         runtime_profile=runtime_profile,
         duration_ms=result.duration_ms,
         exit_code=result.exit_code,

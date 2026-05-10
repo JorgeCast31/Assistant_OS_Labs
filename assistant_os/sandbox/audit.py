@@ -87,6 +87,7 @@ class ExecutionEvent:
     termination_reason : why execution ended (for completed/failed/aborted)
     runtime_profile    : e.g. "python3.11"
     container_id       : Docker container name if known, else empty string
+    delegated_seat_ref : Delegated MSO seat ref associated with the plan, if any.
     """
 
     event_type: str
@@ -99,6 +100,7 @@ class ExecutionEvent:
     container_id: str = ""
     authorized_plan_hash: str = ""
     policy_id: str = ""
+    delegated_seat_ref: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -112,6 +114,7 @@ class ExecutionEvent:
             "container_id": self.container_id,
             "authorized_plan_hash": self.authorized_plan_hash,
             "policy_id": self.policy_id,
+            "delegated_seat_ref": self.delegated_seat_ref,
         }
 
 

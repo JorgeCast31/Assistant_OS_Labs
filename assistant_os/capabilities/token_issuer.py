@@ -88,6 +88,7 @@ def issue_token(
         issued_at=now,
         expires_at=now + ttl_seconds,
         status=TokenStatus.ACTIVE,
+        delegated_seat_ref=binding.delegated_seat_ref,
     )
     _token_registry[token.token_id] = TokenStatus.ACTIVE.value
     return token

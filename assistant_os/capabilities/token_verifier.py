@@ -24,6 +24,7 @@ Verification steps (in order)
   3. Binding match:
        All five binding fields must match exactly:
          principal_id, subject_state, action_type, capability, operation_key.
+       delegated_seat_ref must also match when present.
        Any mismatch → denied.
 
 consume_token
@@ -94,6 +95,7 @@ def verify_token(token: CapabilityToken, binding: OperationBinding) -> bool:
         or token.action_type   != binding.action_type
         or token.capability    != binding.capability
         or token.operation_key != binding.operation_key
+        or token.delegated_seat_ref != binding.delegated_seat_ref
     ):
         return False
 
