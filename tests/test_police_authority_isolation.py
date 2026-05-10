@@ -16,6 +16,7 @@ POLICE_GATE_FILES = [
     POLICE_DIR / "gate_models.py",
     POLICE_DIR / "enforcement.py",
     POLICE_DIR / "harness.py",
+    POLICE_DIR / "authorized_plan_registry.py",
 ]
 POLICE_PRODUCTION_FILES = [POLICE_INIT_FILE] + POLICE_V0_FILES + POLICE_GATE_FILES
 

@@ -181,11 +181,9 @@ class TestPoliceGateFailsClosedOnAmbiguity(unittest.TestCase):
         decision = check(request)
 
         self.assertIsInstance(decision, PoliceDecision)
-        self.assertIn(decision.outcome, [
-            PoliceOutcome.PERMITTED,
-            PoliceOutcome.DENIED,
-            PoliceOutcome.DEFERRED,
-        ])
+        self.assertEqual(decision.outcome, PoliceOutcome.DENIED)
+        self.assertEqual(decision.reason, PoliceReason.PLAN_BINDING_FAILURE)
+        self.assertFalse(decision.permitted)
 
 
 class TestPoliceGateIntegrationWithMSOGovernance(unittest.TestCase):
@@ -200,13 +198,21 @@ class TestPoliceGateIntegrationWithMSOGovernance(unittest.TestCase):
         for TOKEN_ALREADY_CONSUMED rather than GOVERNANCE_REF_MISSING.
         """
         from assistant_os.police.token_registry import register_token
+        from assistant_os.police.authorized_plan_registry import register_authorized_plan_ref
 
         register_token("gov-test-token-with", binding_ref="binding-valid-001")
         register_token("gov-test-token-without", binding_ref="binding-valid-001")
+        register_authorized_plan_ref(
+            "gov-test-plan-with",
+            execution_id="exec-test-001",
+            token_ref="gov-test-token-with",
+            binding_ref="binding-valid-001",
+        )
 
         request_with_gov = _request(
             governance_ref="gov-001",
             token_ref="gov-test-token-with",
+            authorized_plan_ref="gov-test-plan-with",
         )
         decision_with_gov = check(request_with_gov)
 
