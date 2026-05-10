@@ -628,6 +628,25 @@ def _assistant_chat_router_response(
             intent="status_response",
         )
 
+    if intent_type == "plan_request":
+        return _build_surface_response(
+            message=(
+                "Solicitud de plan recibida. El sistema puede describir los pasos "
+                "de un plan para esta operacion, pero no ejecutara ninguna accion. "
+                "Para ejecutar una operacion real se requiere: PolicyDecision aprobada, "
+                "CapabilityToken emitido, OperationBinding firmado, "
+                "AuthorizedPlan registrado y Police Gate habilitado. "
+                "Describe la operacion que deseas planificar."
+            ),
+            domain="ASSISTANT",
+            surface=surface,
+            context_id=context_id,
+            identity=identity,
+            guard_result=guard_result,
+            result_type="surface_response",
+            intent="plan_request",
+        )
+
     if intent_type == "needs_context":
         return _build_surface_response(
             message=_assistant_chat_needs_context_message(router_result),
@@ -693,8 +712,18 @@ def _assistant_chat_unknown_message(router_result: RouterResult) -> str:
     return "Necesito un poco mas de contexto para encaminar eso correctamente."
 
 
+# RC-2: English status phrases canonicalized to the Spanish form the router recognizes
+_EN_STATUS_RE = re.compile(
+    r"(?:report|what\s+is|current|sovereign|runtime)\b.{0,50}\bstatus\b"
+    r"|\bsystem\s+status\b"
+    r"|\bruntime\s+status\b"
+)
+
+
 def _assistant_chat_router_text(text: str, normalized: str) -> str:
     if re.search(r"\b(?:como esta|estado|salud)\b.*\bsistema\b", normalized):
+        return "como esta el sistema"
+    if _EN_STATUS_RE.search(normalized):
         return "como esta el sistema"
     return text
 
