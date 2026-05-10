@@ -16,6 +16,17 @@ def _plan_binding_denied(request: PoliceGateRequest, detail: str) -> PoliceDecis
     )
 
 
+def _capability_denied(request: PoliceGateRequest, detail: str) -> PoliceDecision:
+    return PoliceDecision(
+        execution_id=request.execution_id,
+        trace_id=request.trace_id,
+        outcome=PoliceOutcome.DENIED,
+        reason=PoliceReason.CAPABILITY_OUT_OF_SCOPE,
+        detail=detail,
+        permitted=False,
+    )
+
+
 def check(request: PoliceGateRequest) -> PoliceDecision:
     """Police Gate: validate token and authorization context before authorization."""
 
@@ -151,15 +162,22 @@ def check(request: PoliceGateRequest) -> PoliceDecision:
             "Authorized plan binding_ref does not match this request.",
         )
 
-    # V5: Capability name must be present
-    if not request.capability_name:
-        return PoliceDecision(
-            execution_id=request.execution_id,
-            trace_id=request.trace_id,
-            outcome=PoliceOutcome.DENIED,
-            reason=PoliceReason.CAPABILITY_OUT_OF_SCOPE,
-            detail="Capability name missing.",
-            permitted=False,
+    # V5: Capability name must be present and included in the bound scope.
+    capability_name = request.capability_name.strip() if isinstance(request.capability_name, str) else ""
+    if not capability_name:
+        return _capability_denied(request, "Capability name missing.")
+
+    capability_scope = _plan_entry.get("capability_scope")
+    if not isinstance(capability_scope, tuple) or not capability_scope:
+        return _capability_denied(
+            request,
+            "Authorized plan has no Police-visible capability scope.",
+        )
+
+    if capability_name not in capability_scope:
+        return _capability_denied(
+            request,
+            "Capability is outside the authorized plan scope.",
         )
 
     # All validations passed — mark token as spent (single-use enforcement)

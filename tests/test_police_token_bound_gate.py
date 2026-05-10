@@ -207,6 +207,7 @@ class TestPoliceGateIntegrationWithMSOGovernance(unittest.TestCase):
             execution_id="exec-test-001",
             token_ref="gov-test-token-with",
             binding_ref="binding-valid-001",
+            capability_scope=("code.execute",),
         )
 
         request_with_gov = _request(

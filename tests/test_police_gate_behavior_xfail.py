@@ -12,7 +12,6 @@ against the police-internal token registry.  The following tests are promoted:
   - test_token_consumed_exactly_once
 
 Remaining xfails require infrastructure not yet built:
-  - CAPABILITY_OUT_OF_SCOPE: no formal schema for capability_name values
   - TEMPORAL_RESTRICTION: no temporal restriction infrastructure
 """
 import pytest
@@ -24,6 +23,7 @@ from assistant_os.police.gate_models import (
     PoliceReason,
 )
 from assistant_os.police.token_registry import (
+    _lookup as _lookup_token,
     _reset_for_testing,
     _STATUS_EXPIRED,
     _STATUS_SPENT,
@@ -151,12 +151,73 @@ def test_authorized_plan_ref_token_mismatch_denies():
     assert decision.reason is PoliceReason.PLAN_BINDING_FAILURE
 
 
-@_XFAIL_PENDING
 def test_capability_out_of_scope_denies():
     decision = check(_request(capability_name="admin.write"))
 
     assert decision.outcome is PoliceOutcome.DENIED
     assert decision.reason is PoliceReason.CAPABILITY_OUT_OF_SCOPE
+
+
+def test_capability_in_scope_allows():
+    decision = check(_request(capability_name="write"))
+
+    assert decision.outcome is PoliceOutcome.PERMITTED
+    assert decision.reason is PoliceReason.ALLOWED
+    assert decision.permitted is True
+    assert _lookup_token("token-ref-1")["status"] == _STATUS_SPENT
+
+
+def test_capability_scope_checked_after_plan_binding_before_token_spend():
+    register_token("scope-retry-token", binding_ref="scope-retry-binding")
+    register_authorized_plan_ref(
+        "scope-retry-plan",
+        execution_id="scope-retry-exec",
+        token_ref="scope-retry-token",
+        binding_ref="scope-retry-binding",
+        capability_scope=("write",),
+    )
+
+    first_decision = check(_request(
+        execution_id="scope-retry-exec",
+        token_ref="scope-retry-token",
+        binding_ref="scope-retry-binding",
+        authorized_plan_ref="scope-retry-plan",
+        capability_name="admin.write",
+    ))
+    second_decision = check(_request(
+        execution_id="scope-retry-exec",
+        token_ref="scope-retry-token",
+        binding_ref="scope-retry-binding",
+        authorized_plan_ref="scope-retry-plan",
+        capability_name="write",
+    ))
+
+    assert first_decision.outcome is PoliceOutcome.DENIED
+    assert first_decision.reason is PoliceReason.CAPABILITY_OUT_OF_SCOPE
+    assert second_decision.outcome is PoliceOutcome.PERMITTED
+    assert second_decision.reason is PoliceReason.ALLOWED
+
+
+def test_multiple_allowed_capabilities():
+    register_token("multi-scope-token", binding_ref="multi-scope-binding")
+    register_authorized_plan_ref(
+        "multi-scope-plan",
+        execution_id="multi-scope-exec",
+        token_ref="multi-scope-token",
+        binding_ref="multi-scope-binding",
+        capability_scope=("read", "write"),
+    )
+
+    decision = check(_request(
+        execution_id="multi-scope-exec",
+        token_ref="multi-scope-token",
+        binding_ref="multi-scope-binding",
+        authorized_plan_ref="multi-scope-plan",
+        capability_name="read",
+    ))
+
+    assert decision.outcome is PoliceOutcome.PERMITTED
+    assert decision.reason is PoliceReason.ALLOWED
 
 
 @_XFAIL_PENDING
@@ -185,6 +246,7 @@ def test_registered_authorized_plan_ref_allows_when_context_is_valid():
         execution_id="exec-plan-valid",
         token_ref="plan-valid-token",
         binding_ref="plan-valid-binding",
+        capability_scope=("write",),
     )
 
     decision = check(_request(
@@ -214,6 +276,7 @@ def test_plan_binding_failure_does_not_consume_token():
         execution_id="exec-plan-retry",
         token_ref="plan-retry-token",
         binding_ref="plan-retry-binding",
+        capability_scope=("write",),
     )
     second_decision = check(_request(
         execution_id="exec-plan-retry",
@@ -237,6 +300,7 @@ def test_token_consumed_exactly_once():
         execution_id="exec-1",
         token_ref="single-use-token-ref",
         binding_ref="binding-ref-1",
+        capability_scope=("write",),
     )
 
     first_decision = check(_request(
