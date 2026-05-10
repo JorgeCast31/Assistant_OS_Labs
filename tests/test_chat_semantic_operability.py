@@ -439,3 +439,174 @@ def test_plan_request_spanish_phrases_also_have_provider_context() -> None:
     assert result is not None
     assert "provider_context" in result
     assert result["provider_context"]["cognitive_only"] is True
+
+
+# ---------------------------------------------------------------------------
+# plan_request — proposal + authority preparation surface (Sprint: Proposal Surface UX)
+# ---------------------------------------------------------------------------
+
+
+def test_plan_request_includes_proposal_summary() -> None:
+    """plan_request response includes proposal_summary key."""
+    result = _route_assistant_chat_surface("Prepare a plan for the migration. Do not execute.")
+    assert result is not None
+    assert "proposal_summary" in result
+
+
+def test_plan_request_includes_authority_preparation() -> None:
+    """plan_request response includes authority_preparation key."""
+    result = _route_assistant_chat_surface("plan only: deploy the backend")
+    assert result is not None
+    assert "authority_preparation" in result
+
+
+def test_plan_request_proposal_summary_has_proposal_id() -> None:
+    """plan_request proposal_summary includes a non-empty proposal_id."""
+    result = _route_assistant_chat_surface("Prepare a plan. Do not execute.")
+    assert result is not None
+    proposal = result.get("proposal_summary")
+    assert proposal is not None
+    assert "proposal_id" in proposal
+    assert proposal["proposal_id"]
+
+
+def test_plan_request_authority_preparation_has_preparation_id() -> None:
+    """plan_request authority_preparation includes a non-empty preparation_id."""
+    result = _route_assistant_chat_surface("dry-run the deployment pipeline")
+    assert result is not None
+    prep = result.get("authority_preparation")
+    assert prep is not None
+    assert "preparation_id" in prep
+    assert prep["preparation_id"]
+
+
+def test_plan_request_authority_preparation_execution_allowed_false() -> None:
+    """plan_request authority_preparation.execution_allowed is always False."""
+    result = _route_assistant_chat_surface("plan only: run integration tests")
+    assert result is not None
+    prep = result.get("authority_preparation")
+    assert prep is not None
+    assert prep["execution_allowed"] is False
+
+
+def test_plan_request_authority_preparation_cognitive_only_true() -> None:
+    """plan_request authority_preparation.cognitive_only is always True."""
+    result = _route_assistant_chat_surface("Prepare a plan. Do not execute.")
+    assert result is not None
+    prep = result.get("authority_preparation")
+    assert prep is not None
+    assert prep["cognitive_only"] is True
+
+
+def test_plan_request_proposal_summary_execution_allowed_false() -> None:
+    """plan_request proposal_summary.execution_allowed is always False."""
+    result = _route_assistant_chat_surface("plan only: migrate the database")
+    assert result is not None
+    proposal = result.get("proposal_summary")
+    assert proposal is not None
+    assert proposal["execution_allowed"] is False
+
+
+def test_plan_request_proposal_summary_cognitive_only_true() -> None:
+    """plan_request proposal_summary.cognitive_only is always True."""
+    result = _route_assistant_chat_surface("dry-run the deployment")
+    assert result is not None
+    proposal = result.get("proposal_summary")
+    assert proposal is not None
+    assert proposal["cognitive_only"] is True
+
+
+def test_plan_request_authority_preparation_has_all_pending_steps() -> None:
+    """plan_request authority_preparation.pending_authority_steps lists all 5 steps."""
+    result = _route_assistant_chat_surface("plan only: deploy backend")
+    assert result is not None
+    prep = result.get("authority_preparation")
+    assert prep is not None
+    steps = prep.get("pending_authority_steps") or []
+    assert "PolicyDecision" in steps
+    assert "CapabilityToken" in steps
+    assert "OperationBinding" in steps
+    assert "AuthorizedPlan" in steps
+    assert "PoliceGate" in steps
+
+
+def test_plan_request_authority_preparation_all_authority_pending() -> None:
+    """plan_request authority_preparation reports all authority steps as pending."""
+    result = _route_assistant_chat_surface("Prepare a plan for the migration. Do not execute.")
+    assert result is not None
+    prep = result.get("authority_preparation")
+    assert prep is not None
+    assert prep.get("all_authority_pending") is True
+
+
+def test_plan_request_proposal_summary_has_required_authority_chain() -> None:
+    """plan_request proposal_summary.next_required_authority includes all 5 steps."""
+    result = _route_assistant_chat_surface("Prepare a plan. Do not execute.")
+    assert result is not None
+    proposal = result.get("proposal_summary")
+    assert proposal is not None
+    chain = proposal.get("next_required_authority") or []
+    for step in ("PolicyDecision", "CapabilityToken", "OperationBinding",
+                 "AuthorizedPlan", "PoliceGate"):
+        assert step in chain, f"Missing authority chain step: {step!r}"
+
+
+def test_plan_request_authority_preparation_requires_human_confirmation() -> None:
+    """plan_request authority_preparation.requires_human_confirmation is True."""
+    result = _route_assistant_chat_surface("plan only: run the pipeline")
+    assert result is not None
+    prep = result.get("authority_preparation")
+    assert prep is not None
+    assert prep["requires_human_confirmation"] is True
+
+
+def test_plan_request_message_states_not_execution() -> None:
+    """plan_request message explicitly states this is not execution."""
+    result = _route_assistant_chat_surface("plan only: deploy the backend")
+    assert result is not None
+    msg = result["message"]
+    assert "NO ES EJECUCION" in msg or "no ejecutara" in msg.lower()
+
+
+def test_plan_request_message_lists_pending_authority() -> None:
+    """plan_request message mentions at least one pending authority step."""
+    result = _route_assistant_chat_surface("Prepare a plan. Do not execute.")
+    assert result is not None
+    msg = result["message"]
+    assert "PolicyDecision" in msg or "Autoridad pendiente" in msg
+
+
+def test_plan_request_provider_unavailable_still_returns_safe_proposal() -> None:
+    """plan_request with no provider still returns a valid proposal_summary (safe fallback)."""
+    result = _route_assistant_chat_surface("Prepare a plan for the migration. Do not execute.")
+    assert result is not None
+    assert result["result_type"] == "surface_response"
+    assert result["intent"] == "plan_request"
+    assert "proposal_summary" in result
+    assert "authority_preparation" in result
+
+
+def test_plan_request_does_not_call_runner_or_pipeline() -> None:
+    """plan_request surface response does not produce execution artifacts or tasks."""
+    result = _route_assistant_chat_surface("plan only: run integration tests")
+    assert result is not None
+    _assert_no_execution_artifacts(result)
+    assert list_tasks() == []
+
+
+def test_plan_request_authority_preparation_artifact_type() -> None:
+    """plan_request authority_preparation has correct artifact_type."""
+    result = _route_assistant_chat_surface("Prepare a plan. Do not execute.")
+    assert result is not None
+    prep = result.get("authority_preparation")
+    assert prep is not None
+    assert prep.get("artifact_type") == "authority_preparation_request"
+
+
+def test_plan_request_proposal_summary_artifact_type() -> None:
+    """plan_request proposal_summary has correct artifact_type."""
+    result = _route_assistant_chat_surface("plan only: deploy the backend")
+    assert result is not None
+    proposal = result.get("proposal_summary")
+    assert proposal is not None
+    assert proposal.get("artifact_type") == "mso_execution_proposal"
