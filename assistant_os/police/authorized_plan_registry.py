@@ -41,6 +41,7 @@ def register_authorized_plan_ref(
     binding_ref: str,
     status: str = _STATUS_ACTIVE,
     capability_scope: Iterable[str] | None = None,
+    delegated_seat_ref: str | None = None,
 ) -> None:
     """Register a Police-visible authorized plan reference."""
     _registry[authorized_plan_ref] = {
@@ -49,6 +50,7 @@ def register_authorized_plan_ref(
         "binding_ref": binding_ref,
         "status": status,
         "capability_scope": _normalize_capability_scope(capability_scope),
+        "delegated_seat_ref": delegated_seat_ref,
     }
 
 

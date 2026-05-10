@@ -1,8 +1,26 @@
 """Police Token-Bound Gate Implementation — S-POLICE-CORE-04"""
 
+from collections.abc import Callable
+
 from .authorized_plan_registry import _lookup as _lookup_authorized_plan
 from .gate_models import PoliceDecision, PoliceGateRequest, PoliceOutcome, PoliceReason
 from .token_registry import _lookup, _mark_spent, _STATUS_EXPIRED, _STATUS_SPENT
+
+_DelegatedSeatValidator = Callable[[str, str | None], tuple[bool, str]]
+_delegated_seat_validator: _DelegatedSeatValidator | None = None
+
+
+def configure_delegated_seat_validator(
+    validator: _DelegatedSeatValidator | None,
+) -> None:
+    """Install the process-local delegated-seat validator used by the gate."""
+    global _delegated_seat_validator
+    _delegated_seat_validator = validator
+
+
+def _reset_delegated_seat_validator_for_testing() -> None:
+    """Clear the delegated-seat validator between tests."""
+    configure_delegated_seat_validator(None)
 
 
 def _plan_binding_denied(request: PoliceGateRequest, detail: str) -> PoliceDecision:
@@ -11,6 +29,17 @@ def _plan_binding_denied(request: PoliceGateRequest, detail: str) -> PoliceDecis
         trace_id=request.trace_id,
         outcome=PoliceOutcome.DENIED,
         reason=PoliceReason.PLAN_BINDING_FAILURE,
+        detail=detail,
+        permitted=False,
+    )
+
+
+def _delegated_seat_denied(request: PoliceGateRequest, detail: str) -> PoliceDecision:
+    return PoliceDecision(
+        execution_id=request.execution_id,
+        trace_id=request.trace_id,
+        outcome=PoliceOutcome.DENIED,
+        reason=PoliceReason.DELEGATED_SEAT_INVALID,
         detail=detail,
         permitted=False,
     )
@@ -25,6 +54,32 @@ def _capability_denied(request: PoliceGateRequest, detail: str) -> PoliceDecisio
         detail=detail,
         permitted=False,
     )
+
+
+def _validate_delegated_seat(request: PoliceGateRequest) -> PoliceDecision | None:
+    seat_ref = request.delegated_seat_ref
+    if not seat_ref:
+        if request.delegated_seat_required:
+            return _delegated_seat_denied(
+                request,
+                "Delegated seat reference missing. This request requires seat context.",
+            )
+        return None
+
+    if _delegated_seat_validator is None:
+        return _delegated_seat_denied(
+            request,
+            "Delegated seat reference cannot be validated by this process.",
+        )
+
+    is_valid, detail = _delegated_seat_validator(
+        seat_ref,
+        request.delegated_seat_action,
+    )
+    if not is_valid:
+        return _delegated_seat_denied(request, detail)
+
+    return None
 
 
 def check(request: PoliceGateRequest) -> PoliceDecision:
@@ -160,6 +215,17 @@ def check(request: PoliceGateRequest) -> PoliceDecision:
         return _plan_binding_denied(
             request,
             "Authorized plan binding_ref does not match this request.",
+        )
+
+    seat_decision = _validate_delegated_seat(request)
+    if seat_decision is not None:
+        return seat_decision
+
+    plan_seat_ref = _plan_entry.get("delegated_seat_ref")
+    if request.delegated_seat_ref and plan_seat_ref != request.delegated_seat_ref:
+        return _plan_binding_denied(
+            request,
+            "Authorized plan delegated_seat_ref does not match this request.",
         )
 
     # V5: Capability name must be present and included in the bound scope.
