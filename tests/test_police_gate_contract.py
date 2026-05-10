@@ -57,6 +57,7 @@ def test_police_reason_values_are_exact():
     assert PoliceReason.GOVERNANCE_REF_MISSING.value == "governance_ref_missing"
     assert PoliceReason.POLICY_DECISION_REF_MISSING.value == "policy_decision_ref_missing"
     assert PoliceReason.CAPABILITY_OUT_OF_SCOPE.value == "capability_out_of_scope"
+    assert PoliceReason.DELEGATED_SEAT_INVALID.value == "delegated_seat_invalid"
     assert PoliceReason.TEMPORAL_RESTRICTION.value == "temporal_restriction"
     assert PoliceReason.CONFIRMATION_REQUIRED.value == "confirmation_required"
     assert PoliceReason.GATE_NOT_IMPLEMENTED.value == "gate_not_implemented"

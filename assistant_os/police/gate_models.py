@@ -34,6 +34,7 @@ class PoliceReason(str, Enum):
     GOVERNANCE_REF_MISSING = "governance_ref_missing"
     POLICY_DECISION_REF_MISSING = "policy_decision_ref_missing"
     CAPABILITY_OUT_OF_SCOPE = "capability_out_of_scope"
+    DELEGATED_SEAT_INVALID = "delegated_seat_invalid"
     TEMPORAL_RESTRICTION = "temporal_restriction"
     CONFIRMATION_REQUIRED = "confirmation_required"
     GATE_NOT_IMPLEMENTED = "gate_not_implemented"
@@ -50,6 +51,9 @@ class PoliceGateRequest:
     governance_ref: str | None
     policy_decision_ref: str | None
     trace_id: str
+    delegated_seat_ref: str | None = None
+    delegated_seat_action: str | None = None
+    delegated_seat_required: bool = False
     active_restriction_refs: tuple[str, ...] = ()
     created_at: datetime = field(default_factory=_now)
 
