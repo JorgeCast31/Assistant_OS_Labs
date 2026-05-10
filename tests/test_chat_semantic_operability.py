@@ -364,3 +364,78 @@ def test_regression_capability_registry_still_blocks_command() -> None:
     assert capability.allowed is False
     assert capability.mode == "deny"
     assert "Generic command execution" in capability.deny_reason
+
+
+# ---------------------------------------------------------------------------
+# plan_request + MSO Seat provider context (Sprint: MSO Seat Provider Operability)
+# ---------------------------------------------------------------------------
+
+
+def test_plan_request_surface_returns_non_none() -> None:
+    """plan_request phrase returns a surface response, not None."""
+    result = _route_assistant_chat_surface("Prepare a plan for the migration. Do not execute.")
+    assert result is not None
+
+
+def test_plan_request_result_type_is_surface_response() -> None:
+    """plan_request result_type is surface_response."""
+    result = _route_assistant_chat_surface("plan only: deploy the backend")
+    assert result is not None
+    assert result["result_type"] == "surface_response"
+
+
+def test_plan_request_intent_is_plan_request() -> None:
+    """plan_request intent field is plan_request."""
+    result = _route_assistant_chat_surface("Prepare a plan. Do not execute.")
+    assert result is not None
+    assert result["intent"] == "plan_request"
+
+
+def test_plan_request_has_provider_context() -> None:
+    """plan_request response includes provider_context key."""
+    result = _route_assistant_chat_surface("dry-run the deployment pipeline")
+    assert result is not None
+    assert "provider_context" in result
+
+
+def test_plan_request_provider_context_cognitive_only() -> None:
+    """provider_context.cognitive_only is always True."""
+    result = _route_assistant_chat_surface("Prepare a plan for deployment. Do not execute.")
+    assert result is not None
+    assert result["provider_context"]["cognitive_only"] is True
+
+
+def test_plan_request_provider_context_used_execution_false() -> None:
+    """provider_context.used_execution is always False."""
+    result = _route_assistant_chat_surface("plan only: migrate the database")
+    assert result is not None
+    assert result["provider_context"]["used_execution"] is False
+
+
+def test_plan_request_provider_context_non_executing() -> None:
+    """provider_context.non_executing is True."""
+    result = _route_assistant_chat_surface("Prepare a plan. Do not execute.")
+    assert result is not None
+    assert result["provider_context"]["non_executing"] is True
+
+
+def test_plan_request_does_not_create_tasks() -> None:
+    """plan_request must not register any MSO tasks."""
+    result = _route_assistant_chat_surface("Prepare a plan for the migration. Do not execute.")
+    assert result is not None
+    assert list_tasks() == []
+
+
+def test_plan_request_no_execution_artifacts() -> None:
+    """plan_request has no execution artifacts in the response."""
+    result = _route_assistant_chat_surface("plan only: run integration tests")
+    assert result is not None
+    _assert_no_execution_artifacts(result)
+
+
+def test_plan_request_spanish_phrases_also_have_provider_context() -> None:
+    """Spanish plan_request phrases also get provider_context."""
+    result = _route_assistant_chat_surface("prepara un plan para el despliegue")
+    assert result is not None
+    assert "provider_context" in result
+    assert result["provider_context"]["cognitive_only"] is True

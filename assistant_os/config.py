@@ -134,6 +134,17 @@ ASSISTANT_UI_SHOW_COGNITION: bool = os.environ.get("ASSISTANT_UI_SHOW_COGNITION"
 COGNITION_DEFAULT_POLICY: str = os.environ.get("COGNITION_DEFAULT_POLICY", "auto").strip()
 
 # ---------------------------------------------------------------------------
+# MSO Seat Model Provider — cognitive-only, never execution authority
+# ---------------------------------------------------------------------------
+# Which cognitive model provider is currently seated in the Delegated MSO Seat.
+# Valid values: anthropic | openai | llama | gemma | "" (not configured)
+# This selects the cognitive engine only — NOT execution authority.
+MSO_SEAT_PROVIDER: str = os.environ.get("MSO_SEAT_PROVIDER", "").strip().lower()
+# Optional model name override for the seated provider.
+# If blank, each provider uses its own sensible default.
+MSO_SEAT_MODEL: str = os.environ.get("MSO_SEAT_MODEL", "").strip()
+
+# ---------------------------------------------------------------------------
 # Google Sheets Integration (FIN module)
 # ---------------------------------------------------------------------------
 # Service account credentials JSON file path (from .env)
