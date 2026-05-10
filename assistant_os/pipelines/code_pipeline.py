@@ -1040,12 +1040,35 @@ def _extract_authority_context(plan: dict) -> dict[str, str] | None:
     if not all((approval_id, policy_decision_ref, governance_ref, execution_mode)):
         return None
 
-    return {
+    extracted = {
         "approval_id": approval_id,
         "policy_decision_ref": policy_decision_ref,
         "governance_ref": governance_ref,
         "execution_mode": execution_mode,
     }
+
+    delegated_seat_ref = str(
+        authority_context.get(
+            "delegated_seat_ref",
+            policy_context.get("delegated_seat_ref", payload.get("delegated_seat_ref", "")),
+        )
+    ).strip()
+    if delegated_seat_ref:
+        extracted["delegated_seat_ref"] = delegated_seat_ref
+
+    delegated_seat_action = str(
+        authority_context.get(
+            "delegated_seat_action",
+            policy_context.get(
+                "delegated_seat_action",
+                payload.get("delegated_seat_action", ""),
+            ),
+        )
+    ).strip()
+    if delegated_seat_action:
+        extracted["delegated_seat_action"] = delegated_seat_action
+
+    return extracted
 
 
 def _build_authorized_plan_from_kernel(plan: dict) -> "AuthorizedPlan":

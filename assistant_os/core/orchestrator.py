@@ -266,12 +266,35 @@ def _attach_authority_context(
     if not governance_ref and governance_trace:
         governance_ref = str(governance_trace.get("governance_ref", "")).strip()
 
-    plan_for_exec["_authority_context"] = {
+    authority_context = {
         "approval_id": approval_id,
         "policy_decision_ref": policy_decision_ref,
         "governance_ref": governance_ref,
         "execution_mode": str(policy_execution_mode).strip(),
     }
+
+    delegated_seat_ref = str(
+        policy_context.get(
+            "delegated_seat_ref",
+            payload.get("delegated_seat_ref", metadata.get("delegated_seat_ref", "")),
+        )
+    ).strip()
+    if delegated_seat_ref:
+        authority_context["delegated_seat_ref"] = delegated_seat_ref
+
+    delegated_seat_action = str(
+        policy_context.get(
+            "delegated_seat_action",
+            payload.get(
+                "delegated_seat_action",
+                metadata.get("delegated_seat_action", ""),
+            ),
+        )
+    ).strip()
+    if delegated_seat_action:
+        authority_context["delegated_seat_action"] = delegated_seat_action
+
+    plan_for_exec["_authority_context"] = authority_context
     return plan_for_exec
 
 
