@@ -17,6 +17,7 @@ RouterIntentType = Literal[
     "read_only_status",
     "needs_context",
     "executable_intent",
+    "plan_request",
     "unknown_ambiguous",
 ]
 
@@ -44,6 +45,7 @@ ALLOWED_INTENT_TYPES: frozenset[str] = frozenset(
         "read_only_status",
         "needs_context",
         "executable_intent",
+        "plan_request",
         "unknown_ambiguous",
     }
 )
@@ -61,6 +63,38 @@ SAFETY_FLAG_VOCABULARY: frozenset[str] = frozenset(
 _GITHUB_URL_RE = re.compile(r"https?://github\.com/[^/\s]+/[^/\s]+", re.IGNORECASE)
 _PATH_RE = re.compile(r"(?<!\w)(?:\.\/|\.\.\/|[a-z]:[\\/]|/)[^\s]+", re.IGNORECASE)
 _AMOUNT_RE = re.compile(r"\b\d+(?:[.,]\d+)?\b")
+
+# RC-1: capability_summary — Spanish + English paraphrases (full-string match)
+_CAPABILITY_RE = re.compile(
+    r"^(?:"
+    r"que puedes hacer(?: tu)?"
+    r"|dime(?:\s+lo)?\s+que\s+puedes\s+hacer"
+    r"|dime\s+tus\s+capacidades"
+    r"|cuales\s+son\s+tus\s+capacidades"
+    r"|que\s+capacidades\s+(?:tienes|hay)"
+    r"|capacidades?"
+    r"|what\s+can\s+you\s+do"
+    r"|what\s+are\s+your\s+capabilities"
+    r"|capabilit(?:y|ies)"
+    r")$"
+)
+
+# RC-3: plan_request — plan-only / dry-run phrases (substring match)
+_PLAN_REQUEST_RE = re.compile(
+    r"(?:"
+    r"\bprepare a plan\b"
+    r"|\bplan only\b"
+    r"|\bdry[ -]run\b"
+    r"|\bdo not execute\b"
+    r"|\bplan for\b"
+    r"|\bprepara un plan\b"
+    r"|\bplanifica\b"
+    r"|\bsin ejecutar\b"
+    r"|\bno ejecutes\b"
+    r"|\bsolo plan\b"
+    r"|\bmodo plan\b"
+    r")"
+)
 
 
 def _normalize(text: str) -> str:
@@ -198,7 +232,7 @@ def _route_normalized_text(normalized: str) -> RouterResult:
             routing_reason="matched conversational greeting",
         )
 
-    if normalized in {"que puedes hacer", "que puedes hacer tu", "que capacidades tienes"}:
+    if _CAPABILITY_RE.match(normalized):
         return _base_result(
             intent_type="capability_summary",
             domain="ASSISTANT",
@@ -231,6 +265,15 @@ def _route_normalized_text(normalized: str) -> RouterResult:
     host_result = _route_host(normalized)
     if host_result is not None:
         return host_result
+
+    if _PLAN_REQUEST_RE.search(normalized):
+        return _base_result(
+            intent_type="plan_request",
+            domain="ASSISTANT",
+            action="",
+            confidence=0.88,
+            routing_reason="matched plan-only / dry-run request",
+        )
 
     return _unknown(routing_reason="no deterministic route matched", safety_flags=["unknown_intent"])
 

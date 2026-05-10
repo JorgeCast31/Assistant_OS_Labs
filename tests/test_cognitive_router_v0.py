@@ -8,6 +8,25 @@ from assistant_os.cognition.router import (
     route_text,
     validate_router_result,
 )
+from assistant_os.surface_behavior import get_surface_behavior_response
+
+
+class _Stub:
+    def __init__(self, d: dict) -> None:
+        self._d = d
+
+    def to_audit_dict(self) -> dict:
+        return dict(self._d)
+
+
+def _surface(text: str) -> dict | None:
+    return get_surface_behavior_response(
+        surface="assistant_chat",
+        text=text,
+        context_id="ctx-router-test",
+        identity=_Stub({"principal": "anon"}),
+        guard_result=_Stub({"decision": "allow"}),
+    )
 from assistant_os.mso.capability_registry import (
     list_temporary_grants,
     reset_dynamic_capabilities,
@@ -233,3 +252,125 @@ def test_v0_never_uses_llm_advisory() -> None:
 
         assert result["advisory_used"] is False
         assert result["router_version"] == "v0_deterministic"
+
+
+# ---------------------------------------------------------------------------
+# RC-1: capability_summary expanded patterns
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Dime lo que puedes hacer",
+        "Capacidades?",
+        "dime tus capacidades",
+        "what can you do",
+        "what are your capabilities",
+        "capabilities",
+        "capability",
+        "cuales son tus capacidades",
+    ],
+)
+def test_rc1_capability_summary_extended_patterns(text: str) -> None:
+    result = route_text(text)
+
+    assert result["intent_type"] == "capability_summary", (
+        f"{text!r} → intent_type={result['intent_type']!r}, reason={result['routing_reason']!r}"
+    )
+    assert result["domain"] == "ASSISTANT"
+    assert result["action"] == "CAPABILITY_SUMMARY"
+    assert result["should_pass_to_kernel"] is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Dime lo que puedes hacer",
+        "Capacidades?",
+        "dime tus capacidades",
+        "what can you do",
+        "what are your capabilities",
+    ],
+)
+def test_rc1_capability_summary_surface_response(text: str) -> None:
+    result = _surface(text)
+
+    assert result is not None
+    assert result["result_type"] == "surface_response"
+    assert result["intent"] == "capability_summary"
+    assert result["needs_confirmation"] is False
+    assert result["plan"] == []
+
+
+# ---------------------------------------------------------------------------
+# RC-2: English status phrases canonicalized to read_only_status
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "report your current sovereign runtime status",
+        "system status",
+        "runtime status",
+        "what is the system status",
+        "Report your current sovereign runtime status...",
+    ],
+)
+def test_rc2_english_status_routes_to_read_only_status(text: str) -> None:
+    result = _surface(text)
+
+    assert result is not None, f"{text!r} returned None (passed to kernel unexpectedly)"
+    assert result["result_type"] == "status_response", (
+        f"{text!r} → result_type={result['result_type']!r}"
+    )
+    assert result["intent"] == "status_response"
+    assert result["domain"] == "SYSTEM"
+    assert result["needs_confirmation"] is False
+    assert result["plan"] == []
+
+
+# ---------------------------------------------------------------------------
+# RC-3: plan_request intent type
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Prepare a plan for a safe CODE/docs task. Do not execute.",
+        "dry run this request",
+        "plan only",
+        "planifica sin ejecutar",
+        "do not execute this",
+        "prepare a plan",
+        "dry-run",
+    ],
+)
+def test_rc3_plan_request_router_intent(text: str) -> None:
+    result = route_text(text)
+
+    assert result["intent_type"] == "plan_request", (
+        f"{text!r} → intent_type={result['intent_type']!r}, reason={result['routing_reason']!r}"
+    )
+    assert result["should_pass_to_kernel"] is False
+    assert result["advisory_used"] is False
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Prepare a plan for a safe CODE/docs task. Do not execute.",
+        "dry run this request",
+        "plan only",
+        "planifica sin ejecutar",
+    ],
+)
+def test_rc3_plan_request_surface_response(text: str) -> None:
+    result = _surface(text)
+
+    assert result is not None
+    assert result["result_type"] == "surface_response"
+    assert result["intent"] == "plan_request"
+    assert result["needs_confirmation"] is False
+    assert result["plan"] == []
+    assert result["domain"] == "ASSISTANT"
+    assert "PolicyDecision" in result["message"] or "police" in result["message"].lower()
