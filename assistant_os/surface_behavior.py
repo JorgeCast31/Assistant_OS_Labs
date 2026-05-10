@@ -609,8 +609,51 @@ def _build_plan_request_provider_context() -> dict:
         }
 
 
-def _plan_request_message(provider_context: dict) -> str:
-    """Build the plan_request message including seated provider info."""
+def _build_plan_request_authority_data(user_intent: str) -> dict:
+    """
+    Build a non-executing proposal + authority preparation for plan_request responses.
+
+    Calls make_orchestration_proposal then prepare_authority_from_proposal.
+    Pure: no network calls, no token issuance, no Police calls, no execution.
+    Fail-closed: any exception returns safe dict with None values.
+
+    Returns
+    -------
+    dict with keys:
+        proposal_summary       — serialized MSOExecutionProposal (or None)
+        authority_preparation  — serialized AuthorityPreparationRequest (or None)
+        execution_allowed      — always False
+        cognitive_only         — always True
+    """
+    try:
+        from .mso.seat_model_provider_registry import make_orchestration_proposal
+        from .mso.authority_preparation import prepare_authority_from_proposal
+
+        proposal = make_orchestration_proposal(
+            user_intent=user_intent,
+            domain="ASSISTANT",
+            requested_action="PLAN_REVIEW",
+            capability_name="plan_review",
+            capability_scope=("plan_review",),
+        )
+        preparation = prepare_authority_from_proposal(proposal)
+        return {
+            "proposal_summary": proposal.to_dict(),
+            "authority_preparation": preparation.to_dict(),
+            "execution_allowed": False,
+            "cognitive_only": True,
+        }
+    except Exception:
+        return {
+            "proposal_summary": None,
+            "authority_preparation": None,
+            "execution_allowed": False,
+            "cognitive_only": True,
+        }
+
+
+def _plan_request_message(provider_context: dict, authority_data: dict | None = None) -> str:
+    """Build the plan_request message including seated provider info and pending authority."""
     description = provider_context.get("provider_description") or ""
     seated = provider_context.get("seated_provider")
 
@@ -624,13 +667,25 @@ def _plan_request_message(provider_context: dict) -> str:
     else:
         provider_note = "No hay proveedor cognitivo configurado en el seat."
 
+    pending_note = ""
+    if authority_data:
+        prep = authority_data.get("authority_preparation") or {}
+        pending_steps: list[str] = prep.get("pending_authority_steps") or [
+            "PolicyDecision", "CapabilityToken", "OperationBinding",
+            "AuthorizedPlan", "PoliceGate",
+        ]
+        pending_note = (
+            f" Autoridad pendiente: {' → '.join(pending_steps)}."
+        )
+
     return (
         f"{provider_note} "
-        "Solicitud de plan recibida. El sistema puede describir los pasos "
-        "de un plan para esta operacion, pero no ejecutara ninguna accion. "
-        "Para ejecutar una operacion real se requiere: PolicyDecision aprobada, "
-        "CapabilityToken emitido, OperationBinding firmado, "
-        "AuthorizedPlan registrado y Police Gate habilitado. "
+        "Solicitud de plan recibida. "
+        "ESTO NO ES EJECUCION. "
+        "El sistema puede describir los pasos de un plan para esta operacion, "
+        "pero no ejecutara ninguna accion."
+        f"{pending_note} "
+        "Confirmacion humana explicita requerida antes de cualquier ejecucion. "
         "Describe la operacion que deseas planificar."
     )
 
@@ -687,8 +742,9 @@ def _assistant_chat_router_response(
 
     if intent_type == "plan_request":
         provider_context = _build_plan_request_provider_context()
+        authority_data = _build_plan_request_authority_data(normalized)
         response = _build_surface_response(
-            message=_plan_request_message(provider_context),
+            message=_plan_request_message(provider_context, authority_data),
             domain="ASSISTANT",
             surface=surface,
             context_id=context_id,
@@ -698,6 +754,8 @@ def _assistant_chat_router_response(
             intent="plan_request",
         )
         response["provider_context"] = provider_context
+        response["proposal_summary"] = authority_data.get("proposal_summary")
+        response["authority_preparation"] = authority_data.get("authority_preparation")
         return response
 
     if intent_type == "needs_context":
