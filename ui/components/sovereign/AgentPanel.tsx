@@ -1,7 +1,7 @@
 'use client'
 
 import { useSovereignStore } from '@/stores/sovereign-store'
-import { MachineOperatorConsole } from './MachineOperatorConsole'
+import { ExecutionNotOpenPanel } from './ExecutionNotOpenPanel'
 import type { AgentId } from '@/lib/sovereign/types'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -33,15 +33,40 @@ export function AgentPanel({ agentId }: AgentPanelProps) {
                 Agents Surface
               </h2>
               <p className="text-[10px] font-mono text-tx-muted">
-                Operational Layer - Select an agent to operate
+                Operational posture and guarded lanes
               </p>
             </div>
           </div>
         </div>
 
         {/* Agent Selection */}
-        <div className="flex-1 flex items-center justify-center p-8">
-          <div className="max-w-md text-center">
+        <div className="flex-1 overflow-y-auto p-8">
+          <div className="max-w-2xl mx-auto space-y-6">
+            <div className="rounded-lg border border-os-border bg-os-surface p-4">
+              <p className="text-[10px] font-mono uppercase tracking-wider text-tx-muted">Sovereign agent posture</p>
+              <div className="mt-3 space-y-2">
+                <div className="rounded border border-os-border bg-os-base px-3 py-2 flex items-center justify-between gap-3">
+                  <span className="text-xs font-mono text-tx-secondary">CODE/docs</span>
+                  <span className="text-[10px] font-mono uppercase tracking-wider text-warn">Candidate for pilot</span>
+                </div>
+                <div className="rounded border border-os-border bg-os-base px-3 py-2 flex items-center justify-between gap-3">
+                  <span className="text-xs font-mono text-tx-secondary">HOST</span>
+                  <span className="text-[10px] font-mono uppercase tracking-wider text-tx-muted">Guarded</span>
+                </div>
+                <div className="rounded border border-os-border bg-os-base px-3 py-2 flex items-center justify-between gap-3">
+                  <span className="text-xs font-mono text-tx-secondary">MACHINE_OPERATOR</span>
+                  <span className="text-[10px] font-mono uppercase tracking-wider text-tx-muted">Guarded / Not operational</span>
+                </div>
+                <div className="rounded border border-os-border bg-os-base px-3 py-2 flex items-center justify-between gap-3">
+                  <span className="text-xs font-mono text-tx-secondary">OpenClaw</span>
+                  <span className="text-[10px] font-mono uppercase tracking-wider text-tx-muted">Disabled</span>
+                </div>
+              </div>
+            </div>
+
+            <ExecutionNotOpenPanel />
+
+            <div className="text-center">
             <div className="w-20 h-20 mx-auto mb-6 rounded-2xl bg-slate-600/10 border border-slate-600/20 flex items-center justify-center">
               <svg width="40" height="40" viewBox="0 0 40 40" fill="none">
                 <rect x="6" y="6" width="12" height="12" rx="2" stroke="currentColor" strokeWidth="2" className="text-slate-500" />
@@ -54,9 +79,10 @@ export function AgentPanel({ agentId }: AgentPanelProps) {
               Agents Surface
             </h3>
             <p className="text-sm font-mono text-tx-secondary leading-relaxed mb-6">
-              This is the operational layer. Agents here operate with delegated
-              authority and must escalate to MSO for protected actions.
+              Agent availability shown below comes from the live registry when available.
+              Guardrails remain enforced by design.
             </p>
+            </div>
 
             {/* Available Agents — fetched from backend registry */}
             <div className="space-y-2">
@@ -80,6 +106,12 @@ export function AgentPanel({ agentId }: AgentPanelProps) {
                 <p className="text-xs font-mono text-yellow-500/70">
                   Registry check failed — showing last known data
                 </p>
+              )}
+
+              {registryUnavailable && (
+                <div className="rounded border border-warn/30 bg-warn/10 px-3 py-2">
+                  <p className="text-xs font-mono text-warn">Live agent status unavailable. Showing guarded policy descriptors above.</p>
+                </div>
               )}
 
               {agents.map((agent) => (
@@ -127,9 +159,20 @@ export function AgentPanel({ agentId }: AgentPanelProps) {
     )
   }
 
-  // Render specific agent console
+  // Machine Operator stays guarded in this sprint; no operational console here.
   if (agentId === 'machine_operator') {
-    return <MachineOperatorConsole />
+    return (
+      <div className="h-full overflow-y-auto p-8">
+        <div className="max-w-2xl mx-auto space-y-4">
+          <div className="rounded-lg border border-os-border bg-os-surface p-4">
+            <p className="text-[10px] font-mono uppercase tracking-wider text-tx-muted">Machine Operator</p>
+            <p className="mt-2 text-sm font-mono text-tx-primary">Guarded and not operational in Sovereign tab.</p>
+            <p className="mt-1 text-xs font-mono text-tx-muted">Direct-call paths require protected authority context and remain blocked by design.</p>
+          </div>
+          <ExecutionNotOpenPanel />
+        </div>
+      </div>
+    )
   }
 
   // Fallback for agents registered in backend but without a UI console yet

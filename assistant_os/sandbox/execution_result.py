@@ -42,6 +42,7 @@ class ExecutionMetadata:
     plan_id              : Plan that authorized the execution (or "").
     policy_id            : Policy that governed the execution (or "").
     authorized_plan_hash : Hash of the AuthorizedPlan that was validated (or "").
+    delegated_seat_ref   : Delegated MSO seat ref associated with the plan, if any.
     runtime_profile      : Runtime used (e.g. "python3.11").
     duration_ms          : Wall-clock execution time in milliseconds.
     exit_code            : Process exit code (-1 for internal errors / timeout).
@@ -65,6 +66,7 @@ class ExecutionMetadata:
     timed_out: bool
     truncated: bool
     authorized_plan_hash: str = ""
+    delegated_seat_ref: str = ""
     # --- fields populated by RunnerAPI at execution completion ---
     backend: str = ""            # execution backend class name
     status: str = ""             # final ExecutionStatus value
@@ -81,6 +83,7 @@ class ExecutionMetadata:
             "plan_id": self.plan_id,
             "policy_id": self.policy_id,
             "authorized_plan_hash": self.authorized_plan_hash,
+            "delegated_seat_ref": self.delegated_seat_ref,
             "runtime_profile": self.runtime_profile,
             "duration_ms": self.duration_ms,
             "exit_code": self.exit_code,

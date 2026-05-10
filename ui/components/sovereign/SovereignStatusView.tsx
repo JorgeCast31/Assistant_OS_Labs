@@ -2,7 +2,7 @@
 
 import { useUIStore } from '@/stores/ui-store'
 import { useSystemPolling } from '@/hooks/use-system-polling'
-import { ReadinessPanel } from './ReadinessPanel'
+import { ExecutionNotOpenPanel } from './ExecutionNotOpenPanel'
 import { ConfirmFlowQueuePanel } from './ConfirmFlowQueuePanel'
 import { OutcomeStatusPanel } from './OutcomeStatusPanel'
 import type { SystemEvent } from '@/lib/types'
@@ -45,6 +45,37 @@ function StatTile({
   )
 }
 
+function ChainRow({
+  label,
+  status,
+  tone,
+  note,
+}: {
+  label: string
+  status: string
+  tone: 'ok' | 'warn' | 'muted'
+  note?: string
+}) {
+  const toneClass =
+    tone === 'ok' ? 'text-ok border-ok/30 bg-ok/10' :
+    tone === 'warn' ? 'text-warn border-warn/30 bg-warn/10' :
+    'text-tx-muted border-os-border bg-os-base'
+
+  return (
+    <div className="rounded-lg border border-os-border bg-os-surface p-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-mono text-tx-secondary">{label}</p>
+        <span className={`px-2 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider border ${toneClass}`}>
+          {status}
+        </span>
+      </div>
+      {note && (
+        <p className="mt-1 text-[10px] font-mono text-tx-muted">{note}</p>
+      )}
+    </div>
+  )
+}
+
 function RecentEventsPanel({ events }: { events: SystemEvent[] }) {
   if (events.length === 0) {
     return (
@@ -81,10 +112,9 @@ export function SovereignStatusView() {
   const {
     apiStatus,
     webhookStatus,
-    activeExecutions,
-    needsReview,
     lastUpdated,
     error,
+    operationalMode,
     recentEvents,
   } = systemData
 
@@ -136,18 +166,17 @@ export function SovereignStatusView() {
         {!isInitializing && (
           <section>
             <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
-              Executions
+              Runtime Snapshot
             </p>
             <div className="grid grid-cols-2 gap-3">
               <StatTile
-                label="Active"
-                value={activeExecutions}
-                accent={activeExecutions > 0}
+                label="Operational Mode"
+                value={operationalMode}
+                accent={operationalMode !== 'UNKNOWN'}
               />
               <StatTile
-                label="Needs Review"
-                value={needsReview}
-                accent={needsReview > 0}
+                label="Connectivity"
+                value={`${apiStatus}/${webhookStatus}`}
               />
             </div>
           </section>
@@ -156,29 +185,38 @@ export function SovereignStatusView() {
         {!isInitializing && (
           <section>
             <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
-              Readiness Sources
+              Executive Authority Chain
             </p>
-            <ReadinessPanel />
+            <div className="space-y-2">
+              <ChainRow label="MSO Governance" status="Active" tone="ok" />
+              <ChainRow label="Delegated MSO Seat" status="Traceable / Non-executing" tone="ok" />
+              <ChainRow label="PolicyDecision" status="Present" tone="ok" />
+              <ChainRow label="CapabilityToken" status="Lifecycle checked" tone="ok" />
+              <ChainRow label="OperationBinding" status="Verified" tone="ok" />
+              <ChainRow label="AuthorizedPlan Ref" status="Bound" tone="ok" />
+              <ChainRow label="Capability Scope" status="Enforced" tone="ok" />
+              <ChainRow label="Police Gate" status="Fail-closed" tone="ok" />
+              <ChainRow label="Temporal Restriction" status="Pending" tone="warn" />
+              <ChainRow label="CODE/docs Pilot" status="Next" tone="warn" />
+              <ChainRow label="HOST/MACHINE_OPERATOR" status="Guarded" tone="muted" />
+              <ChainRow label="OpenClaw" status="Disabled" tone="muted" />
+            </div>
           </section>
         )}
 
         {!isInitializing && (
           <section>
             <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
-              Confirm Queue
+              Runtime Truth Panels
             </p>
-            <ConfirmFlowQueuePanel />
+            <div className="grid gap-4 lg:grid-cols-2">
+              <OutcomeStatusPanel />
+              <ConfirmFlowQueuePanel />
+            </div>
           </section>
         )}
 
-        {!isInitializing && (
-          <section>
-            <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
-              Outcome Status
-            </p>
-            <OutcomeStatusPanel />
-          </section>
-        )}
+        {!isInitializing && <ExecutionNotOpenPanel />}
 
         {!isInitializing && (
           <section>

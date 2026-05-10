@@ -1,10 +1,13 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useUIStore } from '@/stores/ui-store'
+import { useSystemPolling } from '@/hooks/use-system-polling'
 import {
   getSystemAssistantState,
   type SystemAssistantStateResponse,
 } from '@/lib/api'
+import { ExecutionNotOpenPanel } from './ExecutionNotOpenPanel'
 
 function statusClass(status: string): string {
   switch (status) {
@@ -27,6 +30,8 @@ function StatusBadge({ status }: { status: string }) {
   )
 }
 export function SystemChatView() {
+  const { systemData, isSystemRefreshing } = useUIStore()
+  const { refresh } = useSystemPolling()
   const [state, setState] = useState<SystemAssistantStateResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -52,6 +57,16 @@ export function SystemChatView() {
 
   const interpretation = state?.interpretation
   const snapshot = state?.snapshot
+  const operationalMode = systemData.operationalMode
+
+  const modeClass =
+    operationalMode === 'NORMAL'
+      ? 'text-ok'
+      : operationalMode === 'DEGRADED'
+        ? 'text-warn'
+        : operationalMode === 'FROZEN'
+          ? 'text-err'
+          : 'text-tx-muted'
 
   return (
     <div className="flex flex-col h-full bg-os-base">
@@ -61,24 +76,68 @@ export function SystemChatView() {
           <div className="w-2 h-2 rounded-full bg-teal-400" />
           <div>
             <h2 className="text-sm font-mono font-semibold text-teal-400">
-              System Assistant
+              System
             </h2>
             <p className="text-[10px] font-mono text-tx-muted">
-              Read-only · observes state · no execution
+              Global runtime posture and passive observability
             </p>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => void loadState()}
-          disabled={isLoading}
-          className="rounded-lg border border-teal-500/25 bg-teal-500/10 px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider text-teal-300 transition-all hover:bg-teal-500/15 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {isLoading ? 'Refreshing…' : 'Refresh state'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            disabled={isSystemRefreshing}
+            className="rounded-lg border border-os-border px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider text-tx-secondary transition-colors hover:border-os-border-hi disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isSystemRefreshing ? 'Refreshing…' : 'Refresh runtime'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void loadState()}
+            disabled={isLoading}
+            className="rounded-lg border border-teal-500/25 bg-teal-500/10 px-3 py-1.5 text-[10px] font-mono uppercase tracking-wider text-teal-300 transition-all hover:bg-teal-500/15 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {isLoading ? 'Refreshing…' : 'Refresh assistant'}
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+        <div className="rounded-xl border border-os-border bg-os-elevated px-4 py-4">
+          <p className="text-[10px] font-mono uppercase tracking-wider text-teal-400/70">
+            System posture
+          </p>
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="rounded-lg border border-os-border p-3">
+              <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Operational mode</p>
+              <p className={`mt-1 text-sm font-mono ${modeClass}`}>{operationalMode}</p>
+            </div>
+            <div className="rounded-lg border border-os-border p-3">
+              <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Code API</p>
+              <p className="mt-1 text-sm font-mono text-tx-primary">{systemData.apiStatus}</p>
+            </div>
+            <div className="rounded-lg border border-os-border p-3">
+              <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Webhook</p>
+              <p className="mt-1 text-sm font-mono text-tx-primary">{systemData.webhookStatus}</p>
+            </div>
+            <div className="rounded-lg border border-os-border p-3">
+              <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Authority stack</p>
+              <p className="mt-1 text-sm font-mono text-tx-primary">Policy + Police + AuthorizedPlan required</p>
+            </div>
+            <div className="rounded-lg border border-os-border p-3">
+              <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Execution path</p>
+              <p className="mt-1 text-sm font-mono text-warn">Guarded</p>
+            </div>
+            <div className="rounded-lg border border-os-border p-3">
+              <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">OpenClaw</p>
+              <p className="mt-1 text-sm font-mono text-tx-muted">Disabled</p>
+            </div>
+          </div>
+        </div>
+
+        <ExecutionNotOpenPanel />
+
         {isLoading && !state && (
           <div className="rounded-xl border border-os-border bg-os-elevated px-4 py-4">
             <div className="flex items-center gap-2">
@@ -142,7 +201,7 @@ export function SystemChatView() {
 
               <div>
                 <p className="text-[10px] font-mono uppercase tracking-wider text-teal-400/60">
-                  Summary
+                  Assistant summary
                 </p>
                 <p className="mt-2 text-sm font-mono leading-relaxed text-tx-primary">
                   {interpretation.summary}
@@ -152,7 +211,7 @@ export function SystemChatView() {
               {snapshot?.operational_mode != null && (
                 <div>
                   <p className="text-[10px] font-mono uppercase tracking-wider text-teal-400/60">
-                    Operational mode
+                    Assistant-reported mode
                   </p>
                   <div className="mt-2 flex items-center gap-2">
                     <p className="text-sm font-mono text-tx-primary">
@@ -207,7 +266,7 @@ export function SystemChatView() {
 
       <div className="px-6 py-4 border-t border-os-border bg-os-surface">
         <p className="text-[9px] font-mono text-tx-muted text-center">
-          Passive view only. This surface re-fetches GET /system-assistant/state and does not execute actions.
+          Passive view only. This surface summarizes runtime status and re-fetches system-assistant state without execution.
         </p>
       </div>
     </div>

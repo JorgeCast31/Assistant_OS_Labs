@@ -43,6 +43,9 @@ class AuthorizedPlan:
     policy_id            : Policy identifier governing allowed capabilities.
     capability_scope     : List of capability strings granted to this execution.
     runtime_profile      : Runtime identifier (must be in ALLOWED_RUNTIME_PROFILES).
+    delegated_seat_ref   : Optional delegated MSO seat reference carried for
+                           traceability and binding. It grants no execution
+                           authority.
     authority_artifact   : Optional signed artifact that serializes the existing
                            authority verdict across the execution boundary.
     """
@@ -53,6 +56,7 @@ class AuthorizedPlan:
     policy_id: str
     capability_scope: list[str] = field(default_factory=list)
     runtime_profile: str = "python3.11"
+    delegated_seat_ref: str = ""
     authority_artifact: "AuthorityArtifact | Mapping[str, Any] | None" = None
 
     def validate(self) -> None:
@@ -81,6 +85,11 @@ class AuthorizedPlan:
                 f"Unsupported runtime_profile {self.runtime_profile!r}. "
                 f"Allowed: {sorted(ALLOWED_RUNTIME_PROFILES)}"
             )
+        if self.delegated_seat_ref is None:
+            self.delegated_seat_ref = ""
+        if not isinstance(self.delegated_seat_ref, str):
+            raise ValueError("AuthorizedPlan.delegated_seat_ref must be a string.")
+        self.delegated_seat_ref = self.delegated_seat_ref.strip()
         if self.authority_artifact is not None:
             self._validate_authority_artifact()
 
@@ -140,3 +149,12 @@ class AuthorizedPlan:
                 "AuthorizedPlan.authority_artifact field "
                 "'capability_scope' must match AuthorizedPlan.capability_scope."
             )
+
+        artifact_seat_ref = str(artifact_payload.get("delegated_seat_ref", "")).strip()
+        plan_seat_ref = self.delegated_seat_ref.strip()
+        if artifact_seat_ref or plan_seat_ref:
+            if artifact_seat_ref != plan_seat_ref:
+                raise ValueError(
+                    "AuthorizedPlan.authority_artifact field "
+                    "'delegated_seat_ref' must match AuthorizedPlan.delegated_seat_ref."
+                )
