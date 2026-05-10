@@ -270,6 +270,7 @@ class RunnerService:
                 "plan_id": ap.plan_id,
                 "policy_id": ap.policy_id,
                 "authorized_plan_hash": ap.authorized_plan_hash,
+                "delegated_seat_ref": ap.delegated_seat_ref,
                 "capability_scope": list(ap.capability_scope),
                 "runtime_profile": ap.runtime_profile,
             }

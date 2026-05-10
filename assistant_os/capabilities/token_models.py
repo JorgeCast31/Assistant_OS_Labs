@@ -103,6 +103,9 @@ class OperationBinding:
     operation_key : Unique fingerprint for this specific operation.
                     Set to context_id (the canonical request identifier),
                     which is unique per call to handle_request().
+    delegated_seat_ref : Optional delegated MSO seat reference associated with
+                    the authorization context. This is trace/binding metadata;
+                    it does not grant execution authority.
     """
 
     principal_id:  str
@@ -110,6 +113,7 @@ class OperationBinding:
     action_type:   str
     capability:    Optional[str]
     operation_key: str
+    delegated_seat_ref: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +141,7 @@ class CapabilityToken:
     action_type   : Copied from OperationBinding at issuance.
     capability    : Copied from OperationBinding at issuance.
     operation_key : Copied from OperationBinding at issuance.
+    delegated_seat_ref : Copied from OperationBinding at issuance when present.
     issued_at     : time.monotonic() at issuance.  Monotonic: unaffected by
                     wall-clock adjustments.
     expires_at    : issued_at + TTL.  Default TTL = 300 s (5 min).
@@ -153,3 +158,4 @@ class CapabilityToken:
     issued_at:     float        # time.monotonic() at issuance
     expires_at:    float        # issued_at + TTL seconds
     status:        TokenStatus  # always ACTIVE at construction time
+    delegated_seat_ref: Optional[str] = None

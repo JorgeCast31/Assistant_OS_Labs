@@ -26,6 +26,7 @@ _STRING_FIELDS: tuple[str, ...] = (
     "execution_mode",
     "runtime_profile",
 )
+_OPTIONAL_STRING_FIELDS: tuple[str, ...] = ("delegated_seat_ref",)
 _REQUIRED_FIELDS: tuple[str, ...] = _STRING_FIELDS + ("capability_scope",)
 
 
@@ -44,6 +45,7 @@ class AuthorityArtifact:
     execution_mode: str
     capability_scope: list[str]
     runtime_profile: str
+    delegated_seat_ref: str = ""
     signature: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -59,6 +61,7 @@ class AuthorityArtifact:
             "execution_mode": self.execution_mode,
             "capability_scope": list(self.capability_scope),
             "runtime_profile": self.runtime_profile,
+            "delegated_seat_ref": self.delegated_seat_ref,
             "signature": self.signature,
         }
 
@@ -125,6 +128,16 @@ def _normalized_unsigned_payload(artifact: AuthorityArtifact | Mapping[str, Any]
         raise ValueError(
             f"Unsupported authority artifact version {normalized['artifact_version']!r}."
         )
+
+    for field_name in _OPTIONAL_STRING_FIELDS:
+        value = payload.get(field_name, "")
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            raise ValueError(f"Authority artifact field {field_name!r} must be a string.")
+        normalized_value = value.strip()
+        if normalized_value:
+            normalized[field_name] = normalized_value
 
     normalized["capability_scope"] = _normalized_scope(payload.get("capability_scope"))
     return normalized

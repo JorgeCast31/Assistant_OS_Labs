@@ -1107,20 +1107,25 @@ def _build_authorized_plan_from_kernel(plan: dict) -> "AuthorizedPlan":
     authority_artifact = None
     authority_context = _extract_authority_context(plan)
     if authority_context is not None:
+        delegated_seat_ref = authority_context.get("delegated_seat_ref", "")
+        artifact_payload = {
+            "artifact_version": AUTHORITY_ARTIFACT_VERSION_V1,
+            "execution_id": plan_id,
+            "plan_id": plan_id,
+            "authorized_plan_hash": authorized_plan_hash,
+            "policy_id": "default",
+            "policy_decision_ref": authority_context["policy_decision_ref"],
+            "governance_ref": authority_context["governance_ref"],
+            "approval_id": authority_context["approval_id"],
+            "execution_mode": authority_context["execution_mode"],
+            "capability_scope": capability_scope,
+            "runtime_profile": runtime_profile,
+        }
+        if delegated_seat_ref:
+            artifact_payload["delegated_seat_ref"] = delegated_seat_ref
+
         authority_artifact = sign_authority_artifact(
-            {
-                "artifact_version": AUTHORITY_ARTIFACT_VERSION_V1,
-                "execution_id": plan_id,
-                "plan_id": plan_id,
-                "authorized_plan_hash": authorized_plan_hash,
-                "policy_id": "default",
-                "policy_decision_ref": authority_context["policy_decision_ref"],
-                "governance_ref": authority_context["governance_ref"],
-                "approval_id": authority_context["approval_id"],
-                "execution_mode": authority_context["execution_mode"],
-                "capability_scope": capability_scope,
-                "runtime_profile": runtime_profile,
-            }
+            artifact_payload
         )
 
     ap = AuthorizedPlan(
@@ -1130,6 +1135,10 @@ def _build_authorized_plan_from_kernel(plan: dict) -> "AuthorizedPlan":
         policy_id="default",
         capability_scope=capability_scope,
         runtime_profile=runtime_profile,
+        delegated_seat_ref=(
+            authority_context.get("delegated_seat_ref", "")
+            if authority_context is not None else ""
+        ),
         authority_artifact=authority_artifact,
     )
     ap.validate()

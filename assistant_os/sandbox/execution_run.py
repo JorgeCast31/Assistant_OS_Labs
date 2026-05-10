@@ -79,6 +79,7 @@ class ExecutionRun:
     authorized_plan_hash: str
     policy_id: str
     runtime_profile: str = "python3.11"
+    delegated_seat_ref: str = ""
 
     # Mutable lifecycle fields
     status: ExecutionStatus = ExecutionStatus.PENDING
@@ -106,6 +107,7 @@ class ExecutionRun:
             "authorized_plan_hash": self.authorized_plan_hash,
             "policy_id": self.policy_id,
             "runtime_profile": self.runtime_profile,
+            "delegated_seat_ref": self.delegated_seat_ref,
             "status": self.status.value,
             "started_at": self.started_at,
             "ended_at": self.ended_at,
