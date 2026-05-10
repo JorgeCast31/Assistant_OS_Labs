@@ -35,10 +35,15 @@ _COMMON_ACTIVE_TOKENS: dict[str, str] = {
     "token-1":         "binding-1",          # test_police_gate_contract.py
 }
 
-_COMMON_ACTIVE_PLANS: dict[str, tuple[str, str, str]] = {
-    "plan-ref-1": ("exec-1", "token-ref-1", "binding-ref-1"),
-    "plan-valid-001": ("exec-test-001", "token-valid-001", "binding-valid-001"),
-    "plan-1": ("exec-1", "token-1", "binding-1"),
+_COMMON_ACTIVE_PLANS: dict[str, tuple[str, str, str, tuple[str, ...]]] = {
+    "plan-ref-1": ("exec-1", "token-ref-1", "binding-ref-1", ("write",)),
+    "plan-valid-001": (
+        "exec-test-001",
+        "token-valid-001",
+        "binding-valid-001",
+        ("code.execute", "code.write"),
+    ),
+    "plan-1": ("exec-1", "token-1", "binding-1", ("host.notepad",)),
 }
 
 
@@ -49,12 +54,18 @@ def _police_token_registry_isolation():
     _reset_authorized_plan_registry_for_testing()
     for token_ref, binding_ref in _COMMON_ACTIVE_TOKENS.items():
         register_token(token_ref, binding_ref=binding_ref)
-    for plan_ref, (execution_id, token_ref, binding_ref) in _COMMON_ACTIVE_PLANS.items():
+    for plan_ref, (
+        execution_id,
+        token_ref,
+        binding_ref,
+        capability_scope,
+    ) in _COMMON_ACTIVE_PLANS.items():
         register_authorized_plan_ref(
             plan_ref,
             execution_id=execution_id,
             token_ref=token_ref,
             binding_ref=binding_ref,
+            capability_scope=capability_scope,
         )
     yield
     _reset_for_testing()

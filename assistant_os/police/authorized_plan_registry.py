@@ -6,6 +6,7 @@ Police works with opaque string refs, not runtime objects.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 _STATUS_ACTIVE = "active"
@@ -15,6 +16,23 @@ _STATUS_REVOKED = "revoked"
 _registry: dict[str, dict[str, Any]] = {}
 
 
+def _normalize_capability_scope(capability_scope: Iterable[str] | None) -> tuple[str, ...]:
+    if capability_scope is None:
+        return ()
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in capability_scope:
+        if not isinstance(item, str):
+            continue
+        value = item.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return tuple(normalized)
+
+
 def register_authorized_plan_ref(
     authorized_plan_ref: str,
     *,
@@ -22,7 +40,7 @@ def register_authorized_plan_ref(
     token_ref: str,
     binding_ref: str,
     status: str = _STATUS_ACTIVE,
-    capability_scope: tuple[str, ...] | None = None,
+    capability_scope: Iterable[str] | None = None,
 ) -> None:
     """Register a Police-visible authorized plan reference."""
     _registry[authorized_plan_ref] = {
@@ -30,7 +48,7 @@ def register_authorized_plan_ref(
         "token_ref": token_ref,
         "binding_ref": binding_ref,
         "status": status,
-        "capability_scope": tuple(capability_scope or ()),
+        "capability_scope": _normalize_capability_scope(capability_scope),
     }
 
 
