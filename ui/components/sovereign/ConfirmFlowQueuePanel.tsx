@@ -2,6 +2,9 @@
 
 import { useConfirmPendingPolling } from '@/hooks/use-confirm-pending-polling'
 import { useConfirmPendingStore } from '@/stores/confirm-pending-store'
+import { usePreparedActionsPolling } from '@/hooks/use-prepared-actions-polling'
+import { usePreparedActionsStore } from '@/stores/prepared-actions-store'
+import type { PreparedActionQueueEntry } from '@/lib/types'
 
 function fmtDuration(seconds: number | null | undefined): string {
   if (seconds == null) return '—'
@@ -15,13 +18,62 @@ function shortenContextId(value: string): string {
   return `${value.slice(0, 6)}...${value.slice(-4)}`
 }
 
+function shortenId(value: string | null | undefined): string {
+  if (!value) return '—'
+  if (value.length <= 16) return value
+  return `${value.slice(0, 8)}...${value.slice(-4)}`
+}
+
+function PreparedActionItem({ item }: { item: PreparedActionQueueEntry }) {
+  return (
+    <div className="px-4 py-3 grid grid-cols-2 md:grid-cols-3 gap-2">
+      <div className="col-span-2 md:col-span-3">
+        <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Queue Entry</p>
+        <p className="text-xs font-mono text-tx-secondary">{shortenId(item.queue_entry_id)}</p>
+      </div>
+      <div>
+        <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Domain</p>
+        <p className="text-xs font-mono text-tx-secondary">{item.domain || '—'}</p>
+      </div>
+      <div>
+        <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Action</p>
+        <p className="text-xs font-mono text-tx-secondary">{item.requested_action || '—'}</p>
+      </div>
+      <div>
+        <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Capability</p>
+        <p className="text-xs font-mono text-tx-secondary">{item.capability_name || '—'}</p>
+      </div>
+      <div>
+        <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Confirmation</p>
+        <p className="text-xs font-mono text-warn">{item.human_confirmation_status}</p>
+      </div>
+      <div>
+        <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Auth Closed</p>
+        <p className="text-xs font-mono text-ok">closed</p>
+      </div>
+      {(item.provider_name || item.model_name) && (
+        <div className="col-span-2 md:col-span-3">
+          <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Provider</p>
+          <p className="text-xs font-mono text-tx-secondary">
+            {[item.provider_name, item.model_name].filter(Boolean).join(' / ')}
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function ConfirmFlowQueuePanel() {
   useConfirmPendingPolling()
+  usePreparedActionsPolling()
 
   const confirmPending = useConfirmPendingStore((s) => s.confirmPending)
   const isPolling = useConfirmPendingStore((s) => s.isPolling)
   const lastPolled = useConfirmPendingStore((s) => s.lastPolled)
   const pollError = useConfirmPendingStore((s) => s.pollError)
+
+  const preparedActions = usePreparedActionsStore((s) => s.preparedActions)
+  const preparedActionsError = usePreparedActionsStore((s) => s.pollError)
 
   const entries = (confirmPending?.pending ?? []).slice(0, 10)
   const pendingCount = confirmPending?.pending_count ?? 0
@@ -115,6 +167,32 @@ export function ConfirmFlowQueuePanel() {
             </div>
           ))
         )}
+      </div>
+
+      {/* Prepared Actions — Manual Review Only */}
+      <div className="border-t border-os-border">
+        <div className="px-4 py-3 border-b border-os-border">
+          <p className="text-xs font-mono text-tx-secondary uppercase tracking-wider">
+            Prepared Actions — Manual Review Only
+          </p>
+          <p className="text-[10px] font-mono text-tx-muted mt-1 leading-relaxed">
+            Manual review only. This is not execution. Human confirmation and the full authority chain are still pending.
+          </p>
+          {preparedActionsError && (
+            <p className="text-[10px] font-mono text-warn mt-1">Poll error: {preparedActionsError}</p>
+          )}
+        </div>
+        <div className="divide-y divide-os-border">
+          {(preparedActions?.items ?? []).length === 0 ? (
+            <div className="px-4 py-3 text-[10px] font-mono text-tx-muted">
+              No prepared actions waiting for manual review.
+            </div>
+          ) : (
+            (preparedActions?.items ?? []).slice(0, 10).map((item) => (
+              <PreparedActionItem key={item.queue_entry_id} item={item} />
+            ))
+          )}
+        </div>
       </div>
     </div>
   )

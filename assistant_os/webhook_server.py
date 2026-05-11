@@ -1618,6 +1618,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_confirm_pending_get()
             return
 
+        # S-PREPARED-ACTIONS-01: read-only prepared action review queue
+        if path == "/mso/prepared-actions/pending":
+            self._handle_mso_prepared_actions_pending_get()
+            return
+
         # 405 for everything else
         status, error = _make_json_error(405, "Method not allowed. Use POST.", "MethodNotAllowed")
         self._send_json_response(status, error)
@@ -4642,6 +4647,57 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     "pending": [],
                     "error": str(exc),
                     "note": _NOTE_ENDPOINT,
+                },
+            )
+
+    def _handle_mso_prepared_actions_pending_get(self) -> None:
+        """GET /mso/prepared-actions/pending — read-only ConfirmablePreparedAction queue.
+
+        Exposes the current in-memory manual review queue.
+        Read-only: no execution, no mutation, no approval, no token issuance,
+        no AuthorizedPlan creation, no PoliceGate call, no runner/pipeline.
+        Authority remains closed.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        _NOTE = (
+            "Prepared action review queue is read-only. "
+            "Human confirmation and the full authority chain are still pending. "
+            "This surface does not execute, approve, or issue tokens."
+        )
+        try:
+            from .mso.prepared_action_queue import list_pending_confirmable_action_dicts
+            items = list_pending_confirmable_action_dicts()
+            self._send_json_response(
+                200,
+                {
+                    "ok": True,
+                    "source": "prepared_action_queue",
+                    "count": len(items),
+                    "items": items,
+                    "review_only": True,
+                    "execution_allowed": False,
+                    "can_execute_now": False,
+                    "note": _NOTE,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-soft
+            self._send_json_response(
+                200,
+                {
+                    "ok": False,
+                    "source": "prepared_action_queue",
+                    "count": 0,
+                    "items": [],
+                    "review_only": True,
+                    "execution_allowed": False,
+                    "can_execute_now": False,
+                    "note": _NOTE,
+                    "error": str(exc),
                 },
             )
 

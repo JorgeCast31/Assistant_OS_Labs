@@ -551,6 +551,43 @@ export interface ConfirmPendingResponse {
   error?: string
 }
 
+// ── Prepared action review queue (S-PREPARED-ACTIONS-01) ─────────────────
+
+export interface PreparedActionQueueEntry {
+  artifact_type: string
+  queue_entry_id: string
+  prepared_action_id: string
+  preparation_id: string
+  proposal_id: string
+  user_intent: string
+  domain: string
+  requested_action: string
+  capability_name: string
+  capability_scope: string[]
+  delegated_seat_ref: string | null
+  provider_name: string | null
+  model_name: string | null
+  human_confirmation_status: string
+  status: string
+  created_at: string
+  review_only: true
+  execution_allowed: false
+  can_execute_now: false
+  notes: string
+}
+
+export interface PreparedActionsQueueResponse {
+  ok: boolean
+  source: 'prepared_action_queue'
+  count: number
+  items: PreparedActionQueueEntry[]
+  review_only: true
+  execution_allowed: false
+  can_execute_now: false
+  note: string
+  error?: string
+}
+
 // ── Authority status matrix (S-AUTH-SURFACE-01C) ──────────────────────────
 
 export interface AuthorityCapabilityRow {

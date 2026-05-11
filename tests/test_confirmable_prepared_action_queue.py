@@ -891,3 +891,63 @@ class TestReviewQueueStatusQuery:
         result = _route_assistant_chat("fix something randomly")
         assert result is not None
         assert result.get("intent") != "review_queue_status"
+
+
+# ---------------------------------------------------------------------------
+# Backend endpoint response contract
+# ---------------------------------------------------------------------------
+
+
+class TestBackendEndpointResponseContract:
+    """list_pending_confirmable_action_dicts() produces the expected endpoint payload shape."""
+
+    def test_empty_queue_produces_empty_items(self):
+        items = list_pending_confirmable_action_dicts()
+        assert items == []
+
+    def test_populated_queue_produces_items(self):
+        enqueue_confirmable_prepared_action(_code_confirmable())
+        items = list_pending_confirmable_action_dicts()
+        assert len(items) == 1
+
+    def test_items_are_dicts_with_review_invariants(self):
+        enqueue_confirmable_prepared_action(_code_confirmable())
+        items = list_pending_confirmable_action_dicts()
+        item = items[0]
+        assert item["review_only"] is True
+        assert item["execution_allowed"] is False
+        assert item["can_execute_now"] is False
+
+    def test_items_have_source_safe_fields(self):
+        enqueue_confirmable_prepared_action(_code_confirmable())
+        items = list_pending_confirmable_action_dicts()
+        item = items[0]
+        for key in ("queue_entry_id", "prepared_action_id", "domain",
+                    "requested_action", "capability_name", "human_confirmation_status"):
+            assert key in item, f"Missing field: {key!r}"
+
+    def test_items_have_no_execution_tokens(self):
+        enqueue_confirmable_prepared_action(_code_confirmable())
+        items = list_pending_confirmable_action_dicts()
+        item = items[0]
+        assert "token" not in item
+        assert "capability_token" not in item
+        assert "authorized_plan_ref" not in item
+        assert "police_decision_ref" not in item
+
+    def test_endpoint_does_not_mutate_queue(self):
+        enqueue_confirmable_prepared_action(_code_confirmable())
+        _ = list_pending_confirmable_action_dicts()
+        _ = list_pending_confirmable_action_dicts()
+        assert len(list_pending_confirmable_action_dicts()) == 1
+
+    def test_endpoint_count_matches_queue_length(self):
+        for i in range(3):
+            enqueue_confirmable_prepared_action(_code_confirmable(user_intent=f"intent {i}"))
+        items = list_pending_confirmable_action_dicts()
+        assert len(items) == 3
+
+    def test_endpoint_human_confirmation_status_pending(self):
+        enqueue_confirmable_prepared_action(_code_confirmable())
+        items = list_pending_confirmable_action_dicts()
+        assert items[0]["human_confirmation_status"] == "pending"
