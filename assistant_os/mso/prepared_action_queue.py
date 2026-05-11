@@ -345,6 +345,23 @@ def get_confirmable_action_queue_entry(
         return _queue.get(entry_id)
 
 
+def list_pending_confirmable_action_dicts() -> list[dict]:
+    """
+    Return serialized dicts of all pending manual review queue entries, newest-first.
+
+    Read-only. Safe for surface/API transport. No execution affordance.
+    Delegates to list_pending_confirmable_actions() and calls to_dict() on each entry.
+
+    Returns
+    -------
+    list[dict]
+        Serialized queue entries. Empty list if queue is empty.
+        Each dict contains only review-safe fields (see to_dict()).
+        No tokens, no AuthorizedPlan refs, no Police decision refs.
+    """
+    return [e.to_dict() for e in list_pending_confirmable_actions()]
+
+
 def clear_confirmable_action_queue_for_tests() -> None:
     """
     Empty the in-memory queue. FOR TESTS ONLY.

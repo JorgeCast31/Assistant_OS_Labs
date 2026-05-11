@@ -58,6 +58,7 @@ from assistant_os.mso.prepared_action_queue import (
     clear_confirmable_action_queue_for_tests,
     enqueue_confirmable_prepared_action,
     get_confirmable_action_queue_entry,
+    list_pending_confirmable_action_dicts,
     list_pending_confirmable_actions,
 )
 from assistant_os.mso.task_registry import list_tasks, reset_task_registry
@@ -690,3 +691,203 @@ class TestQueueOperations:
         eid = entry.queue_entry_id
         clear_confirmable_action_queue_for_tests()
         assert get_confirmable_action_queue_entry(eid) is None
+
+
+# ---------------------------------------------------------------------------
+# list_pending_confirmable_action_dicts — serialization helper
+# ---------------------------------------------------------------------------
+
+
+class TestListPendingDicts:
+    """list_pending_confirmable_action_dicts returns safe serialized dicts."""
+
+    def test_returns_empty_list_when_queue_is_empty(self):
+        result = list_pending_confirmable_action_dicts()
+        assert result == []
+
+    def test_returns_list_of_dicts(self):
+        enqueue_confirmable_prepared_action(_code_confirmable())
+        result = list_pending_confirmable_action_dicts()
+        assert isinstance(result, list)
+        assert all(isinstance(d, dict) for d in result)
+
+    def test_dict_has_required_keys(self):
+        enqueue_confirmable_prepared_action(_code_confirmable())
+        d = list_pending_confirmable_action_dicts()[0]
+        for key in (
+            "queue_entry_id", "prepared_action_id", "preparation_id",
+            "human_confirmation_status", "execution_allowed", "can_execute_now",
+            "review_only", "domain", "requested_action", "capability_name",
+        ):
+            assert key in d, f"Missing key: {key!r}"
+
+    def test_dict_execution_allowed_is_false(self):
+        enqueue_confirmable_prepared_action(_code_confirmable())
+        d = list_pending_confirmable_action_dicts()[0]
+        assert d["execution_allowed"] is False
+
+    def test_dict_can_execute_now_is_false(self):
+        enqueue_confirmable_prepared_action(_code_confirmable())
+        d = list_pending_confirmable_action_dicts()[0]
+        assert d["can_execute_now"] is False
+
+    def test_dict_review_only_is_true(self):
+        enqueue_confirmable_prepared_action(_code_confirmable())
+        d = list_pending_confirmable_action_dicts()[0]
+        assert d["review_only"] is True
+
+    def test_dict_human_confirmation_status_is_pending(self):
+        enqueue_confirmable_prepared_action(_code_confirmable())
+        d = list_pending_confirmable_action_dicts()[0]
+        assert d["human_confirmation_status"] == "pending"
+
+    def test_count_matches_enqueued(self):
+        for i in range(3):
+            enqueue_confirmable_prepared_action(_code_confirmable(user_intent=f"intent {i}"))
+        result = list_pending_confirmable_action_dicts()
+        assert len(result) == 3
+
+    def test_no_token_or_plan_refs(self):
+        enqueue_confirmable_prepared_action(_code_confirmable())
+        d = list_pending_confirmable_action_dicts()[0]
+        assert "token" not in d
+        assert "capability_token" not in d
+        assert "authorized_plan_ref" not in d
+        assert "police_decision_ref" not in d
+
+
+# ---------------------------------------------------------------------------
+# Review queue status surface query
+# ---------------------------------------------------------------------------
+
+
+class TestReviewQueueStatusQuery:
+    """assistant_chat review_queue_status intent returns safe narrative response."""
+
+    def test_queue_status_query_returns_non_none(self):
+        result = _route_assistant_chat("What is waiting for manual review?")
+        assert result is not None
+
+    def test_queue_status_empty_result_type_is_surface_response(self):
+        result = _route_assistant_chat("What is waiting for manual review?")
+        assert result is not None
+        assert result["result_type"] == "surface_response"
+
+    def test_queue_status_intent_is_review_queue_status(self):
+        result = _route_assistant_chat("What is waiting for manual review?")
+        assert result is not None
+        assert result["intent"] == "review_queue_status"
+
+    def test_empty_queue_returns_no_pending_items(self):
+        result = _route_assistant_chat("What is waiting for manual review?")
+        assert result is not None
+        assert result["pending_review_items"] == []
+        assert result["count"] == 0
+
+    def test_empty_queue_message_explains_no_pending(self):
+        result = _route_assistant_chat("Show pending prepared actions.")
+        assert result is not None
+        msg = result["message"].lower()
+        assert "no hay" in msg or "no pending" in msg or "no action" in msg
+
+    def test_empty_queue_message_suggests_plan_request(self):
+        result = _route_assistant_chat("What is waiting for manual review?")
+        assert result is not None
+        msg = result["message"].lower()
+        assert "plan" in msg
+
+    def test_after_plan_request_queue_status_lists_item(self):
+        _route_assistant_chat("Prepare a CODE/docs action for manual review. Do not execute.")
+        result = _route_assistant_chat("What is waiting for manual review?")
+        assert result is not None
+        assert result["count"] >= 1
+        assert len(result["pending_review_items"]) >= 1
+
+    def test_queued_item_has_queue_entry_id(self):
+        _route_assistant_chat("plan only: review the docs/ directory")
+        result = _route_assistant_chat("What is waiting for manual review?")
+        assert result is not None
+        item = result["pending_review_items"][0]
+        assert item.get("queue_entry_id")
+
+    def test_queued_item_has_prepared_action_id(self):
+        _route_assistant_chat("Prepare a plan. Do not execute.")
+        result = _route_assistant_chat("Show pending prepared actions.")
+        assert result is not None
+        item = result["pending_review_items"][0]
+        assert item.get("prepared_action_id")
+
+    def test_queued_item_human_confirmation_status_is_pending(self):
+        _route_assistant_chat("plan only: deploy backend")
+        result = _route_assistant_chat("What is waiting for manual review?")
+        assert result is not None
+        item = result["pending_review_items"][0]
+        assert item["human_confirmation_status"] == "pending"
+
+    def test_queued_item_execution_allowed_is_false(self):
+        _route_assistant_chat("Prepare a plan. Do not execute.")
+        result = _route_assistant_chat("What is waiting for manual review?")
+        assert result is not None
+        item = result["pending_review_items"][0]
+        assert item["execution_allowed"] is False
+
+    def test_queued_item_can_execute_now_is_false(self):
+        _route_assistant_chat("plan only: run integration tests")
+        result = _route_assistant_chat("What is waiting for manual review?")
+        assert result is not None
+        item = result["pending_review_items"][0]
+        assert item["can_execute_now"] is False
+
+    def test_response_execution_allowed_is_false(self):
+        result = _route_assistant_chat("What is waiting for manual review?")
+        assert result is not None
+        assert result["execution_allowed"] is False
+
+    def test_response_can_execute_now_is_false(self):
+        result = _route_assistant_chat("What is waiting for manual review?")
+        assert result is not None
+        assert result["can_execute_now"] is False
+
+    def test_populated_message_says_review_not_execution(self):
+        _route_assistant_chat("Prepare a plan. Do not execute.")
+        result = _route_assistant_chat("Show pending prepared actions.")
+        assert result is not None
+        msg = result["message"].lower()
+        assert "revision manual" in msg or "no ejecucion" in msg
+
+    def test_status_query_does_not_register_tasks(self):
+        from assistant_os.mso.task_registry import list_tasks
+        _route_assistant_chat("What is waiting for manual review?")
+        assert list_tasks() == []
+
+    def test_status_query_has_no_execution_artifacts(self):
+        result = _route_assistant_chat("What is waiting for manual review?")
+        assert result is not None
+        assert result["needs_confirmation"] is False
+        assert result["plan"] == []
+        assert result["ui_actions"] == []
+
+    def test_show_pending_prepared_actions_phrase(self):
+        result = _route_assistant_chat("Show pending prepared actions.")
+        assert result is not None
+        assert result["intent"] == "review_queue_status"
+
+    def test_pending_prepared_actions_phrase(self):
+        result = _route_assistant_chat("What actions are queued?")
+        assert result is not None
+        assert result["intent"] == "review_queue_status"
+
+    def test_spanish_que_esta_esperando_phrase(self):
+        result = _route_assistant_chat("Que esta esperando revision manual?")
+        assert result is not None
+        assert result["intent"] == "review_queue_status"
+
+    def test_review_queue_phrase(self):
+        result = _route_assistant_chat("Show me the review queue status.")
+        assert result is not None
+        assert result["intent"] == "review_queue_status"
+
+    def test_ambiguous_unrelated_still_asks_context(self):
+        result = _route_assistant_chat("fix something randomly")
+        assert result is not None
+        assert result.get("intent") != "review_queue_status"
