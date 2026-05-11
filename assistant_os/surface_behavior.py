@@ -612,27 +612,30 @@ def _build_plan_request_provider_context() -> dict:
 def _build_plan_request_authority_data(user_intent: str) -> dict:
     """
     Build a non-executing proposal + authority preparation + confirmable action
-    for plan_request responses.
+    + queue entry for plan_request responses.
 
     Chain: make_orchestration_proposal → prepare_authority_from_proposal →
-           build_confirmable_from_preparation.
+           build_confirmable_from_preparation → enqueue_confirmable_prepared_action.
 
-    Pure: no network calls, no token issuance, no Police calls, no execution.
+    Side effect: enqueues the confirmable action in the process-local review queue.
+    No network calls, no token issuance, no Police calls, no execution.
     Fail-closed: any exception returns safe dict with None values.
 
     Returns
     -------
     dict with keys:
-        proposal_summary       — serialized MSOExecutionProposal (or None)
-        authority_preparation  — serialized AuthorityPreparationRequest (or None)
-        confirmable_action     — serialized ConfirmablePreparedAction (or None)
-        execution_allowed      — always False
-        cognitive_only         — always True
+        proposal_summary        — serialized MSOExecutionProposal (or None)
+        authority_preparation   — serialized AuthorityPreparationRequest (or None)
+        confirmable_action      — serialized ConfirmablePreparedAction (or None)
+        queued_prepared_action  — serialized queue entry (or None)
+        execution_allowed       — always False
+        cognitive_only          — always True
     """
     try:
         from .mso.seat_model_provider_registry import make_orchestration_proposal
         from .mso.authority_preparation import prepare_authority_from_proposal
         from .mso.confirmable_prepared_action import build_confirmable_from_preparation
+        from .mso.prepared_action_queue import enqueue_confirmable_prepared_action
 
         proposal = make_orchestration_proposal(
             user_intent=user_intent,
@@ -647,10 +650,12 @@ def _build_plan_request_authority_data(user_intent: str) -> dict:
             plan_steps=proposal.plan_steps,
             risk_level=proposal.risk_level,
         )
+        queue_entry = enqueue_confirmable_prepared_action(confirmable)
         return {
             "proposal_summary": proposal.to_dict(),
             "authority_preparation": preparation.to_dict(),
             "confirmable_action": confirmable.to_dict(),
+            "queued_prepared_action": queue_entry.to_dict(),
             "execution_allowed": False,
             "cognitive_only": True,
         }
@@ -659,6 +664,7 @@ def _build_plan_request_authority_data(user_intent: str) -> dict:
             "proposal_summary": None,
             "authority_preparation": None,
             "confirmable_action": None,
+            "queued_prepared_action": None,
             "execution_allowed": False,
             "cognitive_only": True,
         }
@@ -694,6 +700,7 @@ def _plan_request_message(provider_context: dict, authority_data: dict | None = 
         f"{provider_note} "
         "Solicitud de plan recibida. "
         "ESTO NO ES EJECUCION. "
+        "Accion agregada a revision manual. "
         "El sistema puede describir los pasos de un plan para esta operacion, "
         "pero no ejecutara ninguna accion."
         f"{pending_note} "
@@ -769,6 +776,7 @@ def _assistant_chat_router_response(
         response["proposal_summary"] = authority_data.get("proposal_summary")
         response["authority_preparation"] = authority_data.get("authority_preparation")
         response["confirmable_action"] = authority_data.get("confirmable_action")
+        response["queued_prepared_action"] = authority_data.get("queued_prepared_action")
         return response
 
     if intent_type == "needs_context":

@@ -43,6 +43,12 @@ def _reset_mso_state() -> None:
         clear_store()
     except Exception:
         pass
+    try:
+        from assistant_os.mso.prepared_action_queue import clear_confirmable_action_queue_for_tests
+
+        clear_confirmable_action_queue_for_tests()
+    except Exception:
+        pass
     yield
     reset_dynamic_capabilities()
     reset_task_registry()
@@ -50,6 +56,12 @@ def _reset_mso_state() -> None:
         from assistant_os.context_store import clear_store
 
         clear_store()
+    except Exception:
+        pass
+    try:
+        from assistant_os.mso.prepared_action_queue import clear_confirmable_action_queue_for_tests
+
+        clear_confirmable_action_queue_for_tests()
     except Exception:
         pass
 
@@ -610,3 +622,92 @@ def test_plan_request_proposal_summary_artifact_type() -> None:
     proposal = result.get("proposal_summary")
     assert proposal is not None
     assert proposal.get("artifact_type") == "mso_execution_proposal"
+
+
+# ---------------------------------------------------------------------------
+# plan_request — confirmable prepared action queue (Sprint: Manual Review Queue)
+# ---------------------------------------------------------------------------
+
+
+def test_plan_request_includes_queued_prepared_action() -> None:
+    """plan_request response includes queued_prepared_action key."""
+    result = _route_assistant_chat_surface("Prepare a CODE/docs action for manual review. Do not execute.")
+    assert result is not None
+    assert "queued_prepared_action" in result
+
+
+def test_plan_request_queued_prepared_action_is_not_none() -> None:
+    """plan_request queued_prepared_action is not None for plan phrases."""
+    result = _route_assistant_chat_surface("plan only: review the docs/ directory")
+    assert result is not None
+    qpa = result.get("queued_prepared_action")
+    assert qpa is not None
+
+
+def test_plan_request_queued_prepared_action_execution_allowed_false() -> None:
+    """plan_request queued_prepared_action.execution_allowed is False."""
+    result = _route_assistant_chat_surface("Prepare a CODE/docs action for manual review. Do not execute.")
+    assert result is not None
+    qpa = result.get("queued_prepared_action")
+    assert qpa is not None
+    assert qpa["execution_allowed"] is False
+
+
+def test_plan_request_queued_prepared_action_can_execute_now_false() -> None:
+    """plan_request queued_prepared_action.can_execute_now is False."""
+    result = _route_assistant_chat_surface("plan only: deploy backend")
+    assert result is not None
+    qpa = result.get("queued_prepared_action")
+    assert qpa is not None
+    assert qpa["can_execute_now"] is False
+
+
+def test_plan_request_queued_prepared_action_review_only_true() -> None:
+    """plan_request queued_prepared_action.review_only is True."""
+    result = _route_assistant_chat_surface("Plan only: review README and prepare action.")
+    assert result is not None
+    qpa = result.get("queued_prepared_action")
+    assert qpa is not None
+    assert qpa["review_only"] is True
+
+
+def test_plan_request_queued_prepared_action_human_confirmation_pending() -> None:
+    """plan_request queued_prepared_action.human_confirmation_status is pending."""
+    result = _route_assistant_chat_surface("Prepare a plan. Do not execute.")
+    assert result is not None
+    qpa = result.get("queued_prepared_action")
+    assert qpa is not None
+    assert qpa["human_confirmation_status"] == "pending"
+
+
+def test_plan_request_queued_prepared_action_has_queue_entry_id() -> None:
+    """plan_request queued_prepared_action has a non-empty queue_entry_id."""
+    result = _route_assistant_chat_surface("plan only: run integration tests")
+    assert result is not None
+    qpa = result.get("queued_prepared_action")
+    assert qpa is not None
+    assert qpa.get("queue_entry_id")
+
+
+def test_plan_request_message_mentions_manual_review() -> None:
+    """plan_request message mentions manual review."""
+    result = _route_assistant_chat_surface("Prepare a CODE/docs action for manual review. Do not execute.")
+    assert result is not None
+    msg = result["message"]
+    assert "revision manual" in msg.lower() or "revisión manual" in msg.lower()
+
+
+def test_plan_request_queued_prepared_action_still_no_tasks() -> None:
+    """Enqueuing a prepared action does not register MSO tasks."""
+    from assistant_os.mso.task_registry import list_tasks
+    _route_assistant_chat_surface("Prepare a CODE/docs action for manual review. Do not execute.")
+    assert list_tasks() == []
+
+
+def test_plan_request_queued_prepared_action_artifact_type() -> None:
+    """plan_request queued_prepared_action has correct artifact_type."""
+    result = _route_assistant_chat_surface("plan only: deploy the backend")
+    assert result is not None
+    qpa = result.get("queued_prepared_action")
+    assert qpa is not None
+    assert qpa.get("artifact_type") == "confirmable_prepared_action_queue_entry"
