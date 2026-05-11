@@ -1623,6 +1623,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_mso_prepared_actions_pending_get()
             return
 
+        # S-MSO-SEAT-PROVIDER-01: read-only MSO Seat provider metadata
+        if path == "/mso/seat/provider":
+            self._handle_mso_seat_provider_get()
+            return
+
         # 405 for everything else
         status, error = _make_json_error(405, "Method not allowed. Use POST.", "MethodNotAllowed")
         self._send_json_response(status, error)
@@ -4694,6 +4699,91 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     "count": 0,
                     "items": [],
                     "review_only": True,
+                    "execution_allowed": False,
+                    "can_execute_now": False,
+                    "note": _NOTE,
+                    "error": str(exc),
+                },
+            )
+
+    def _handle_mso_seat_provider_get(self) -> None:
+        """GET /mso/seat/provider — read-only MSO Seat cognitive provider metadata.
+
+        Returns the currently configured Delegated MSO Seat provider and its
+        honest availability state.
+
+        Read-only: no execution, no network calls to provider, no token issuance,
+        no AuthorizedPlan creation, no PoliceGate call, no runner/pipeline.
+        Provider metadata is config-derived only — never fabricated.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        _NOTE = (
+            "MSO Seat provider metadata is read-only. "
+            "Provider availability is config-derived — no network calls are made. "
+            "This surface does not execute, approve, or issue tokens. "
+            "Cognitive only. Used execution: false."
+        )
+
+        try:
+            from .mso.seat_model_provider_registry import (
+                get_seated_provider,
+                describe_seated_provider,
+            )
+
+            provider = get_seated_provider()
+            description = describe_seated_provider()
+
+            if provider is None:
+                self._send_json_response(
+                    200,
+                    {
+                        "ok": True,
+                        "seat_provider": None,
+                        "description": description,
+                        "execution_allowed": False,
+                        "can_execute_now": False,
+                        "note": _NOTE,
+                    },
+                )
+                return
+
+            provider_dict = provider.to_dict()
+            seat_provider = {
+                "provider_name": provider_dict["provider_name"],
+                "model_name": provider_dict["model_name"],
+                "provider_kind": provider_dict["provider_name"],
+                "is_available": provider_dict["is_available"],
+                "availability": provider_dict["availability"],
+                "local_or_remote": provider_dict["local_or_remote"],
+                "cognitive_only": True,
+                "used_execution": False,
+                "non_executing": True,
+            }
+
+            self._send_json_response(
+                200,
+                {
+                    "ok": True,
+                    "seat_provider": seat_provider,
+                    "description": description,
+                    "execution_allowed": False,
+                    "can_execute_now": False,
+                    "note": _NOTE,
+                },
+            )
+
+        except Exception as exc:  # noqa: BLE001 — fail-soft
+            self._send_json_response(
+                200,
+                {
+                    "ok": False,
+                    "seat_provider": None,
+                    "description": "MSO Seat provider metadata unavailable.",
                     "execution_allowed": False,
                     "can_execute_now": False,
                     "note": _NOTE,

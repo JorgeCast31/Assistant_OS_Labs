@@ -1589,5 +1589,199 @@ class TestPoliceSurfaceFutureVocabularyDocumentedInComments(unittest.TestCase):
         self.assertEqual(MISSION_EXECUTION_CANDIDATE_GATE, ("pending_gate",))
 
 
+class TestMSOViewLiveSeatReconciliation(unittest.TestCase):
+    """MSOView must display live seat provider data and honest posture.
+
+    S-MSO-SEAT-PROVIDER-01 invariants:
+    1. MSOView imports useSeatProviderPolling hook.
+    2. MSOView imports useSeatProviderStore store.
+    3. MSOView does not contain 'Current Seat Actor: Unknown' static string.
+    4. MSOView does not contain 'Pending harness' text.
+    5. MSOView contains 'read-only' copy.
+    6. MSOView contains 'non-executing' or 'does not execute' copy.
+    7. MSOView does not render approve/execute controls.
+    8. MSOView does not claim execution is open.
+    9. MSOView displays provider availability labels (live rows).
+    10. MSOView displays Orchestration Capability section.
+    11. MSOView displays CODE/docs posture section.
+    12. Proxy route is GET-only, force-dynamic, server-auth.
+    13. API helper calls local proxy, not webhook directly.
+    14. Types export MSOSeatProviderResponse.
+    """
+
+    def setUp(self) -> None:
+        self.mso_src = _read("components/sovereign/MSOView.tsx")
+        self.route_src = _read("app/api/mso/seat/provider/route.ts")
+        self.api_src = _read("lib/api.ts")
+        self.types_src = _read("lib/types.ts")
+
+    def test_mso_view_imports_seat_provider_polling(self) -> None:
+        self.assertIn(
+            "useSeatProviderPolling",
+            self.mso_src,
+            "MSOView must import useSeatProviderPolling hook",
+        )
+
+    def test_mso_view_imports_seat_provider_store(self) -> None:
+        self.assertIn(
+            "useSeatProviderStore",
+            self.mso_src,
+            "MSOView must import useSeatProviderStore",
+        )
+
+    def test_no_hardcoded_current_seat_actor_unknown(self) -> None:
+        self.assertNotIn(
+            "Current Seat Actor",
+            self.mso_src,
+            "MSOView must not contain stale 'Current Seat Actor: Unknown' static string",
+        )
+
+    def test_no_pending_harness(self) -> None:
+        self.assertNotIn(
+            "Pending harness",
+            self.mso_src,
+            "MSOView must not contain outdated 'Pending harness' text — "
+            "CODE/docs preparation chain is live",
+        )
+
+    def test_contains_read_only_copy(self) -> None:
+        self.assertIn(
+            "read-only",
+            self.mso_src.lower(),
+            "MSOView must contain 'read-only' copy",
+        )
+
+    def test_contains_non_executing_copy(self) -> None:
+        src_lower = self.mso_src.lower()
+        has_non_executing = (
+            "non-executing" in src_lower
+            or "does not execute" in src_lower
+            or "not execute" in src_lower
+        )
+        self.assertTrue(
+            has_non_executing,
+            "MSOView must contain 'non-executing' or 'does not execute' copy",
+        )
+
+    def test_no_approve_button(self) -> None:
+        self.assertNotIn(
+            "<button",
+            self.mso_src,
+            "MSOView must not render any buttons (no approve/execute controls)",
+        )
+
+    def test_no_execution_open_claim(self) -> None:
+        lowered = self.mso_src.lower()
+        for forbidden in ("execution open", "execution enabled", "ready to execute"):
+            self.assertNotIn(
+                forbidden,
+                lowered,
+                f"MSOView must not claim execution is open: '{forbidden}'",
+            )
+
+    def test_contains_provider_availability_label(self) -> None:
+        self.assertIn(
+            "Provider Availability",
+            self.mso_src,
+            "MSOView must display a live 'Provider Availability' label",
+        )
+
+    def test_contains_orchestration_capability_section(self) -> None:
+        self.assertIn(
+            "Orchestration Capability",
+            self.mso_src,
+            "MSOView must contain 'Orchestration Capability' section",
+        )
+
+    def test_contains_code_docs_posture_section(self) -> None:
+        src_lower = self.mso_src.lower()
+        has_code_docs = "code/docs" in src_lower or "code / docs" in src_lower
+        self.assertTrue(
+            has_code_docs,
+            "MSOView must contain 'CODE/docs' posture section",
+        )
+
+    def test_proxy_route_is_get_only(self) -> None:
+        self.assertIn(
+            "export async function GET",
+            self.route_src,
+            "MSO seat provider proxy must export a GET handler",
+        )
+        for method in ("POST", "PUT", "DELETE", "PATCH"):
+            self.assertNotIn(
+                f"export async function {method}",
+                self.route_src,
+                f"MSO seat provider proxy must not export {method}",
+            )
+
+    def test_proxy_route_is_force_dynamic(self) -> None:
+        self.assertIn(
+            "export const dynamic = 'force-dynamic'",
+            self.route_src,
+            "MSO seat provider proxy must set dynamic = 'force-dynamic'",
+        )
+
+    def test_proxy_route_uses_server_side_auth(self) -> None:
+        self.assertIn(
+            "getWebhookHeaders",
+            self.route_src,
+            "MSO seat provider proxy must use getWebhookHeaders (server-side injection)",
+        )
+        self.assertNotIn("NEXT_PUBLIC_ASSISTANT_TOKEN", self.route_src)
+        self.assertNotIn("NEXT_PUBLIC_WEBHOOK_TOKEN", self.route_src)
+
+    def test_proxy_route_never_exposes_token(self) -> None:
+        self.assertNotIn(
+            "WEBHOOK_TOKEN",
+            self.route_src,
+            "MSO seat provider proxy must not reference WEBHOOK_TOKEN",
+        )
+
+    def test_proxy_route_execution_allowed_false_in_unavailable(self) -> None:
+        self.assertIn(
+            "execution_allowed",
+            self.route_src,
+            "MSO seat provider proxy must include execution_allowed in its fallback response",
+        )
+
+    def test_proxy_route_can_execute_now_false_in_unavailable(self) -> None:
+        self.assertIn(
+            "can_execute_now",
+            self.route_src,
+            "MSO seat provider proxy must include can_execute_now in its fallback response",
+        )
+
+    def test_api_helper_calls_local_proxy(self) -> None:
+        self.assertIn(
+            "/api/mso/seat/provider",
+            self.api_src,
+            "getMSOSeatProvider must call the local Next.js proxy /api/mso/seat/provider",
+        )
+
+    def test_api_helper_not_direct_webhook(self) -> None:
+        idx = self.api_src.find("export async function getMSOSeatProvider")
+        self.assertNotEqual(idx, -1, "getMSOSeatProvider must be defined in api.ts")
+        body = self.api_src[idx: idx + 1500]
+        self.assertNotIn(
+            "WEBHOOK_BASE_URL",
+            body,
+            "getMSOSeatProvider must not call WEBHOOK_BASE_URL directly",
+        )
+
+    def test_types_export_mso_seat_provider_response(self) -> None:
+        self.assertIn(
+            "export interface MSOSeatProviderResponse",
+            self.types_src,
+            "ui/lib/types.ts must export MSOSeatProviderResponse",
+        )
+
+    def test_types_export_mso_seat_provider_detail(self) -> None:
+        self.assertIn(
+            "export interface MSOSeatProviderDetail",
+            self.types_src,
+            "ui/lib/types.ts must export MSOSeatProviderDetail",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

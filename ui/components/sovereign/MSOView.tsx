@@ -1,6 +1,8 @@
 'use client'
 
 import { useUIStore } from '@/stores/ui-store'
+import { useSeatProviderPolling } from '@/hooks/use-seat-provider-polling'
+import { useSeatProviderStore } from '@/stores/seat-provider-store'
 import { ExecutionNotOpenPanel } from './ExecutionNotOpenPanel'
 
 function StatusRow({
@@ -32,46 +34,207 @@ function StatusRow({
   )
 }
 
+function availabilityTone(availability: string | undefined, isAvailable: boolean): 'ok' | 'warn' | 'muted' {
+  if (isAvailable) return 'ok'
+  if (availability === 'api_key_missing') return 'warn'
+  if (availability === 'unavailable') return 'warn'
+  return 'muted'
+}
+
 export function MSOView() {
+  useSeatProviderPolling()
+
   const { operationalMode } = useUIStore((s) => s.systemData)
+  const seatProvider = useSeatProviderStore((s) => s.seatProvider)
+  const lastPolled = useSeatProviderStore((s) => s.lastPolled)
+  const pollError = useSeatProviderStore((s) => s.pollError)
+
+  const provider = seatProvider?.seat_provider ?? null
+  const providerLoaded = seatProvider !== null
+
+  const providerName = provider?.provider_name ?? null
+  const modelName = provider?.model_name ?? null
+  const isAvailable = provider?.is_available ?? false
+  const availability = provider?.availability ?? null
+  const localOrRemote = provider?.local_or_remote ?? null
 
   return (
     <div className="h-full overflow-y-auto bg-os-base">
       <div className="max-w-3xl mx-auto p-6 space-y-6">
+
         <div>
           <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest">
             MSO
           </p>
           <p className="text-xs font-mono text-tx-secondary mt-1">
-            Control and cognitive layer. Delegated seat is traceable and non-executing.
+            Cognitive control layer. Read-only panel. The MSO Seat coordinates; it does not execute.
+          </p>
+          <p className="text-[10px] font-mono text-tx-muted mt-1">
+            Provider metadata is read-only and does not authorize execution.
           </p>
         </div>
 
+        {/* Seat and Authority Posture */}
         <section>
           <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
             Seat and Authority Posture
           </p>
           <div className="space-y-2">
-            <StatusRow label="MSO Core" value="Available" tone="ok" />
-            <StatusRow label="Delegated MSO Seat" value="Available" tone="ok" />
-            <StatusRow label="Seat Mode" value="Delegated / Non-executing" tone="ok" />
-            <StatusRow label="Current Seat Actor" value="Unknown" tone="muted" note="No live actor endpoint is wired in this tab." />
-            <StatusRow label="Seat Traceability" value="Enabled" tone="ok" />
-            <StatusRow label="Seat Context Propagation" value="Enabled" tone="ok" />
-            <StatusRow label="Seat Runtime Validation" value="Enabled" tone="ok" note="Validated through authority metadata path and police gate checks." />
-            <StatusRow label="Can execute directly" value="No" tone="muted" />
-            <StatusRow label="Can prepare plans" value="Pending harness" tone="warn" note="CODE/docs pilot harness is next direction, not active." />
-            <StatusRow label="Operational Mode" value={operationalMode} tone={operationalMode === 'UNKNOWN' ? 'warn' : 'ok'} />
+
+            <StatusRow
+              label="Seat Mode"
+              value="Cognitive / Non-executing"
+              tone="ok"
+              note="Architectural invariant. The seat coordinates; it does not execute."
+            />
+
+            <StatusRow
+              label="Execution Allowed"
+              value="No"
+              tone="muted"
+              note="Execution requires full authority chain: PolicyDecision → CapabilityToken → OperationBinding → AuthorizedPlan → PoliceGate."
+            />
+
+            <StatusRow
+              label="Can Execute Now"
+              value="No"
+              tone="muted"
+            />
+
+            <StatusRow
+              label="Operational Mode"
+              value={operationalMode}
+              tone={operationalMode === 'NORMAL' ? 'ok' : operationalMode === 'UNKNOWN' ? 'warn' : 'warn'}
+              note="Live. Source: /mso/state."
+            />
+
           </div>
         </section>
 
+        {/* Seated Cognitive Provider — live */}
         <section>
           <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
-            Next Direction
+            Seated Cognitive Provider
           </p>
-          <div className="rounded-lg border border-warn/30 bg-warn/10 p-4">
-            <p className="text-xs font-mono text-warn">CODE/docs pilot harness</p>
-            <p className="mt-1 text-[10px] font-mono text-warn/80">Planned next step. Not operational in current runtime.</p>
+
+          {!providerLoaded && (
+            <div className="rounded-lg border border-os-border bg-os-surface p-3">
+              <p className="text-xs font-mono text-tx-muted">Polling provider metadata…</p>
+            </div>
+          )}
+
+          {pollError && (
+            <div className="rounded-lg border border-warn/30 bg-warn/10 p-3 mb-2">
+              <p className="text-[10px] font-mono text-warn">Poll error: {pollError}</p>
+            </div>
+          )}
+
+          {providerLoaded && (
+            <div className="space-y-2">
+
+              {provider === null ? (
+                <StatusRow
+                  label="Seated Provider"
+                  value="Not configured"
+                  tone="muted"
+                  note="Set MSO_SEAT_PROVIDER env var to configure a cognitive provider (anthropic, llama)."
+                />
+              ) : (
+                <>
+                  <StatusRow
+                    label="Provider"
+                    value={providerName ?? 'unknown'}
+                    tone={isAvailable ? 'ok' : 'warn'}
+                    note="Live. Source: /mso/seat/provider. Config-derived — no network call."
+                  />
+
+                  <StatusRow
+                    label="Model"
+                    value={modelName || 'not set'}
+                    tone={modelName ? 'ok' : 'muted'}
+                  />
+
+                  <StatusRow
+                    label="Provider Availability"
+                    value={availability ?? 'unknown'}
+                    tone={availabilityTone(availability ?? undefined, isAvailable)}
+                    note={
+                      availability === 'api_key_missing'
+                        ? 'API key not configured. Set the provider API key env var.'
+                        : availability === 'not_configured'
+                        ? 'Provider not configured. Check MSO_SEAT_PROVIDER env var.'
+                        : availability === 'local_endpoint_missing'
+                        ? 'Local endpoint URL not set. Check LOCAL_LLM_BASE_URL env var.'
+                        : availability === 'not_implemented'
+                        ? 'This provider adapter is not yet implemented.'
+                        : undefined
+                    }
+                  />
+
+                  <StatusRow
+                    label="Deployment"
+                    value={localOrRemote ?? 'unknown'}
+                    tone="muted"
+                  />
+
+                  <StatusRow
+                    label="Cognitive Only"
+                    value="Yes"
+                    tone="ok"
+                    note="Invariant. used_execution=false enforced by provider contract."
+                  />
+                </>
+              )}
+
+              {lastPolled && (
+                <p className="text-[10px] font-mono text-tx-muted px-1">
+                  Last polled: {new Date(lastPolled).toLocaleTimeString('es', {
+                    hour: '2-digit', minute: '2-digit', second: '2-digit',
+                  })}
+                </p>
+              )}
+            </div>
+          )}
+        </section>
+
+        {/* Orchestration Capability */}
+        <section>
+          <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
+            Orchestration Capability
+          </p>
+          <div className="space-y-2">
+            <StatusRow label="Can prepare proposals" value="Yes" tone="ok" note="MSOExecutionProposal — cognitive only, non-executing." />
+            <StatusRow label="Can prepare authority review" value="Yes" tone="ok" note="AuthorityPreparationRequest — declares all 5 pending authority steps." />
+            <StatusRow label="Can create confirmable prepared action" value="Yes" tone="ok" note="ConfirmablePreparedAction — waiting_for_human_confirmation." />
+            <StatusRow label="Can enqueue for manual review" value="Yes" tone="ok" note="ConfirmablePreparedActionQueueEntry — review_only=true." />
+            <StatusRow label="Can execute directly" value="No" tone="muted" note="Architectural invariant. No execution path from this seat." />
+          </div>
+        </section>
+
+        {/* CODE/docs Posture */}
+        <section>
+          <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
+            CODE/docs Posture
+          </p>
+          <div className="space-y-2">
+            <StatusRow
+              label="CODE/docs preparation"
+              value="Active"
+              tone="ok"
+              note="plan_request → MSOExecutionProposal → AuthorityPreparationRequest → ConfirmablePreparedAction → queue. All live."
+            />
+            <StatusRow
+              label="Manual review queue"
+              value="Active"
+              tone="ok"
+              note="Prepared actions visible in Confirm Queue panel. See /mso/prepared-actions/pending."
+            />
+            <StatusRow
+              label="Governed execution"
+              value="Not active"
+              tone="muted"
+              note="Full authority chain (PolicyDecision → CapabilityToken → OperationBinding → AuthorizedPlan → PoliceGate) not yet wired for CODE/docs. Not implemented in current sprint."
+            />
           </div>
         </section>
 
