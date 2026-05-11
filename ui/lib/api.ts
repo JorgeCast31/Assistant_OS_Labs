@@ -727,6 +727,7 @@ export async function getGovernanceStatus(): Promise<GovernanceStatusResponse> {
 
 import type { CodeReadinessResponse } from './types'
 import type { ConfirmPendingResponse } from './types'
+import type { PreparedActionsQueueResponse } from './types'
 
 const CODE_READINESS_UNAVAILABLE: CodeReadinessResponse = {
   ok: false,
@@ -896,5 +897,41 @@ export async function getOutcomeStatus(query?: OutcomeStatusQuery): Promise<Outc
     return json.ok ? json : { ...OUTCOME_STATUS_UNAVAILABLE, error: json.error ?? 'unavailable' }
   } catch {
     return OUTCOME_STATUS_UNAVAILABLE
+  }
+}
+
+// ── Prepared action review queue (S-PREPARED-ACTIONS-01) ─────────────────
+// Read-only passive surface. Browser → Next.js proxy → webhook backend.
+// Never carries execution authority. Never approves or executes.
+
+const PREPARED_ACTIONS_UNAVAILABLE: PreparedActionsQueueResponse = {
+  ok: false,
+  source: 'prepared_action_queue',
+  count: 0,
+  items: [],
+  review_only: true,
+  execution_allowed: false,
+  can_execute_now: false,
+  note: 'Prepared action review queue is read-only. Human confirmation and the full authority chain are still pending.',
+  error: 'Prepared actions backend unavailable',
+}
+
+/**
+ * GET /api/mso/prepared-actions/pending — read-only prepared action queue.
+ * Returns all ConfirmablePreparedActionQueueEntry items waiting for manual review.
+ * Review-only: execution_allowed=false, can_execute_now=false at all times.
+ * Never throws.
+ */
+export async function getPreparedActionsPending(): Promise<PreparedActionsQueueResponse> {
+  try {
+    const res = await fetch('/api/mso/prepared-actions/pending', {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) return PREPARED_ACTIONS_UNAVAILABLE
+    const json = await res.json() as PreparedActionsQueueResponse
+    return json.ok ? json : { ...PREPARED_ACTIONS_UNAVAILABLE, error: json.error ?? 'unavailable' }
+  } catch {
+    return PREPARED_ACTIONS_UNAVAILABLE
   }
 }

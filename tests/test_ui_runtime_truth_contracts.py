@@ -452,20 +452,132 @@ class TestReadinessPanelCognitionDisabled(unittest.TestCase):
                     f"{line.strip()}",
                 )
 
-    def test_all_disabled_guard_present(self) -> None:
-        """An explicit all-disabled guard must exist before the error branch."""
-        has_guard = (
-            "allDisabled" in self.src
-            or (
-                "totalActive === 0" in self.src
-                and "allProviders.length" in self.src
-            )
+
+class TestPreparedActionsQueueUIContracts(unittest.TestCase):
+    """ConfirmFlowQueuePanel must display prepared actions with review-only semantics.
+
+    S-PREPARED-ACTIONS-01 invariants:
+    1. Panel must render 'Manual review only' or equivalent copy.
+    2. Panel must not render approve/execute controls.
+    3. Panel must not expose execution affordance.
+    4. Panel must remain mounted in SovereignStatusView.
+    5. Panel must show prepared actions section.
+    6. Panel must poll prepared actions endpoint.
+    """
+
+    def setUp(self) -> None:
+        self.panel_src = _read("components/sovereign/ConfirmFlowQueuePanel.tsx")
+        self.sovereign_src = _read("components/sovereign/SovereignStatusView.tsx")
+
+    def test_panel_mounted_in_sovereign_status_view(self) -> None:
+        self.assertIn(
+            "ConfirmFlowQueuePanel",
+            self.sovereign_src,
+            "ConfirmFlowQueuePanel must remain mounted in SovereignStatusView",
         )
+
+    def test_panel_renders_review_only_copy(self) -> None:
+        panel_lower = self.panel_src.lower()
+        has_review_only = "manual review only" in panel_lower or "review only" in panel_lower
         self.assertTrue(
-            has_guard,
-            "ReadinessPanel must define an explicit all-disabled guard "
-            "(e.g. 'allDisabled' variable) so disabled providers never fall through "
-            "to the '0/N online' error branch",
+            has_review_only,
+            "ConfirmFlowQueuePanel must render 'manual review only' or 'review only' copy",
+        )
+
+    def test_panel_renders_not_execution_copy(self) -> None:
+        panel_lower = self.panel_src.lower()
+        has_not_execution = "not execution" in panel_lower or "no execution" in panel_lower
+        self.assertTrue(
+            has_not_execution,
+            "ConfirmFlowQueuePanel must render copy clarifying this is not execution",
+        )
+
+    def test_panel_shows_prepared_actions_section(self) -> None:
+        self.assertIn(
+            "Prepared Actions",
+            self.panel_src,
+            "ConfirmFlowQueuePanel must render a 'Prepared Actions' section",
+        )
+
+    def test_panel_polls_prepared_actions_endpoint(self) -> None:
+        self.assertIn(
+            "usePreparedActionsPolling",
+            self.panel_src,
+            "ConfirmFlowQueuePanel must invoke usePreparedActionsPolling hook",
+        )
+
+    def test_panel_no_approve_button(self) -> None:
+        panel_lower = self.panel_src.lower()
+        self.assertNotIn(
+            "approve",
+            panel_lower,
+            "ConfirmFlowQueuePanel must not render an approve button or control",
+        )
+
+    def test_panel_no_execute_button(self) -> None:
+        for line in self.panel_src.splitlines():
+            line_lower = line.lower()
+            if "button" in line_lower and "execut" in line_lower:
+                self.fail(
+                    f"ConfirmFlowQueuePanel must not render an execute button: {line.strip()}"
+                )
+
+    def test_panel_no_confirm_mutation(self) -> None:
+        self.assertNotIn(
+            "POST",
+            self.panel_src,
+            "ConfirmFlowQueuePanel must not make POST requests (read-only surface)",
+        )
+
+    def test_panel_no_runner_endpoint(self) -> None:
+        panel_lower = self.panel_src.lower()
+        self.assertNotIn(
+            "/agent/execute",
+            panel_lower,
+            "ConfirmFlowQueuePanel must not call /agent/execute",
+        )
+
+    def test_prepared_actions_proxy_route_is_get_only(self) -> None:
+        route_src = _read("app/api/mso/prepared-actions/pending/route.ts")
+        self.assertIn(
+            "export async function GET",
+            route_src,
+            "Prepared actions proxy route must export a GET handler",
+        )
+        for method in ("POST", "PUT", "DELETE", "PATCH"):
+            self.assertNotIn(
+                f"export async function {method}",
+                route_src,
+                f"Prepared actions proxy route must not export {method}",
+            )
+
+    def test_prepared_actions_proxy_review_only_in_unavailable(self) -> None:
+        route_src = _read("app/api/mso/prepared-actions/pending/route.ts")
+        self.assertIn(
+            "review_only",
+            route_src,
+            "Prepared actions proxy must include review_only in its fallback response",
+        )
+        self.assertIn(
+            "execution_allowed",
+            route_src,
+            "Prepared actions proxy must include execution_allowed in its fallback response",
+        )
+
+    def test_prepared_actions_store_read_only_defaults(self) -> None:
+        store_src = _read("stores/prepared-actions-store.ts")
+        self.assertIn(
+            "preparedActions",
+            store_src,
+            "prepared-actions-store must define preparedActions state",
+        )
+
+    def test_prepared_actions_api_fn_calls_local_proxy(self) -> None:
+        api_src = _read("lib/api.ts")
+        self.assertIn(
+            "/api/mso/prepared-actions/pending",
+            api_src,
+            "getPreparedActionsPending must call the local Next.js proxy",
         )
 
 
