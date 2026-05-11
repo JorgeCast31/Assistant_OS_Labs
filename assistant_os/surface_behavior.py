@@ -611,9 +611,12 @@ def _build_plan_request_provider_context() -> dict:
 
 def _build_plan_request_authority_data(user_intent: str) -> dict:
     """
-    Build a non-executing proposal + authority preparation for plan_request responses.
+    Build a non-executing proposal + authority preparation + confirmable action
+    for plan_request responses.
 
-    Calls make_orchestration_proposal then prepare_authority_from_proposal.
+    Chain: make_orchestration_proposal → prepare_authority_from_proposal →
+           build_confirmable_from_preparation.
+
     Pure: no network calls, no token issuance, no Police calls, no execution.
     Fail-closed: any exception returns safe dict with None values.
 
@@ -622,12 +625,14 @@ def _build_plan_request_authority_data(user_intent: str) -> dict:
     dict with keys:
         proposal_summary       — serialized MSOExecutionProposal (or None)
         authority_preparation  — serialized AuthorityPreparationRequest (or None)
+        confirmable_action     — serialized ConfirmablePreparedAction (or None)
         execution_allowed      — always False
         cognitive_only         — always True
     """
     try:
         from .mso.seat_model_provider_registry import make_orchestration_proposal
         from .mso.authority_preparation import prepare_authority_from_proposal
+        from .mso.confirmable_prepared_action import build_confirmable_from_preparation
 
         proposal = make_orchestration_proposal(
             user_intent=user_intent,
@@ -637,9 +642,15 @@ def _build_plan_request_authority_data(user_intent: str) -> dict:
             capability_scope=("plan_review",),
         )
         preparation = prepare_authority_from_proposal(proposal)
+        confirmable = build_confirmable_from_preparation(
+            preparation,
+            plan_steps=proposal.plan_steps,
+            risk_level=proposal.risk_level,
+        )
         return {
             "proposal_summary": proposal.to_dict(),
             "authority_preparation": preparation.to_dict(),
+            "confirmable_action": confirmable.to_dict(),
             "execution_allowed": False,
             "cognitive_only": True,
         }
@@ -647,6 +658,7 @@ def _build_plan_request_authority_data(user_intent: str) -> dict:
         return {
             "proposal_summary": None,
             "authority_preparation": None,
+            "confirmable_action": None,
             "execution_allowed": False,
             "cognitive_only": True,
         }
@@ -756,6 +768,7 @@ def _assistant_chat_router_response(
         response["provider_context"] = provider_context
         response["proposal_summary"] = authority_data.get("proposal_summary")
         response["authority_preparation"] = authority_data.get("authority_preparation")
+        response["confirmable_action"] = authority_data.get("confirmable_action")
         return response
 
     if intent_type == "needs_context":
