@@ -711,3 +711,111 @@ def test_plan_request_queued_prepared_action_artifact_type() -> None:
     qpa = result.get("queued_prepared_action")
     assert qpa is not None
     assert qpa.get("artifact_type") == "confirmable_prepared_action_queue_entry"
+
+
+# ---------------------------------------------------------------------------
+# review_queue_status — read-only queue status surface (Sprint: Read Model)
+# ---------------------------------------------------------------------------
+
+
+def test_review_queue_status_returns_surface_response() -> None:
+    """review_queue_status phrase returns surface_response."""
+    result = _route_assistant_chat_surface("What is waiting for manual review?")
+    assert result is not None
+    assert result["result_type"] == "surface_response"
+
+
+def test_review_queue_status_intent_field() -> None:
+    """review_queue_status result has intent=review_queue_status."""
+    result = _route_assistant_chat_surface("What is waiting for manual review?")
+    assert result is not None
+    assert result["intent"] == "review_queue_status"
+
+
+def test_review_queue_status_empty_queue_no_pending_items() -> None:
+    """Empty queue returns pending_review_items=[] and count=0."""
+    result = _route_assistant_chat_surface("What is waiting for manual review?")
+    assert result is not None
+    assert result["pending_review_items"] == []
+    assert result["count"] == 0
+
+
+def test_review_queue_status_execution_allowed_false() -> None:
+    """review_queue_status response always has execution_allowed=False."""
+    result = _route_assistant_chat_surface("Show pending prepared actions.")
+    assert result is not None
+    assert result["execution_allowed"] is False
+
+
+def test_review_queue_status_can_execute_now_false() -> None:
+    """review_queue_status response always has can_execute_now=False."""
+    result = _route_assistant_chat_surface("What actions are queued?")
+    assert result is not None
+    assert result["can_execute_now"] is False
+
+
+def test_review_queue_status_no_execution_artifacts() -> None:
+    """review_queue_status has no execution artifacts."""
+    result = _route_assistant_chat_surface("What is waiting for manual review?")
+    assert result is not None
+    _assert_no_execution_artifacts(result)
+
+
+def test_review_queue_status_after_plan_request_lists_item() -> None:
+    """After a plan_request, review_queue_status reports queued item."""
+    _route_assistant_chat_surface("Prepare a plan. Do not execute.")
+    result = _route_assistant_chat_surface("What is waiting for manual review?")
+    assert result is not None
+    assert result["count"] >= 1
+    assert len(result["pending_review_items"]) >= 1
+
+
+def test_review_queue_status_item_has_queue_entry_id() -> None:
+    """Queued item includes a non-empty queue_entry_id."""
+    _route_assistant_chat_surface("plan only: review docs/")
+    result = _route_assistant_chat_surface("What is waiting for manual review?")
+    assert result is not None
+    item = result["pending_review_items"][0]
+    assert item.get("queue_entry_id")
+
+
+def test_review_queue_status_item_execution_allowed_false() -> None:
+    """Queued item has execution_allowed=False."""
+    _route_assistant_chat_surface("Prepare a plan. Do not execute.")
+    result = _route_assistant_chat_surface("Show pending prepared actions.")
+    assert result is not None
+    item = result["pending_review_items"][0]
+    assert item["execution_allowed"] is False
+
+
+def test_review_queue_status_item_can_execute_now_false() -> None:
+    """Queued item has can_execute_now=False."""
+    _route_assistant_chat_surface("Prepare a plan. Do not execute.")
+    result = _route_assistant_chat_surface("What is waiting for manual review?")
+    assert result is not None
+    item = result["pending_review_items"][0]
+    assert item["can_execute_now"] is False
+
+
+def test_review_queue_status_item_human_confirmation_pending() -> None:
+    """Queued item has human_confirmation_status=pending."""
+    _route_assistant_chat_surface("plan only: deploy backend")
+    result = _route_assistant_chat_surface("What is waiting for manual review?")
+    assert result is not None
+    item = result["pending_review_items"][0]
+    assert item["human_confirmation_status"] == "pending"
+
+
+def test_review_queue_status_populated_message_says_not_execution() -> None:
+    """Populated queue message explicitly says revision manual / no execution."""
+    _route_assistant_chat_surface("Prepare a plan. Do not execute.")
+    result = _route_assistant_chat_surface("Show pending prepared actions.")
+    assert result is not None
+    msg = result["message"].lower()
+    assert "revision manual" in msg or "no ejecucion" in msg
+
+
+def test_review_queue_status_does_not_create_tasks() -> None:
+    """review_queue_status query does not register MSO tasks."""
+    _route_assistant_chat_surface("What is waiting for manual review?")
+    assert list_tasks() == []

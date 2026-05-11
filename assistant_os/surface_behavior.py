@@ -670,6 +670,63 @@ def _build_plan_request_authority_data(user_intent: str) -> dict:
         }
 
 
+def _build_review_queue_status_data() -> tuple[str, list[dict]]:
+    """
+    Read the manual review queue and build a narrative message + item list.
+
+    Read-only. Never executes, approves, issues tokens, calls Police, or
+    creates AuthorizedPlan. Fail-closed: any exception returns an empty-queue
+    safe response.
+
+    Returns
+    -------
+    tuple[str, list[dict]]
+        (message, pending_review_items)
+    """
+    try:
+        from .mso.prepared_action_queue import list_pending_confirmable_action_dicts
+        items = list_pending_confirmable_action_dicts()
+    except Exception:
+        items = []
+
+    count = len(items)
+    if count == 0:
+        message = (
+            "No hay acciones preparadas esperando revision manual en este momento. "
+            "Para agregar una accion a la cola de revision, crea una solicitud de plan "
+            "con una frase como 'Prepara un plan. No ejecutar.' "
+            "Esto es revision manual, no ejecucion."
+        )
+    else:
+        lines: list[str] = []
+        for item in items:
+            provider_note = ""
+            if item.get("provider_name") or item.get("model_name"):
+                provider_note = (
+                    f" Proveedor: {item.get('provider_name') or 'N/A'}"
+                    f"/{item.get('model_name') or 'N/A'}."
+                )
+            lines.append(
+                f"- [{item['queue_entry_id']}] "
+                f"Dominio: {item['domain']}, "
+                f"Accion: {item['requested_action']}, "
+                f"Capacidad: {item['capability_name']}, "
+                f"Estado confirmacion: {item['human_confirmation_status']}, "
+                f"execution_allowed={item['execution_allowed']}, "
+                f"can_execute_now={item['can_execute_now']}."
+                f"{provider_note}"
+            )
+        items_str = "\n".join(lines)
+        message = (
+            f"Acciones preparadas esperando revision manual ({count}):\n"
+            f"{items_str}\n"
+            "Esto es revision manual, no ejecucion. "
+            "La confirmacion humana y la cadena de autoridad siguen pendientes."
+        )
+
+    return message, items
+
+
 def _plan_request_message(provider_context: dict, authority_data: dict | None = None) -> str:
     """Build the plan_request message including seated provider info and pending authority."""
     description = provider_context.get("provider_description") or ""
@@ -777,6 +834,24 @@ def _assistant_chat_router_response(
         response["authority_preparation"] = authority_data.get("authority_preparation")
         response["confirmable_action"] = authority_data.get("confirmable_action")
         response["queued_prepared_action"] = authority_data.get("queued_prepared_action")
+        return response
+
+    if intent_type == "review_queue_status":
+        msg, pending_items = _build_review_queue_status_data()
+        response = _build_surface_response(
+            message=msg,
+            domain="ASSISTANT",
+            surface=surface,
+            context_id=context_id,
+            identity=identity,
+            guard_result=guard_result,
+            result_type="surface_response",
+            intent="review_queue_status",
+        )
+        response["pending_review_items"] = pending_items
+        response["count"] = len(pending_items)
+        response["execution_allowed"] = False
+        response["can_execute_now"] = False
         return response
 
     if intent_type == "needs_context":

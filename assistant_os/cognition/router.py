@@ -15,6 +15,7 @@ RouterIntentType = Literal[
     "conversational",
     "capability_summary",
     "read_only_status",
+    "review_queue_status",
     "needs_context",
     "executable_intent",
     "plan_request",
@@ -43,6 +44,7 @@ ALLOWED_INTENT_TYPES: frozenset[str] = frozenset(
         "conversational",
         "capability_summary",
         "read_only_status",
+        "review_queue_status",
         "needs_context",
         "executable_intent",
         "plan_request",
@@ -77,6 +79,29 @@ _CAPABILITY_RE = re.compile(
     r"|what\s+are\s+your\s+capabilities"
     r"|capabilit(?:y|ies)"
     r")$"
+)
+
+# RC-4: review_queue_status — manual review queue status queries (substring match)
+_REVIEW_QUEUE_RE = re.compile(
+    r"(?:"
+    r"\bwaiting\s+for\s+manual\s+review\b"
+    r"|\bwhat\s+is\s+waiting\b"
+    r"|\bshow\s+pending\s+(?:prepared\s+)?actions?\b"
+    r"|\bpending\s+prepared\s+actions?\b"
+    r"|\bwhat\s+(?:actions?\s+(?:are|is)\s+)?queued\b"
+    r"|\bwhat\s+did\s+you\s+prepare\b"
+    r"|\bwhat\s+authority\s+is\s+(?:still\s+)?pending\b"
+    r"|\bwhat\s+can\s+code\s+do\s+next\b"
+    r"|\breview\s+queue\b"
+    r"|\bqueue\s+status\b"
+    r"|\bque\s+esta\s+esperando\b"
+    r"|\bque\s+acciones\s+estan\s+en\s+cola\b"
+    r"|\bmuestra\s+(?:las\s+)?acciones?\s+pendientes?\b"
+    r"|\bque\s+preparaste\b"
+    r"|\bacciones?\s+en\s+cola\b"
+    r"|\bacciones?\s+pendientes?\s+de\s+revision\b"
+    r"|\bpendiente(?:s)?\s+de\s+revision\s+manual\b"
+    r")"
 )
 
 # RC-3: plan_request — plan-only / dry-run phrases (substring match)
@@ -248,6 +273,15 @@ def _route_normalized_text(normalized: str) -> RouterResult:
             action="READ_ONLY_STATUS",
             confidence=0.94,
             routing_reason="matched read-only system status request",
+        )
+
+    if _REVIEW_QUEUE_RE.search(normalized):
+        return _base_result(
+            intent_type="review_queue_status",
+            domain="ASSISTANT",
+            action="REVIEW_QUEUE_STATUS",
+            confidence=0.91,
+            routing_reason="matched manual review queue status request",
         )
 
     code_result = _route_code(normalized)
