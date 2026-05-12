@@ -13,6 +13,7 @@ export { SecurityView } from './SecurityView'
 export { MSOView } from './MSOView'
 export { MissionControlView } from './MissionControlView'
 export { AuthorityTimeline, deriveAuthorityTimeline } from './AuthorityTimeline'
+export { PreparedActionDetailPanel } from './PreparedActionDetailPanel'
 export { AgentPanel } from './AgentPanel'
 export { MachineOperatorConsole } from './MachineOperatorConsole'
 

@@ -228,7 +228,7 @@ export function MissionControlView() {
             <div className="rounded-lg border border-warn/30 bg-warn/5 p-3">
               <p className="text-[10px] font-mono text-warn">
                 {preparedCount} prepared action{preparedCount !== 1 ? 's' : ''} waiting for manual review.
-                Execution remains closed. Each action includes a read-only authority timeline showing all 11 stages. Review in Sovereign Status → Confirm Queue.
+                Execution remains closed. Each action includes a read-only authority timeline showing all 11 stages. Open Confirm Queue to inspect prepared action details.
               </p>
             </div>
           ) : (
