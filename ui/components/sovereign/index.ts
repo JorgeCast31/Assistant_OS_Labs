@@ -14,6 +14,7 @@ export { MSOView } from './MSOView'
 export { MissionControlView } from './MissionControlView'
 export { AuthorityTimeline, deriveAuthorityTimeline } from './AuthorityTimeline'
 export { PreparedActionDetailPanel } from './PreparedActionDetailPanel'
+export { PreparedActionInputTrace, deriveInputTrace } from './PreparedActionInputTrace'
 export { AgentPanel } from './AgentPanel'
 export { MachineOperatorConsole } from './MachineOperatorConsole'
 

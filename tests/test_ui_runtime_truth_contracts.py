@@ -2413,5 +2413,246 @@ class TestPreparedActionDetailInspector(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# TestPreparedActionInputTrace — S-INPUT-TRACE-01
+# ---------------------------------------------------------------------------
+
+
+class TestPreparedActionInputTrace(unittest.TestCase):
+    """
+    Contract tests for PreparedActionInputTrace — read-only origin trace.
+
+    S-INPUT-TRACE-01 invariants:
+    1. File exists.
+    2. Component and deriveInputTrace exported from sovereign/index.ts.
+    3. Imports PreparedActionQueueEntry.
+    4. Renders all 10 expected trace stage labels.
+    5. References all required data fields.
+    6. Contains read-only / origin trace copy.
+    7. No approve/execute mutation controls.
+    8. PreparedActionDetailPanel imports and renders PreparedActionInputTrace.
+    9. AuthorityTimeline contract still holds.
+    10. MissionControlView still present.
+    """
+
+    TRACE_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "PreparedActionInputTrace.tsx"
+    DETAIL_PANEL_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "PreparedActionDetailPanel.tsx"
+    INDEX_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "index.ts"
+    TIMELINE_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "AuthorityTimeline.tsx"
+    MISSION_CONTROL_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "MissionControlView.tsx"
+
+    EXPECTED_STAGE_LABELS = [
+        'User Input',
+        'Domain Classification',
+        'Requested Action',
+        'Capability Mapping',
+        'MSO Seat Provider',
+        'Proposal Artifact',
+        'Authority Preparation',
+        'Confirmable Action',
+        'Review Queue Entry',
+        'Current Boundary',
+    ]
+
+    def setUp(self) -> None:
+        self.assertTrue(self.TRACE_PATH.exists(), "PreparedActionInputTrace.tsx must exist")
+        self.trace_src = self.TRACE_PATH.read_text()
+        self.detail_panel_src = self.DETAIL_PANEL_PATH.read_text()
+        self.index_src = self.INDEX_PATH.read_text()
+        self.timeline_src = self.TIMELINE_PATH.read_text()
+        self.mission_control_src = self.MISSION_CONTROL_PATH.read_text()
+
+    # ── 1. File existence ────────────────────────────────────────────────────
+
+    def test_file_exists(self) -> None:
+        self.assertTrue(self.TRACE_PATH.exists(), "PreparedActionInputTrace.tsx must exist")
+
+    # ── 2. Exports ───────────────────────────────────────────────────────────
+
+    def test_component_exported_from_index(self) -> None:
+        self.assertIn(
+            "PreparedActionInputTrace",
+            self.index_src,
+            "PreparedActionInputTrace must be exported from sovereign/index.ts",
+        )
+
+    def test_derive_function_exported_from_index(self) -> None:
+        self.assertIn(
+            "deriveInputTrace",
+            self.index_src,
+            "deriveInputTrace must be exported from sovereign/index.ts",
+        )
+
+    def test_component_export_function_present(self) -> None:
+        self.assertIn(
+            "export function PreparedActionInputTrace",
+            self.trace_src,
+        )
+
+    def test_derive_function_export_present(self) -> None:
+        self.assertIn(
+            "export function deriveInputTrace",
+            self.trace_src,
+        )
+
+    # ── 3. Type import ───────────────────────────────────────────────────────
+
+    def test_imports_prepared_action_queue_entry(self) -> None:
+        self.assertIn("PreparedActionQueueEntry", self.trace_src)
+
+    # ── 4. Stage labels ──────────────────────────────────────────────────────
+
+    def test_renders_user_input_stage(self) -> None:
+        self.assertIn("User Input", self.trace_src)
+
+    def test_renders_domain_classification_stage(self) -> None:
+        self.assertIn("Domain Classification", self.trace_src)
+
+    def test_renders_requested_action_stage(self) -> None:
+        self.assertIn("Requested Action", self.trace_src)
+
+    def test_renders_capability_mapping_stage(self) -> None:
+        self.assertIn("Capability Mapping", self.trace_src)
+
+    def test_renders_mso_seat_provider_stage(self) -> None:
+        self.assertIn("MSO Seat Provider", self.trace_src)
+
+    def test_renders_proposal_artifact_stage(self) -> None:
+        self.assertIn("Proposal Artifact", self.trace_src)
+
+    def test_renders_authority_preparation_stage(self) -> None:
+        self.assertIn("Authority Preparation", self.trace_src)
+
+    def test_renders_confirmable_action_stage(self) -> None:
+        self.assertIn("Confirmable Action", self.trace_src)
+
+    def test_renders_review_queue_entry_stage(self) -> None:
+        self.assertIn("Review Queue Entry", self.trace_src)
+
+    def test_renders_current_boundary_stage(self) -> None:
+        self.assertIn("Current Boundary", self.trace_src)
+
+    def test_all_expected_stages_present(self) -> None:
+        for label in self.EXPECTED_STAGE_LABELS:
+            self.assertIn(label, self.trace_src, f"Stage '{label}' must be present in PreparedActionInputTrace")
+
+    # ── 5. Data field references ─────────────────────────────────────────────
+
+    def test_uses_user_intent(self) -> None:
+        self.assertIn("user_intent", self.trace_src)
+
+    def test_uses_domain(self) -> None:
+        self.assertIn("domain", self.trace_src)
+
+    def test_uses_requested_action(self) -> None:
+        self.assertIn("requested_action", self.trace_src)
+
+    def test_uses_capability_name(self) -> None:
+        self.assertIn("capability_name", self.trace_src)
+
+    def test_uses_capability_scope(self) -> None:
+        self.assertIn("capability_scope", self.trace_src)
+
+    def test_uses_provider_name(self) -> None:
+        self.assertIn("provider_name", self.trace_src)
+
+    def test_uses_model_name(self) -> None:
+        self.assertIn("model_name", self.trace_src)
+
+    def test_uses_delegated_seat_ref(self) -> None:
+        self.assertIn("delegated_seat_ref", self.trace_src)
+
+    def test_uses_proposal_id(self) -> None:
+        self.assertIn("proposal_id", self.trace_src)
+
+    def test_uses_preparation_id(self) -> None:
+        self.assertIn("preparation_id", self.trace_src)
+
+    def test_uses_prepared_action_id(self) -> None:
+        self.assertIn("prepared_action_id", self.trace_src)
+
+    def test_uses_queue_entry_id(self) -> None:
+        self.assertIn("queue_entry_id", self.trace_src)
+
+    # ── 6. Read-only copy ────────────────────────────────────────────────────
+
+    def test_mentions_origin_trace(self) -> None:
+        self.assertIn("Origin Trace", self.trace_src)
+
+    def test_mentions_read_only(self) -> None:
+        self.assertIn("read-only", self.trace_src)
+
+    def test_mentions_does_not_execute(self) -> None:
+        self.assertIn("does not execute", self.trace_src)
+
+    def test_mentions_does_not_approve(self) -> None:
+        self.assertIn("does not", self.trace_src)
+        self.assertIn("approve", self.trace_src)
+
+    def test_mentions_does_not_mutate(self) -> None:
+        self.assertIn("mutate", self.trace_src)
+
+    # ── 7. No mutation controls ──────────────────────────────────────────────
+
+    def test_no_approve_handler(self) -> None:
+        self.assertNotIn("onApprove", self.trace_src)
+        self.assertNotIn("handleApprove", self.trace_src)
+
+    def test_no_execute_handler(self) -> None:
+        self.assertNotIn("handleExecute", self.trace_src)
+        self.assertNotIn("onExecute", self.trace_src)
+
+    def test_no_button_elements(self) -> None:
+        self.assertNotIn("<button", self.trace_src)
+
+    def test_no_post_request(self) -> None:
+        self.assertNotIn("POST", self.trace_src)
+
+    # ── 8. PreparedActionDetailPanel wiring ──────────────────────────────────
+
+    def test_detail_panel_imports_input_trace(self) -> None:
+        self.assertIn(
+            "PreparedActionInputTrace",
+            self.detail_panel_src,
+            "PreparedActionDetailPanel must import PreparedActionInputTrace",
+        )
+
+    def test_detail_panel_renders_input_trace(self) -> None:
+        self.assertIn(
+            "<PreparedActionInputTrace",
+            self.detail_panel_src,
+            "PreparedActionDetailPanel must render <PreparedActionInputTrace",
+        )
+
+    # ── 9. AuthorityTimeline contract still holds ─────────────────────────────
+
+    def test_authority_timeline_still_present(self) -> None:
+        self.assertTrue(
+            self.TIMELINE_PATH.exists(),
+            "AuthorityTimeline.tsx must still exist after trace sprint",
+        )
+
+    def test_detail_panel_still_uses_authority_timeline(self) -> None:
+        self.assertIn(
+            "<AuthorityTimeline",
+            self.detail_panel_src,
+            "PreparedActionDetailPanel must still render AuthorityTimeline",
+        )
+
+    # ── 10. MissionControlView still present ──────────────────────────────────
+
+    def test_mission_control_file_exists(self) -> None:
+        self.assertTrue(
+            self.MISSION_CONTROL_PATH.exists(),
+            "MissionControlView.tsx must still exist after trace sprint",
+        )
+
+    def test_mission_control_source_nonempty(self) -> None:
+        self.assertTrue(
+            self.mission_control_src.strip(),
+            "MissionControlView.tsx must have content",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
