@@ -867,6 +867,27 @@ def _assistant_chat_router_response(
             missing_fields=router_result.get("missing_fields") or ["intent"],
         )
 
+    # MSO Narrative Runtime — non-executing cognitive fallback for operational queries.
+    # Intercepts unknown_ambiguous when normalized text matches safe MSO/operational patterns.
+    try:
+        from .mso.narrative_runtime import is_mso_narrative_intent, build_narrative_context_message
+        if is_mso_narrative_intent(normalized):
+            _msg, _ctx = build_narrative_context_message()
+            _resp = _build_surface_response(
+                message=_msg,
+                domain="MSO",
+                surface=surface,
+                context_id=context_id,
+                identity=identity,
+                guard_result=guard_result,
+                result_type="surface_response",
+                intent="mso_narrative_status",
+            )
+            _resp["narrative_context"] = _ctx
+            return _resp
+    except Exception:
+        pass
+
     return _build_surface_response(
         message=_assistant_chat_unknown_message(router_result),
         domain="UNKNOWN",
