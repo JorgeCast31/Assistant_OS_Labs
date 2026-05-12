@@ -1782,6 +1782,87 @@ class TestMSOViewLiveSeatReconciliation(unittest.TestCase):
             "ui/lib/types.ts must export MSOSeatProviderDetail",
         )
 
+    # ── Post-PR#178 reconciliation additions ────────────────────────────────
+
+    def test_mso_view_imports_prepared_actions_polling(self) -> None:
+        self.assertIn(
+            "usePreparedActionsPolling",
+            self.mso_src,
+            "MSOView must import usePreparedActionsPolling after PR#178 queue is active",
+        )
+
+    def test_mso_view_imports_confirm_pending_polling(self) -> None:
+        self.assertIn(
+            "useConfirmPendingPolling",
+            self.mso_src,
+            "MSOView must import useConfirmPendingPolling",
+        )
+
+    def test_mso_view_imports_prepared_actions_store(self) -> None:
+        self.assertIn(
+            "usePreparedActionsStore",
+            self.mso_src,
+            "MSOView must import usePreparedActionsStore",
+        )
+
+    def test_mso_view_imports_confirm_pending_store(self) -> None:
+        self.assertIn(
+            "useConfirmPendingStore",
+            self.mso_src,
+            "MSOView must import useConfirmPendingStore",
+        )
+
+    def test_mso_view_queue_timeline_section(self) -> None:
+        has_section = (
+            "Queue" in self.mso_src and "Timeline" in self.mso_src
+        )
+        self.assertTrue(
+            has_section,
+            "MSOView must contain a Queue & Timeline Summary section",
+        )
+
+    def test_mso_view_references_authority_timeline(self) -> None:
+        self.assertIn(
+            "authority timeline",
+            self.mso_src.lower(),
+            "MSOView must reference 'authority timeline' in its queue section",
+        )
+
+    def test_mso_view_references_eleven_stages(self) -> None:
+        self.assertIn(
+            "11",
+            self.mso_src,
+            "MSOView queue section must reference the 11-stage authority timeline",
+        )
+
+    def test_mso_view_next_safe_step_section(self) -> None:
+        self.assertIn(
+            "Next Safe Step",
+            self.mso_src,
+            "MSOView must contain a 'Next Safe Step' section",
+        )
+
+    def test_mso_view_next_step_references_plan_request(self) -> None:
+        self.assertIn(
+            "plan_request",
+            self.mso_src,
+            "MSOView Next Safe Step must reference 'plan_request'",
+        )
+
+    def test_mso_view_execution_remains_closed(self) -> None:
+        self.assertIn(
+            "execution remains closed",
+            self.mso_src.lower(),
+            "MSOView must state 'execution remains closed'",
+        )
+
+    def test_mso_view_references_mission_control(self) -> None:
+        self.assertIn(
+            "Mission Control",
+            self.mso_src,
+            "MSOView queue section must point to Mission Control",
+        )
+
 
 # ---------------------------------------------------------------------------
 # TestMissionControlV1 — Mission Control v1 Read-only Situation Room

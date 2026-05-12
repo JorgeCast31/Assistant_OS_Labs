@@ -3,6 +3,10 @@
 import { useUIStore } from '@/stores/ui-store'
 import { useSeatProviderPolling } from '@/hooks/use-seat-provider-polling'
 import { useSeatProviderStore } from '@/stores/seat-provider-store'
+import { usePreparedActionsPolling } from '@/hooks/use-prepared-actions-polling'
+import { usePreparedActionsStore } from '@/stores/prepared-actions-store'
+import { useConfirmPendingPolling } from '@/hooks/use-confirm-pending-polling'
+import { useConfirmPendingStore } from '@/stores/confirm-pending-store'
 import { ExecutionNotOpenPanel } from './ExecutionNotOpenPanel'
 
 function StatusRow({
@@ -43,11 +47,16 @@ function availabilityTone(availability: string | undefined, isAvailable: boolean
 
 export function MSOView() {
   useSeatProviderPolling()
+  usePreparedActionsPolling()
+  useConfirmPendingPolling()
 
   const { operationalMode } = useUIStore((s) => s.systemData)
   const seatProvider = useSeatProviderStore((s) => s.seatProvider)
   const lastPolled = useSeatProviderStore((s) => s.lastPolled)
   const pollError = useSeatProviderStore((s) => s.pollError)
+
+  const preparedActions = usePreparedActionsStore((s) => s.preparedActions)
+  const confirmPending = useConfirmPendingStore((s) => s.confirmPending)
 
   const provider = seatProvider?.seat_provider ?? null
   const providerLoaded = seatProvider !== null
@@ -57,6 +66,28 @@ export function MSOView() {
   const isAvailable = provider?.is_available ?? false
   const availability = provider?.availability ?? null
   const localOrRemote = provider?.local_or_remote ?? null
+
+  const preparedCount = preparedActions?.count ?? 0
+  const confirmCount = confirmPending?.pending_count ?? 0
+
+  const nextStep = (() => {
+    if (operationalMode !== 'NORMAL' && operationalMode !== 'UNKNOWN') {
+      return {
+        text: 'Resolve governance restriction.',
+        sub: `Operational mode: ${operationalMode}. Review governance status.`,
+      }
+    }
+    if (preparedCount > 0) {
+      return {
+        text: 'Review prepared action authority timeline.',
+        sub: `${preparedCount} action${preparedCount !== 1 ? 's' : ''} pending manual review. Open Mission Control or Confirm Queue to see the 11-stage authority timeline.`,
+      }
+    }
+    return {
+      text: 'Create a plan_request.',
+      sub: 'No prepared actions pending. Send a plan_request to the cognitive seat to begin a governed workflow.',
+    }
+  })()
 
   return (
     <div className="h-full overflow-y-auto bg-os-base">
@@ -235,6 +266,56 @@ export function MSOView() {
               tone="muted"
               note="Full authority chain (PolicyDecision → CapabilityToken → OperationBinding → AuthorizedPlan → PoliceGate) not yet wired for CODE/docs. Not implemented in current sprint."
             />
+          </div>
+        </section>
+
+        {/* Queue & Timeline Summary */}
+        <section>
+          <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
+            Queue &amp; Timeline Summary
+          </p>
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <div className="bg-os-surface border border-os-border rounded-lg p-4">
+              <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider mb-1">Prepared Actions</p>
+              <p className={`text-2xl font-mono font-semibold ${preparedCount > 0 ? 'text-warn' : 'text-ok'}`}>
+                {preparedActions === null ? '…' : preparedCount}
+              </p>
+            </div>
+            <div className="bg-os-surface border border-os-border rounded-lg p-4">
+              <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider mb-1">Confirm Pending</p>
+              <p className={`text-2xl font-mono font-semibold ${confirmCount > 0 ? 'text-warn' : 'text-ok'}`}>
+                {confirmPending === null ? '…' : confirmCount}
+              </p>
+            </div>
+          </div>
+          <div className="rounded-lg border border-os-border bg-os-surface p-3">
+            <p className="text-[10px] font-mono text-tx-muted leading-relaxed">
+              Each prepared action includes a read-only authority timeline showing all 11 stages
+              (Proposal → AuthorityPreparation → ConfirmableAction → ManualReviewQueue →
+              HumanConfirmation → PolicyDecision → CapabilityToken → OperationBinding →
+              AuthorizedPlan → PoliceGate → Execution). Execution remains closed.
+            </p>
+            <p className="text-[10px] font-mono text-tx-muted mt-1">
+              Live. View full timeline in Mission Control or Confirm Queue panel.
+            </p>
+          </div>
+        </section>
+
+        {/* Next Safe Step */}
+        <section>
+          <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
+            Next Safe Step
+          </p>
+          <div className="space-y-2">
+            <div className="rounded-lg border border-accent/30 bg-accent/5 p-4">
+              <p className="text-xs font-mono text-accent">{nextStep.text}</p>
+              <p className="mt-1 text-[10px] font-mono text-tx-muted">{nextStep.sub}</p>
+            </div>
+            <div className="rounded-lg border border-os-border bg-os-surface p-3">
+              <p className="text-[10px] font-mono text-tx-muted">
+                Execution remains closed. No action from this panel executes, approves, or issues tokens.
+              </p>
+            </div>
           </div>
         </section>
 
