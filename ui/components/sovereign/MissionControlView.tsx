@@ -10,6 +10,7 @@ import { useSeatProviderPolling } from '@/hooks/use-seat-provider-polling'
 import { usePreparedActionsPolling } from '@/hooks/use-prepared-actions-polling'
 import { useConfirmPendingPolling } from '@/hooks/use-confirm-pending-polling'
 import { useAuthorityStatusPolling } from '@/hooks/use-authority-status-polling'
+import { MissionControlChainView } from './MissionControlChainView'
 
 // ── Sub-components ──────────────────────────────────────────────────────────
 
@@ -95,6 +96,7 @@ export function MissionControlView() {
 
   const provider = seatProvider?.seat_provider ?? null
   const preparedCount = preparedActions?.count ?? 0
+  const latestItem = preparedActions?.items?.[0] ?? null
   const confirmCount = confirmPending?.pending_count ?? 0
   const authCounts = authorityStatus?.counts ?? null
   const modeOk = operationalMode === 'NORMAL'
@@ -234,6 +236,14 @@ export function MissionControlView() {
           ) : (
             <PostureRow label="Queue Status" value="Clear" tone="ok" note="No prepared actions pending." />
           )}
+        </section>
+
+        {/* Current Operational Chain */}
+        <section>
+          <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
+            Current Operational Chain
+          </p>
+          <MissionControlChainView latestItem={latestItem} totalCount={preparedCount} />
         </section>
 
         {/* Authority Posture */}

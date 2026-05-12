@@ -2654,5 +2654,251 @@ class TestPreparedActionInputTrace(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# TestMissionControlLiveChainView — S-MC-CHAIN-01
+# ---------------------------------------------------------------------------
+
+
+class TestMissionControlLiveChainView(unittest.TestCase):
+    """
+    Contract tests for MissionControlChainView — read-only operational chain.
+
+    S-MC-CHAIN-01 invariants:
+    1. File exists.
+    2. Component exported from sovereign/index.ts.
+    3. Imports PreparedActionQueueEntry.
+    4. Renders Current Operational Chain section.
+    5. Renders all 10 chain stage labels.
+    6. References all required data fields.
+    7. Contains read-only and execution-closed copy.
+    8. No approve/execute/reject mutation controls.
+    9. MissionControlView imports and renders MissionControlChainView.
+    10. MissionControlView derives latest prepared action from items.
+    11. Existing PreparedActionDetailPanel and AuthorityTimeline contracts hold.
+    """
+
+    CHAIN_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "MissionControlChainView.tsx"
+    MISSION_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "MissionControlView.tsx"
+    INDEX_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "index.ts"
+    DETAIL_PANEL_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "PreparedActionDetailPanel.tsx"
+    TIMELINE_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "AuthorityTimeline.tsx"
+
+    EXPECTED_STAGES = [
+        'Input',
+        'Intent / Domain',
+        'Capability',
+        'Provider',
+        'Proposal',
+        'AuthorityPreparation',
+        'ConfirmableAction',
+        'ManualReviewQueue',
+        'Authority Pending',
+        'Execution Closed',
+    ]
+
+    def setUp(self) -> None:
+        self.assertTrue(self.CHAIN_PATH.exists(), "MissionControlChainView.tsx must exist")
+        self.chain_src = self.CHAIN_PATH.read_text()
+        self.mission_src = self.MISSION_PATH.read_text()
+        self.index_src = self.INDEX_PATH.read_text()
+        self.detail_panel_src = self.DETAIL_PANEL_PATH.read_text()
+        self.timeline_src = self.TIMELINE_PATH.read_text()
+
+    # ── 1. File existence ────────────────────────────────────────────────────
+
+    def test_file_exists(self) -> None:
+        self.assertTrue(self.CHAIN_PATH.exists(), "MissionControlChainView.tsx must exist")
+
+    # ── 2. Export ────────────────────────────────────────────────────────────
+
+    def test_component_exported_from_index(self) -> None:
+        self.assertIn(
+            "MissionControlChainView",
+            self.index_src,
+            "MissionControlChainView must be exported from sovereign/index.ts",
+        )
+
+    def test_component_export_function_present(self) -> None:
+        self.assertIn(
+            "export function MissionControlChainView",
+            self.chain_src,
+        )
+
+    # ── 3. Type import ───────────────────────────────────────────────────────
+
+    def test_imports_prepared_action_queue_entry(self) -> None:
+        self.assertIn("PreparedActionQueueEntry", self.chain_src)
+
+    # ── 4. Current Operational Chain section ─────────────────────────────────
+
+    def test_renders_current_operational_chain(self) -> None:
+        self.assertIn(
+            "Current Operational Chain",
+            self.chain_src,
+            "MissionControlChainView must render 'Current Operational Chain'",
+        )
+
+    # ── 5. Stage labels ──────────────────────────────────────────────────────
+
+    def test_renders_input_stage(self) -> None:
+        self.assertIn("Input", self.chain_src)
+
+    def test_renders_intent_domain_stage(self) -> None:
+        self.assertIn("Intent", self.chain_src)
+        self.assertIn("Domain", self.chain_src)
+
+    def test_renders_capability_stage(self) -> None:
+        self.assertIn("Capability", self.chain_src)
+
+    def test_renders_provider_stage(self) -> None:
+        self.assertIn("Provider", self.chain_src)
+
+    def test_renders_proposal_stage(self) -> None:
+        self.assertIn("Proposal", self.chain_src)
+
+    def test_renders_authority_preparation_stage(self) -> None:
+        self.assertIn("AuthorityPreparation", self.chain_src)
+
+    def test_renders_confirmable_action_stage(self) -> None:
+        self.assertIn("ConfirmableAction", self.chain_src)
+
+    def test_renders_manual_review_queue_stage(self) -> None:
+        self.assertIn("ManualReviewQueue", self.chain_src)
+
+    def test_renders_authority_pending_stage(self) -> None:
+        self.assertIn("Authority Pending", self.chain_src)
+
+    def test_renders_execution_closed_stage(self) -> None:
+        self.assertIn("Execution Closed", self.chain_src)
+
+    def test_all_expected_stages_present(self) -> None:
+        for label in self.EXPECTED_STAGES:
+            self.assertIn(
+                label,
+                self.chain_src,
+                f"Stage '{label}' must be present in MissionControlChainView",
+            )
+
+    # ── 6. Data field references ─────────────────────────────────────────────
+
+    def test_uses_user_intent(self) -> None:
+        self.assertIn("user_intent", self.chain_src)
+
+    def test_uses_domain(self) -> None:
+        self.assertIn("domain", self.chain_src)
+
+    def test_uses_requested_action(self) -> None:
+        self.assertIn("requested_action", self.chain_src)
+
+    def test_uses_capability_name(self) -> None:
+        self.assertIn("capability_name", self.chain_src)
+
+    def test_uses_capability_scope(self) -> None:
+        self.assertIn("capability_scope", self.chain_src)
+
+    def test_uses_provider_name(self) -> None:
+        self.assertIn("provider_name", self.chain_src)
+
+    def test_uses_model_name(self) -> None:
+        self.assertIn("model_name", self.chain_src)
+
+    def test_uses_proposal_id(self) -> None:
+        self.assertIn("proposal_id", self.chain_src)
+
+    def test_uses_preparation_id(self) -> None:
+        self.assertIn("preparation_id", self.chain_src)
+
+    def test_uses_prepared_action_id(self) -> None:
+        self.assertIn("prepared_action_id", self.chain_src)
+
+    def test_uses_queue_entry_id(self) -> None:
+        self.assertIn("queue_entry_id", self.chain_src)
+
+    # ── 7. Read-only and execution-closed copy ───────────────────────────────
+
+    def test_mentions_read_only(self) -> None:
+        self.assertIn("read-only", self.chain_src)
+
+    def test_mentions_execution_remains_closed(self) -> None:
+        self.assertIn("Execution remains closed", self.chain_src)
+
+    def test_mentions_does_not_execute(self) -> None:
+        self.assertIn("does not execute", self.chain_src)
+
+    def test_mentions_does_not_approve(self) -> None:
+        self.assertIn("does not", self.chain_src)
+        self.assertIn("approve", self.chain_src)
+
+    # ── 8. No mutation controls ──────────────────────────────────────────────
+
+    def test_no_approve_handler(self) -> None:
+        self.assertNotIn("onApprove", self.chain_src)
+        self.assertNotIn("handleApprove", self.chain_src)
+
+    def test_no_execute_handler(self) -> None:
+        self.assertNotIn("handleExecute", self.chain_src)
+        self.assertNotIn("onExecute", self.chain_src)
+
+    def test_no_button_elements(self) -> None:
+        self.assertNotIn("<button", self.chain_src)
+
+    def test_no_post_request(self) -> None:
+        self.assertNotIn("POST", self.chain_src)
+
+    # ── 9. MissionControlView wiring ─────────────────────────────────────────
+
+    def test_mission_control_imports_chain_view(self) -> None:
+        self.assertIn(
+            "MissionControlChainView",
+            self.mission_src,
+            "MissionControlView must import MissionControlChainView",
+        )
+
+    def test_mission_control_renders_chain_view(self) -> None:
+        self.assertIn(
+            "<MissionControlChainView",
+            self.mission_src,
+            "MissionControlView must render <MissionControlChainView",
+        )
+
+    # ── 10. MissionControlView derives latest prepared action ─────────────────
+
+    def test_mission_control_derives_latest_item(self) -> None:
+        self.assertIn(
+            "latestItem",
+            self.mission_src,
+            "MissionControlView must derive latestItem from prepared actions",
+        )
+
+    def test_mission_control_accesses_items(self) -> None:
+        self.assertIn(
+            "items",
+            self.mission_src,
+            "MissionControlView must access prepared actions items array",
+        )
+
+    # ── 11. Existing contracts still hold ────────────────────────────────────
+
+    def test_authority_timeline_file_still_present(self) -> None:
+        self.assertTrue(
+            self.TIMELINE_PATH.exists(),
+            "AuthorityTimeline.tsx must still exist after chain view sprint",
+        )
+
+    def test_detail_panel_still_uses_authority_timeline(self) -> None:
+        self.assertIn(
+            "<AuthorityTimeline",
+            self.detail_panel_src,
+            "PreparedActionDetailPanel must still render AuthorityTimeline",
+        )
+
+    def test_detail_panel_still_uses_input_trace(self) -> None:
+        self.assertIn(
+            "<PreparedActionInputTrace",
+            self.detail_panel_src,
+            "PreparedActionDetailPanel must still render PreparedActionInputTrace",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
