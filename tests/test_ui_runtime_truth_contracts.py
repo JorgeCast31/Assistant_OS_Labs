@@ -1783,5 +1783,135 @@ class TestMSOViewLiveSeatReconciliation(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# TestMissionControlV1 — Mission Control v1 Read-only Situation Room
+# ---------------------------------------------------------------------------
+
+
+class TestMissionControlV1(unittest.TestCase):
+    """
+    Contract tests for Mission Control v1 read-only composite panel.
+    """
+
+    COMPONENT_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "MissionControlView.tsx"
+    SHELL_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "SovereignShell.tsx"
+    SIDEBAR_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "SidebarNavigation.tsx"
+    INDEX_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "index.ts"
+    TYPES_PATH = Path(__file__).parent.parent / "ui" / "lib" / "sovereign" / "types.ts"
+
+    def setUp(self) -> None:
+        self.assertTrue(self.COMPONENT_PATH.exists(), "MissionControlView.tsx must exist")
+        self.component_src = self.COMPONENT_PATH.read_text()
+        self.shell_src = self.SHELL_PATH.read_text()
+        self.sidebar_src = self.SIDEBAR_PATH.read_text()
+        self.index_src = self.INDEX_PATH.read_text()
+        self.types_src = self.TYPES_PATH.read_text()
+
+    def test_mission_control_file_exists(self) -> None:
+        self.assertTrue(self.COMPONENT_PATH.exists(), "MissionControlView.tsx must exist")
+
+    def test_mission_control_exported_from_index(self) -> None:
+        self.assertIn("MissionControlView", self.index_src)
+
+    def test_mission_control_imported_in_shell(self) -> None:
+        self.assertIn("MissionControlView", self.shell_src)
+
+    def test_mission_control_case_in_shell(self) -> None:
+        self.assertIn("mission-control", self.shell_src)
+
+    def test_sovereign_view_id_includes_mission_control(self) -> None:
+        self.assertIn("mission-control", self.types_src)
+
+    def test_sidebar_includes_mission_control_zone(self) -> None:
+        self.assertIn("mission-control", self.sidebar_src)
+
+    def test_sidebar_includes_mission_control_label(self) -> None:
+        self.assertIn("Mission Control", self.sidebar_src)
+
+    def test_contains_read_only_copy(self) -> None:
+        self.assertIn("Read-only", self.component_src)
+
+    def test_contains_does_not_execute_copy(self) -> None:
+        self.assertIn("does not execute", self.component_src)
+
+    def test_contains_execution_remains_closed_copy(self) -> None:
+        self.assertIn("execution remains", self.component_src.lower())
+
+    def test_no_approve_button(self) -> None:
+        # Component may mention "approves" in safety copy — check for mutation handlers only
+        self.assertNotIn("handleApprove", self.component_src)
+        self.assertNotIn("onApprove", self.component_src)
+        self.assertNotIn("postApprove", self.component_src)
+
+    def test_no_handle_execute(self) -> None:
+        self.assertNotIn("handleExecute", self.component_src)
+
+    def test_no_post_confirm_mutation(self) -> None:
+        self.assertNotIn("postConfirm", self.component_src)
+
+    def test_no_issue_token(self) -> None:
+        self.assertNotIn("issueToken", self.component_src)
+
+    def test_no_authorized_plan_creation(self) -> None:
+        # Component may reference "AuthorizedPlan" in read-only posture copy.
+        # Check that it is NOT imported as a TypeScript type (i.e., not used as a constructor).
+        self.assertNotIn("import.*AuthorizedPlan", self.component_src)
+        self.assertNotIn("new AuthorizedPlan", self.component_src)
+
+    def test_references_mso_seat_section(self) -> None:
+        self.assertIn("MSO Seat", self.component_src)
+
+    def test_imports_seat_provider_store(self) -> None:
+        self.assertIn("useSeatProviderStore", self.component_src)
+
+    def test_imports_seat_provider_polling(self) -> None:
+        self.assertIn("useSeatProviderPolling", self.component_src)
+
+    def test_references_prepared_actions_store(self) -> None:
+        self.assertIn("preparedActions", self.component_src)
+
+    def test_references_manual_review(self) -> None:
+        self.assertIn("manual review", self.component_src)
+
+    def test_imports_prepared_actions_polling(self) -> None:
+        self.assertIn("usePreparedActionsPolling", self.component_src)
+
+    def test_references_police_gate(self) -> None:
+        self.assertIn("Police Gate", self.component_src)
+
+    def test_references_governed_execution(self) -> None:
+        self.assertIn("Governed Execution", self.component_src)
+
+    def test_imports_authority_status_polling(self) -> None:
+        self.assertIn("useAuthorityStatusPolling", self.component_src)
+
+    def test_references_next_safe_step(self) -> None:
+        self.assertIn("Next Safe Step", self.component_src)
+
+    def test_next_step_references_plan_request(self) -> None:
+        self.assertIn("plan_request", self.component_src)
+
+    def test_imports_confirm_pending_polling(self) -> None:
+        self.assertIn("useConfirmPendingPolling", self.component_src)
+
+    def test_imports_authority_status_store(self) -> None:
+        self.assertIn("useAuthorityStatusStore", self.component_src)
+
+    def test_imports_ui_store(self) -> None:
+        self.assertIn("useUIStore", self.component_src)
+
+    def test_queue_snapshot_section(self) -> None:
+        self.assertIn("Queue Snapshot", self.component_src)
+
+    def test_runtime_snapshot_section(self) -> None:
+        self.assertIn("Runtime Snapshot", self.component_src)
+
+    def test_authority_posture_section(self) -> None:
+        self.assertIn("Authority Posture", self.component_src)
+
+    def test_agents_destinations_section(self) -> None:
+        self.assertIn("Agents / Destinations", self.component_src)
+
+
 if __name__ == "__main__":
     unittest.main()

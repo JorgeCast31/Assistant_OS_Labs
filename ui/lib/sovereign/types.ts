@@ -3,7 +3,7 @@
 
 // ── View Identifiers ──────────────────────────────────────────────────────────
 
-export type SovereignViewId = 'system' | 'sovereign-status' | 'security' | 'mso' | 'agents'
+export type SovereignViewId = 'system' | 'sovereign-status' | 'mission-control' | 'security' | 'mso' | 'agents'
 
 export type AgentId = string
 

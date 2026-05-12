@@ -51,6 +51,16 @@ function IconSovereignStatus() {
   )
 }
 
+function IconMissionControl() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <circle cx="9" cy="9" r="6" stroke="currentColor" strokeWidth="1.3" />
+      <circle cx="9" cy="9" r="2" fill="currentColor" fillOpacity="0.5" />
+      <path d="M9 3v2M9 13v2M3 9h2M13 9h2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 function IconSecurity() {
   return (
     <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
@@ -115,6 +125,18 @@ const ZONES: ZoneConfig[] = [
       inactive: 'text-slate-500',
       border: 'border-cyan-400/30',
       bg: 'bg-cyan-400/10',
+    },
+  },
+  {
+    id: 'mission-control',
+    label: 'Mission Control',
+    sublabel: 'Situation Room',
+    icon: <IconMissionControl />,
+    color: {
+      active: 'text-violet-400',
+      inactive: 'text-slate-500',
+      border: 'border-violet-400/30',
+      bg: 'bg-violet-400/10',
     },
   },
   {
