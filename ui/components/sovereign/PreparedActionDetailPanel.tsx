@@ -2,6 +2,7 @@
 
 import type { PreparedActionQueueEntry } from '@/lib/types'
 import { AuthorityTimeline } from './AuthorityTimeline'
+import { PreparedActionInputTrace } from './PreparedActionInputTrace'
 
 function Field({ label, value }: { label: string; value: string | null | undefined }) {
   const display = !value ? '—' : value
@@ -38,7 +39,10 @@ export function PreparedActionDetailPanel({ item }: { item: PreparedActionQueueE
         <Field label="Requested Action" value={item.requested_action} />
       </div>
 
-      {/* B. Capability */}
+      {/* B. Origin Trace */}
+      <PreparedActionInputTrace item={item} />
+
+      {/* C. Capability */}
       <SectionHeader title="Capability" />
       <div className="grid grid-cols-1 gap-2">
         <Field label="Capability Name" value={item.capability_name} />
