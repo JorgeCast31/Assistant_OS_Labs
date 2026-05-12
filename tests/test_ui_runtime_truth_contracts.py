@@ -2189,5 +2189,229 @@ class TestAuthorityTimeline(unittest.TestCase):
         self.assertIn("authority timeline", self.mission_control_src.lower())
 
 
+# ---------------------------------------------------------------------------
+# TestPreparedActionDetailInspector — S-PREPARED-ACTION-INSPECTOR-01
+# ---------------------------------------------------------------------------
+
+
+class TestPreparedActionDetailInspector(unittest.TestCase):
+    """
+    Contract tests for PreparedActionDetailPanel — read-only operational dossier.
+
+    S-PREPARED-ACTION-INSPECTOR-01 invariants:
+    1. File exists.
+    2. Component is exported from sovereign/index.ts.
+    3. Imports PreparedActionQueueEntry.
+    4. Renders all required fields (intent, domain, action, capability, provider, IDs, review state).
+    5. Reuses AuthorityTimeline.
+    6. Contains inspection-only copy.
+    7. Contains no approve/execute/reject mutation controls.
+    8. ConfirmFlowQueuePanel imports and renders PreparedActionDetailPanel.
+    9. MissionControlView remains present.
+    """
+
+    PANEL_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "PreparedActionDetailPanel.tsx"
+    INDEX_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "index.ts"
+    QUEUE_PANEL_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "ConfirmFlowQueuePanel.tsx"
+    MISSION_CONTROL_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "MissionControlView.tsx"
+
+    def setUp(self) -> None:
+        self.assertTrue(self.PANEL_PATH.exists(), "PreparedActionDetailPanel.tsx must exist")
+        self.panel_src = self.PANEL_PATH.read_text()
+        self.index_src = self.INDEX_PATH.read_text()
+        self.queue_panel_src = self.QUEUE_PANEL_PATH.read_text()
+        self.mission_control_src = self.MISSION_CONTROL_PATH.read_text()
+
+    # ── 1. File existence ────────────────────────────────────────────────────
+
+    def test_file_exists(self) -> None:
+        self.assertTrue(self.PANEL_PATH.exists(), "PreparedActionDetailPanel.tsx must exist")
+
+    # ── 2. Export ────────────────────────────────────────────────────────────
+
+    def test_component_exported_from_index(self) -> None:
+        self.assertIn(
+            "PreparedActionDetailPanel",
+            self.index_src,
+            "PreparedActionDetailPanel must be exported from sovereign/index.ts",
+        )
+
+    def test_component_export_function_present(self) -> None:
+        self.assertIn(
+            "export function PreparedActionDetailPanel",
+            self.panel_src,
+            "PreparedActionDetailPanel must be exported as a named function",
+        )
+
+    # ── 3. Type import ───────────────────────────────────────────────────────
+
+    def test_imports_prepared_action_queue_entry(self) -> None:
+        self.assertIn(
+            "PreparedActionQueueEntry",
+            self.panel_src,
+            "PreparedActionDetailPanel must import PreparedActionQueueEntry",
+        )
+
+    # ── 4. Field rendering ───────────────────────────────────────────────────
+
+    def test_renders_user_intent(self) -> None:
+        self.assertIn("user_intent", self.panel_src)
+
+    def test_renders_domain(self) -> None:
+        self.assertIn("domain", self.panel_src)
+
+    def test_renders_requested_action(self) -> None:
+        self.assertIn("requested_action", self.panel_src)
+
+    def test_renders_capability_name(self) -> None:
+        self.assertIn("capability_name", self.panel_src)
+
+    def test_renders_capability_scope(self) -> None:
+        self.assertIn("capability_scope", self.panel_src)
+
+    def test_renders_provider_name(self) -> None:
+        self.assertIn("provider_name", self.panel_src)
+
+    def test_renders_model_name(self) -> None:
+        self.assertIn("model_name", self.panel_src)
+
+    def test_renders_delegated_seat_ref(self) -> None:
+        self.assertIn("delegated_seat_ref", self.panel_src)
+
+    def test_renders_proposal_id(self) -> None:
+        self.assertIn("proposal_id", self.panel_src)
+
+    def test_renders_preparation_id(self) -> None:
+        self.assertIn("preparation_id", self.panel_src)
+
+    def test_renders_prepared_action_id(self) -> None:
+        self.assertIn("prepared_action_id", self.panel_src)
+
+    def test_renders_queue_entry_id(self) -> None:
+        self.assertIn("queue_entry_id", self.panel_src)
+
+    def test_renders_human_confirmation_status(self) -> None:
+        self.assertIn("human_confirmation_status", self.panel_src)
+
+    def test_renders_review_only(self) -> None:
+        self.assertIn("review_only", self.panel_src)
+
+    def test_renders_execution_allowed(self) -> None:
+        self.assertIn("execution_allowed", self.panel_src)
+
+    def test_renders_can_execute_now(self) -> None:
+        self.assertIn("can_execute_now", self.panel_src)
+
+    # ── 5. AuthorityTimeline reuse ───────────────────────────────────────────
+
+    def test_reuses_authority_timeline(self) -> None:
+        self.assertIn(
+            "AuthorityTimeline",
+            self.panel_src,
+            "PreparedActionDetailPanel must reuse AuthorityTimeline",
+        )
+
+    def test_authority_timeline_renders_with_item(self) -> None:
+        self.assertIn(
+            "<AuthorityTimeline",
+            self.panel_src,
+            "PreparedActionDetailPanel must render <AuthorityTimeline",
+        )
+
+    # ── 6. Inspection-only copy ──────────────────────────────────────────────
+
+    def test_mentions_inspection_only(self) -> None:
+        self.assertIn(
+            "Inspection only",
+            self.panel_src,
+            "PreparedActionDetailPanel must state it is inspection only",
+        )
+
+    def test_mentions_does_not_execute(self) -> None:
+        self.assertIn(
+            "does not execute",
+            self.panel_src,
+            "PreparedActionDetailPanel must state it does not execute",
+        )
+
+    def test_mentions_does_not_approve(self) -> None:
+        self.assertIn("approve", self.panel_src)
+        self.assertIn("does not", self.panel_src)
+
+    def test_mentions_does_not_issue_tokens(self) -> None:
+        self.assertIn(
+            "issue tokens",
+            self.panel_src,
+            "PreparedActionDetailPanel must state it does not issue tokens",
+        )
+
+    def test_mentions_does_not_create_authorized_plan(self) -> None:
+        self.assertIn(
+            "AuthorizedPlan",
+            self.panel_src,
+            "PreparedActionDetailPanel must mention AuthorizedPlan in execution boundary",
+        )
+
+    def test_mentions_does_not_call_police_gate(self) -> None:
+        self.assertIn(
+            "PoliceGate",
+            self.panel_src,
+            "PreparedActionDetailPanel must mention PoliceGate in execution boundary",
+        )
+
+    # ── 7. No mutation controls ──────────────────────────────────────────────
+
+    def test_contains_no_approve_button(self) -> None:
+        self.assertNotIn("onApprove", self.panel_src)
+        self.assertNotIn("handleApprove", self.panel_src)
+        self.assertNotIn("<button", self.panel_src)
+
+    def test_contains_no_execute_button(self) -> None:
+        self.assertNotIn("handleExecute", self.panel_src)
+        self.assertNotIn("onExecute", self.panel_src)
+
+    def test_contains_no_reject_mutation(self) -> None:
+        self.assertNotIn("handleReject", self.panel_src)
+        self.assertNotIn("onReject", self.panel_src)
+        self.assertNotIn("POST", self.panel_src)
+
+    # ── 8. ConfirmFlowQueuePanel wiring ──────────────────────────────────────
+
+    def test_confirm_queue_panel_imports_detail_panel(self) -> None:
+        self.assertIn(
+            "PreparedActionDetailPanel",
+            self.queue_panel_src,
+            "ConfirmFlowQueuePanel must import PreparedActionDetailPanel",
+        )
+
+    def test_confirm_queue_panel_renders_detail_panel(self) -> None:
+        self.assertIn(
+            "<PreparedActionDetailPanel",
+            self.queue_panel_src,
+            "ConfirmFlowQueuePanel must render <PreparedActionDetailPanel",
+        )
+
+    # ── 9. MissionControlView remains present ────────────────────────────────
+
+    def test_mission_control_file_exists(self) -> None:
+        self.assertTrue(
+            self.MISSION_CONTROL_PATH.exists(),
+            "MissionControlView.tsx must still exist after inspector sprint",
+        )
+
+    def test_mission_control_source_nonempty(self) -> None:
+        self.assertTrue(
+            self.mission_control_src.strip(),
+            "MissionControlView.tsx must have content",
+        )
+
+    def test_mission_control_references_inspect_copy(self) -> None:
+        self.assertIn(
+            "inspect prepared action",
+            self.mission_control_src.lower(),
+            "MissionControlView must reference inspecting prepared actions",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
