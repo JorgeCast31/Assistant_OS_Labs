@@ -10,6 +10,7 @@ import { SidebarNavigation } from './SidebarNavigation'
 import { TopStatusBar } from './TopStatusBar'
 import { SystemChatView } from './SystemChatView'
 import { MSOView } from './MSOView'
+import { MissionControlView } from './MissionControlView'
 import { AgentPanel } from './AgentPanel'
 import { SovereignStatusView } from './SovereignStatusView'
 import { SecurityView } from './SecurityView'
@@ -48,6 +49,8 @@ export function SovereignShell() {
         return <SovereignStatusView />
       case 'security':
         return <SecurityView />
+      case 'mission-control':
+        return <MissionControlView />
       case 'mso':
         return <MSOView />
       case 'agents':
