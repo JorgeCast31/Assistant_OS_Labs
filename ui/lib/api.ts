@@ -728,6 +728,7 @@ export async function getGovernanceStatus(): Promise<GovernanceStatusResponse> {
 import type { CodeReadinessResponse } from './types'
 import type { ConfirmPendingResponse } from './types'
 import type { PreparedActionsQueueResponse } from './types'
+import type { MSOSeatProviderResponse } from './types'
 
 const CODE_READINESS_UNAVAILABLE: CodeReadinessResponse = {
   ok: false,
@@ -933,5 +934,32 @@ export async function getPreparedActionsPending(): Promise<PreparedActionsQueueR
     return json.ok ? json : { ...PREPARED_ACTIONS_UNAVAILABLE, error: json.error ?? 'unavailable' }
   } catch {
     return PREPARED_ACTIONS_UNAVAILABLE
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MSO Seat Provider — S-MSO-SEAT-PROVIDER-01
+// ---------------------------------------------------------------------------
+
+const MSO_SEAT_PROVIDER_UNAVAILABLE: MSOSeatProviderResponse = {
+  ok: false,
+  seat_provider: null,
+  description: 'MSO Seat provider metadata unavailable.',
+  execution_allowed: false,
+  can_execute_now: false,
+  note: 'MSO Seat provider metadata is read-only. Provider availability is config-derived — no network calls are made. This surface does not execute, approve, or issue tokens.',
+}
+
+export async function getMSOSeatProvider(): Promise<MSOSeatProviderResponse> {
+  try {
+    const res = await fetch('/api/mso/seat/provider', {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) return MSO_SEAT_PROVIDER_UNAVAILABLE
+    const json = await res.json() as MSOSeatProviderResponse
+    return json.ok !== undefined ? json : MSO_SEAT_PROVIDER_UNAVAILABLE
+  } catch {
+    return MSO_SEAT_PROVIDER_UNAVAILABLE
   }
 }

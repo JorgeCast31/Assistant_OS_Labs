@@ -672,3 +672,29 @@ export interface OutcomeStatusResponse {
   source_errors: Array<{ source: string; error: string }>
   error?: string
 }
+
+// ---------------------------------------------------------------------------
+// MSO Seat Provider — S-MSO-SEAT-PROVIDER-01
+// ---------------------------------------------------------------------------
+
+export interface MSOSeatProviderDetail {
+  provider_name: string
+  model_name: string
+  provider_kind: string
+  is_available: boolean
+  availability: string
+  local_or_remote: 'local' | 'remote'
+  cognitive_only: true
+  used_execution: false
+  non_executing: true
+}
+
+export interface MSOSeatProviderResponse {
+  ok: boolean
+  seat_provider: MSOSeatProviderDetail | null
+  description: string
+  execution_allowed: false
+  can_execute_now: false
+  note: string
+  error?: string
+}
