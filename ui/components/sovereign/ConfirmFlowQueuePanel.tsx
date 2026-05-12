@@ -5,6 +5,7 @@ import { useConfirmPendingStore } from '@/stores/confirm-pending-store'
 import { usePreparedActionsPolling } from '@/hooks/use-prepared-actions-polling'
 import { usePreparedActionsStore } from '@/stores/prepared-actions-store'
 import type { PreparedActionQueueEntry } from '@/lib/types'
+import { AuthorityTimeline } from './AuthorityTimeline'
 
 function fmtDuration(seconds: number | null | undefined): string {
   if (seconds == null) return '—'
@@ -26,39 +27,38 @@ function shortenId(value: string | null | undefined): string {
 
 function PreparedActionItem({ item }: { item: PreparedActionQueueEntry }) {
   return (
-    <div className="px-4 py-3 grid grid-cols-2 md:grid-cols-3 gap-2">
-      <div className="col-span-2 md:col-span-3">
-        <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Queue Entry</p>
-        <p className="text-xs font-mono text-tx-secondary">{shortenId(item.queue_entry_id)}</p>
-      </div>
-      <div>
-        <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Domain</p>
-        <p className="text-xs font-mono text-tx-secondary">{item.domain || '—'}</p>
-      </div>
-      <div>
-        <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Action</p>
-        <p className="text-xs font-mono text-tx-secondary">{item.requested_action || '—'}</p>
-      </div>
-      <div>
-        <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Capability</p>
-        <p className="text-xs font-mono text-tx-secondary">{item.capability_name || '—'}</p>
-      </div>
-      <div>
-        <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Confirmation</p>
-        <p className="text-xs font-mono text-warn">{item.human_confirmation_status}</p>
-      </div>
-      <div>
-        <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Auth Closed</p>
-        <p className="text-xs font-mono text-ok">closed</p>
-      </div>
-      {(item.provider_name || item.model_name) && (
+    <div className="px-4 py-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
         <div className="col-span-2 md:col-span-3">
-          <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Provider</p>
-          <p className="text-xs font-mono text-tx-secondary">
-            {[item.provider_name, item.model_name].filter(Boolean).join(' / ')}
-          </p>
+          <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Queue Entry</p>
+          <p className="text-xs font-mono text-tx-secondary">{shortenId(item.queue_entry_id)}</p>
         </div>
-      )}
+        <div>
+          <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Domain</p>
+          <p className="text-xs font-mono text-tx-secondary">{item.domain || '—'}</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Action</p>
+          <p className="text-xs font-mono text-tx-secondary">{item.requested_action || '—'}</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Capability</p>
+          <p className="text-xs font-mono text-tx-secondary">{item.capability_name || '—'}</p>
+        </div>
+        <div>
+          <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Intent</p>
+          <p className="text-xs font-mono text-tx-secondary truncate">{item.user_intent || '—'}</p>
+        </div>
+        {(item.provider_name || item.model_name) && (
+          <div className="col-span-2 md:col-span-3">
+            <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Provider</p>
+            <p className="text-xs font-mono text-tx-secondary">
+              {[item.provider_name, item.model_name].filter(Boolean).join(' / ')}
+            </p>
+          </div>
+        )}
+      </div>
+      <AuthorityTimeline item={item} />
     </div>
   )
 }
