@@ -12,6 +12,7 @@ export { SovereignStatusView } from './SovereignStatusView'
 export { SecurityView } from './SecurityView'
 export { MSOView } from './MSOView'
 export { MissionControlView } from './MissionControlView'
+export { AuthorityTimeline, deriveAuthorityTimeline } from './AuthorityTimeline'
 export { AgentPanel } from './AgentPanel'
 export { MachineOperatorConsole } from './MachineOperatorConsole'
 

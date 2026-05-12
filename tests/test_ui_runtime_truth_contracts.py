@@ -1912,6 +1912,201 @@ class TestMissionControlV1(unittest.TestCase):
     def test_agents_destinations_section(self) -> None:
         self.assertIn("Agents / Destinations", self.component_src)
 
+    def test_mission_control_references_authority_timeline(self) -> None:
+        self.assertIn(
+            "authority timeline",
+            self.component_src.lower(),
+            "MissionControlView Queue Snapshot must reference authority timeline",
+        )
+
+
+# ---------------------------------------------------------------------------
+# TestAuthorityTimeline — read-only 11-stage authority timeline per action
+# ---------------------------------------------------------------------------
+
+
+class TestAuthorityTimeline(unittest.TestCase):
+    """
+    Contract tests for AuthorityTimeline component and deriveAuthorityTimeline.
+
+    Validates:
+    1. AuthorityTimeline.tsx file exists.
+    2. Component is exported from sovereign/index.ts.
+    3. deriveAuthorityTimeline is exported.
+    4. ConfirmFlowQueuePanel imports and renders AuthorityTimeline.
+    5. Component contains all 11 expected stage names.
+    6. Component uses 'created', 'pending_review', 'pending', 'closed' status labels.
+    7. No approve/execute controls in AuthorityTimeline.
+    8. Timeline is read-only (copy present).
+    9. deriveAuthorityTimeline derivation logic is present (proposal_id, preparation_id, etc.).
+    10. MissionControlView references authority timeline in queue snapshot.
+    """
+
+    TIMELINE_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "AuthorityTimeline.tsx"
+    INDEX_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "index.ts"
+    QUEUE_PANEL_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "ConfirmFlowQueuePanel.tsx"
+    MISSION_CONTROL_PATH = Path(__file__).parent.parent / "ui" / "components" / "sovereign" / "MissionControlView.tsx"
+
+    EXPECTED_STAGES = [
+        'Proposal',
+        'AuthorityPreparation',
+        'ConfirmableAction',
+        'ManualReviewQueue',
+        'HumanConfirmation',
+        'PolicyDecision',
+        'CapabilityToken',
+        'OperationBinding',
+        'AuthorizedPlan',
+        'PoliceGate',
+        'Execution',
+    ]
+
+    def setUp(self) -> None:
+        self.assertTrue(self.TIMELINE_PATH.exists(), "AuthorityTimeline.tsx must exist")
+        self.timeline_src = self.TIMELINE_PATH.read_text()
+        self.index_src = self.INDEX_PATH.read_text()
+        self.queue_panel_src = self.QUEUE_PANEL_PATH.read_text()
+        self.mission_control_src = self.MISSION_CONTROL_PATH.read_text()
+
+    # ── 1. File existence ────────────────────────────────────────────────────
+
+    def test_authority_timeline_file_exists(self) -> None:
+        self.assertTrue(self.TIMELINE_PATH.exists())
+
+    # ── 2–3. Exports ─────────────────────────────────────────────────────────
+
+    def test_authority_timeline_exported_from_index(self) -> None:
+        self.assertIn("AuthorityTimeline", self.index_src)
+
+    def test_derive_authority_timeline_exported_from_index(self) -> None:
+        self.assertIn("deriveAuthorityTimeline", self.index_src)
+
+    def test_authority_timeline_component_exported(self) -> None:
+        self.assertIn("export function AuthorityTimeline", self.timeline_src)
+
+    def test_derive_authority_timeline_function_exported(self) -> None:
+        self.assertIn("export function deriveAuthorityTimeline", self.timeline_src)
+
+    # ── 4. ConfirmFlowQueuePanel wiring ──────────────────────────────────────
+
+    def test_queue_panel_imports_authority_timeline(self) -> None:
+        self.assertIn("AuthorityTimeline", self.queue_panel_src)
+
+    def test_queue_panel_renders_authority_timeline(self) -> None:
+        self.assertIn("<AuthorityTimeline", self.queue_panel_src)
+
+    def test_queue_panel_passes_item_to_timeline(self) -> None:
+        self.assertIn("item={item}", self.queue_panel_src)
+
+    # ── 5. All 11 stages present ─────────────────────────────────────────────
+
+    def test_stage_proposal_present(self) -> None:
+        self.assertIn("Proposal", self.timeline_src)
+
+    def test_stage_authority_preparation_present(self) -> None:
+        self.assertIn("AuthorityPreparation", self.timeline_src)
+
+    def test_stage_confirmable_action_present(self) -> None:
+        self.assertIn("ConfirmableAction", self.timeline_src)
+
+    def test_stage_manual_review_queue_present(self) -> None:
+        self.assertIn("ManualReviewQueue", self.timeline_src)
+
+    def test_stage_human_confirmation_present(self) -> None:
+        self.assertIn("HumanConfirmation", self.timeline_src)
+
+    def test_stage_policy_decision_present(self) -> None:
+        self.assertIn("PolicyDecision", self.timeline_src)
+
+    def test_stage_capability_token_present(self) -> None:
+        self.assertIn("CapabilityToken", self.timeline_src)
+
+    def test_stage_operation_binding_present(self) -> None:
+        self.assertIn("OperationBinding", self.timeline_src)
+
+    def test_stage_authorized_plan_present(self) -> None:
+        self.assertIn("AuthorizedPlan", self.timeline_src)
+
+    def test_stage_police_gate_present(self) -> None:
+        self.assertIn("PoliceGate", self.timeline_src)
+
+    def test_stage_execution_present(self) -> None:
+        self.assertIn("Execution", self.timeline_src)
+
+    def test_all_expected_stages_present(self) -> None:
+        for stage in self.EXPECTED_STAGES:
+            self.assertIn(stage, self.timeline_src, f"Stage '{stage}' must be present in AuthorityTimeline")
+
+    # ── 6. Status labels ──────────────────────────────────────────────────────
+
+    def test_status_created_present(self) -> None:
+        self.assertIn("created", self.timeline_src)
+
+    def test_status_pending_review_present(self) -> None:
+        self.assertIn("pending_review", self.timeline_src)
+
+    def test_status_pending_present(self) -> None:
+        self.assertIn("'pending'", self.timeline_src)
+
+    def test_status_closed_present(self) -> None:
+        self.assertIn("'closed'", self.timeline_src)
+
+    # ── 7. No approve/execute controls ───────────────────────────────────────
+
+    def test_no_approve_handler_in_timeline(self) -> None:
+        self.assertNotIn("handleApprove", self.timeline_src)
+        self.assertNotIn("onApprove", self.timeline_src)
+
+    def test_no_execute_handler_in_timeline(self) -> None:
+        self.assertNotIn("handleExecute", self.timeline_src)
+
+    def test_no_post_confirm_in_timeline(self) -> None:
+        self.assertNotIn("postConfirm", self.timeline_src)
+
+    def test_no_mutation_in_timeline(self) -> None:
+        self.assertNotIn("fetch(", self.timeline_src)
+        self.assertNotIn("axios", self.timeline_src)
+
+    # ── 8. Read-only copy ────────────────────────────────────────────────────
+
+    def test_contains_read_only_copy(self) -> None:
+        self.assertIn("read-only", self.timeline_src)
+
+    def test_contains_execution_closed_copy(self) -> None:
+        self.assertIn("Execution is closed", self.timeline_src)
+
+    def test_no_approve_copy_in_timeline(self) -> None:
+        # Timeline must not claim it approves or enables anything
+        self.assertNotIn("handleApprove", self.timeline_src)
+
+    # ── 9. Derivation logic uses correct fields ───────────────────────────────
+
+    def test_derives_from_proposal_id(self) -> None:
+        self.assertIn("proposal_id", self.timeline_src)
+
+    def test_derives_from_preparation_id(self) -> None:
+        self.assertIn("preparation_id", self.timeline_src)
+
+    def test_derives_from_prepared_action_id(self) -> None:
+        self.assertIn("prepared_action_id", self.timeline_src)
+
+    def test_derives_from_queue_entry_id(self) -> None:
+        self.assertIn("queue_entry_id", self.timeline_src)
+
+    def test_derives_from_human_confirmation_status(self) -> None:
+        self.assertIn("human_confirmation_status", self.timeline_src)
+
+    def test_execution_always_closed(self) -> None:
+        self.assertIn("'closed'", self.timeline_src)
+
+    def test_derive_function_returns_array(self) -> None:
+        self.assertIn("TimelineStage[]", self.timeline_src)
+
+    # ── 10. MissionControl references timeline ────────────────────────────────
+
+    def test_mission_control_references_authority_timeline(self) -> None:
+        self.assertIn("authority timeline", self.mission_control_src.lower())
+
 
 if __name__ == "__main__":
     unittest.main()
