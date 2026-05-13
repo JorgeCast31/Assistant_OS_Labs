@@ -105,17 +105,11 @@ def is_mso_narrative_intent(normalized: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def build_narrative_context_message() -> tuple[str, dict]:
-    """Return (message, narrative_context) for a MSO narrative status response.
+def build_mso_grounding_context() -> dict:
+    """Return a grounding context dict for MSO cognitive generation.
 
     Reads local system state — no network calls, no execution, no side effects.
-    Always returns execution_allowed=False and can_execute_now=False.
-
-    Returns
-    -------
-    tuple[str, dict]
-        message: Human-readable narrative status message.
-        narrative_context: Structured dict with system state snapshot.
+    Always returns execution_allowed=False, can_execute_now=False, execution_closed=True.
     """
     operational_mode = "UNKNOWN"
     seat_provider_description = "No cognitive provider is currently seated/configured."
@@ -159,6 +153,39 @@ def build_narrative_context_message() -> tuple[str, dict]:
             "No hay acciones pendientes de confirmacion."
         )
 
+    return {
+        "execution_allowed": False,
+        "can_execute_now": False,
+        "execution_closed": True,
+        "operational_mode": operational_mode,
+        "seat_provider": seat_provider_description,
+        "prepared_actions_count": prepared_count,
+        "pending_review_items": pending_review_items,
+        "next_safe_step": next_safe_step,
+        "authority_posture": (
+            "Toda ejecucion requiere: PolicyDecision -> CapabilityToken -> "
+            "OperationBinding -> AuthorizedPlan -> PoliceGate."
+        ),
+        "limitations": (
+            "You cannot execute. You cannot issue tokens. "
+            "You cannot approve plans. "
+            "You can describe, reason, inspect, propose, and explain."
+        ),
+    }
+
+
+def build_narrative_context_message() -> tuple[str, dict]:
+    """Return (message, narrative_context) for a MSO narrative status response.
+
+    Reads local system state — no network calls, no execution, no side effects.
+    Always returns execution_allowed=False and can_execute_now=False.
+    """
+    ctx = build_mso_grounding_context()
+    operational_mode = ctx["operational_mode"]
+    seat_provider_description = ctx["seat_provider"]
+    prepared_count = ctx["prepared_actions_count"]
+    next_safe_step = ctx["next_safe_step"]
+
     parts: list[str] = [
         f"Modo operacional: {operational_mode}.",
         f"Proveedor cognitivo: {seat_provider_description}.",
@@ -178,21 +205,11 @@ def build_narrative_context_message() -> tuple[str, dict]:
     )
 
     message = " ".join(parts)
-
-    narrative_context: dict = {
-        "execution_allowed": False,
-        "can_execute_now": False,
-        "operational_mode": operational_mode,
-        "seat_provider": seat_provider_description,
-        "prepared_actions_count": prepared_count,
-        "pending_review_items": pending_review_items,
-        "next_safe_step": next_safe_step,
-    }
-
-    return message, narrative_context
+    return message, ctx
 
 
 __all__ = [
     "is_mso_narrative_intent",
+    "build_mso_grounding_context",
     "build_narrative_context_message",
 ]
