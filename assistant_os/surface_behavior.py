@@ -1018,6 +1018,20 @@ def get_assistant_chat_routing_context(
 
 
 # ---------------------------------------------------------------------------
+# MSO cognitive generation helper
+# ---------------------------------------------------------------------------
+
+def _call_mso_cognitive(grounding_context: dict, text: str) -> dict:
+    """Thin wrapper around mso_chat_provider.call_mso_chat_provider.
+
+    Kept as a named module-level function so tests can patch it cleanly
+    without importing from mso_chat_provider directly.
+    """
+    from .mso.mso_chat_provider import call_mso_chat_provider
+    return call_mso_chat_provider(grounding_context=grounding_context, user_text=text)
+
+
+# ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
 
@@ -1157,6 +1171,7 @@ def get_surface_behavior_response(
                 identity=identity,
                 guard_result=guard_result,
             )
+        # Deterministic narrative fast-path (Sprint 2)
         try:
             from .mso.narrative_runtime import is_mso_narrative_intent, build_narrative_context_message
             if is_mso_narrative_intent(normalized):
@@ -1173,6 +1188,53 @@ def get_surface_behavior_response(
                 )
                 _resp["narrative_context"] = _ctx
                 return _resp
+        except Exception:
+            pass
+        # Cognitive generation path (Sprint 3) — provider-backed, fails closed
+        try:
+            from .mso.narrative_runtime import build_mso_grounding_context, build_narrative_context_message
+            grounding = build_mso_grounding_context()
+            _provider_ok = False
+            try:
+                provider_resp = _call_mso_cognitive(grounding, text)
+                if provider_resp.get("status") == "ok" and provider_resp.get("text", "").strip():
+                    _resp = _build_surface_response(
+                        message=provider_resp["text"].strip(),
+                        domain="MSO",
+                        surface=surface,
+                        context_id=context_id,
+                        identity=identity,
+                        guard_result=guard_result,
+                        result_type="surface_response",
+                        intent="mso_cognitive_response",
+                    )
+                    _resp["narrative_context"] = {
+                        **grounding,
+                        "execution_allowed": False,
+                        "can_execute_now": False,
+                    }
+                    _resp["provider_used"] = provider_resp.get("provider_name", "")
+                    _resp["model_used"] = provider_resp.get("model_name", "")
+                    _resp["cognitive_generation"] = True
+                    _resp["fallback_used"] = False
+                    return _resp
+            except Exception:
+                pass
+            # Provider call failed or returned unusable response — fall back to narrative
+            _msg, _ctx = build_narrative_context_message()
+            _resp = _build_surface_response(
+                message=_msg,
+                domain="MSO",
+                surface=surface,
+                context_id=context_id,
+                identity=identity,
+                guard_result=guard_result,
+                result_type="surface_response",
+                intent="mso_narrative_status",
+            )
+            _resp["narrative_context"] = _ctx
+            _resp["fallback_used"] = True
+            return _resp
         except Exception:
             pass
         return None
