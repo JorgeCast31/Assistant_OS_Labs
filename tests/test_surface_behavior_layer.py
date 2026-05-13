@@ -709,8 +709,9 @@ class TestMsoChatProvider(unittest.TestCase):
         mock_client.messages.create.return_value = self._make_mock_response(
             "El sistema opera en modo NORMAL. No hay acciones pendientes."
         )
-        with patch("assistant_os.mso.mso_chat_provider._get_anthropic_client", return_value=mock_client):
-            resp = call_mso_chat_provider(self._grounding(), "como esta el sistema")
+        with patch("assistant_os.mso.mso_chat_provider.ANTHROPIC_API_KEY", "sk-test"):
+            with patch("assistant_os.mso.mso_chat_provider._get_anthropic_client", return_value=mock_client):
+                resp = call_mso_chat_provider(self._grounding(), "como esta el sistema")
         self.assertEqual(resp["status"], "ok")
         self.assertIn("NORMAL", resp["text"])
         self.assertFalse(resp["used_execution"])
@@ -721,8 +722,9 @@ class TestMsoChatProvider(unittest.TestCase):
         from assistant_os.mso.mso_chat_provider import call_mso_chat_provider
         mock_client = MagicMock()
         mock_client.messages.create.return_value = self._make_mock_response("Respuesta de prueba.")
-        with patch("assistant_os.mso.mso_chat_provider._get_anthropic_client", return_value=mock_client):
-            resp = call_mso_chat_provider(self._grounding(), "test")
+        with patch("assistant_os.mso.mso_chat_provider.ANTHROPIC_API_KEY", "sk-test"):
+            with patch("assistant_os.mso.mso_chat_provider._get_anthropic_client", return_value=mock_client):
+                resp = call_mso_chat_provider(self._grounding(), "test")
         self.assertFalse(resp["used_execution"])
         self.assertTrue(resp["cognitive_only"])
         self.assertIn("status", resp)
