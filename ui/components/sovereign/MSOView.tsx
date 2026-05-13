@@ -1,6 +1,5 @@
 'use client'
 
-import { useState } from 'react'
 import { useUIStore } from '@/stores/ui-store'
 import { useSeatProviderPolling } from '@/hooks/use-seat-provider-polling'
 import { useSeatProviderStore } from '@/stores/seat-provider-store'
@@ -56,8 +55,6 @@ export function MSOView() {
   usePreparedActionsPolling()
   useConfirmPendingPolling()
 
-  const [statusOpen, setStatusOpen] = useState(false)
-
   const { operationalMode } = useUIStore((s) => s.systemData)
   const seatProvider = useSeatProviderStore((s) => s.seatProvider)
   const lastPolled = useSeatProviderStore((s) => s.lastPolled)
@@ -94,12 +91,7 @@ export function MSOView() {
               Cognitive control layer. MSO coordinates; it does not execute.
             </p>
           </div>
-          <button
-            onClick={() => setStatusOpen((v) => !v)}
-            className="text-[10px] font-mono text-tx-muted hover:text-tx-secondary border border-os-border rounded px-2 py-1 transition-colors"
-          >
-            {statusOpen ? 'Hide status' : 'System status'}
-          </button>
+
         </div>
 
         {/* Invariant strip — always visible */}
@@ -107,9 +99,11 @@ export function MSOView() {
       </div>
 
       {/* ── Collapsible system status ───────────────────────────── */}
-      {statusOpen && (
-        <div className="flex-none overflow-y-auto border-b border-os-border bg-os-base">
-          <div className="max-w-3xl mx-auto px-6 py-4 space-y-6">
+      <details className="flex-none overflow-y-auto border-b border-os-border bg-os-base">
+        <summary className="cursor-pointer px-6 py-2 text-[10px] font-mono text-tx-muted hover:text-tx-secondary">
+          System status
+        </summary>
+        <div className="max-w-3xl mx-auto px-6 py-4 space-y-6">
 
             {/* Provider selector */}
             <MSOProviderSelector />
@@ -252,12 +246,49 @@ export function MSOView() {
                   </p>
                 </div>
               </div>
+              <p className="text-[10px] font-mono text-tx-muted px-1">
+                The full authority timeline has 11 stages from plan_request to execution.
+                Review queue via Mission Control.
+              </p>
+            </section>
+
+            {/* CODE/docs Posture */}
+            <section>
+              <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
+                CODE/docs Posture
+              </p>
+              <div className="space-y-2">
+                <StatusRow
+                  label="Surface"
+                  value="read-only"
+                  tone="muted"
+                  note="CODE/docs surface is read-only. No mutations via this seat."
+                />
+                <StatusRow
+                  label="Execution"
+                  value="Closed"
+                  tone="muted"
+                  note="Execution remains closed. No direct run path from this surface."
+                />
+              </div>
+            </section>
+
+            {/* Next Safe Step */}
+            <section>
+              <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
+                Next Safe Step
+              </p>
+              <div className="rounded-lg border border-os-border bg-os-surface p-3">
+                <p className="text-xs font-mono text-tx-secondary">
+                  Submit a <span className="font-semibold text-tx-primary">plan_request</span> to begin
+                  the authority chain. MSO will prepare a proposal for human review.
+                </p>
+              </div>
             </section>
 
             <ExecutionNotOpenPanel />
           </div>
-        </div>
-      )}
+        </details>
 
       {/* ── Chat transcript — scrollable center ────────────────── */}
       <div className="flex-1 overflow-y-auto">
