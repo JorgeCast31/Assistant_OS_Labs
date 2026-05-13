@@ -59,6 +59,22 @@ export function MSOComposer({ sessionId }: MSOComposerProps) {
         governanceTrace: response.governance_trace,
         decisionSource: response.decision_source,
         confidenceScore: response.confidence_score,
+        // ALPHA PHASE 1 — provenance metadata
+        responseSource: response.response_source,
+        providerUsed: response.provider_used,
+        modelUsed: response.model_used,
+        cognitiveGeneration: response.cognitive_generation,
+        fallbackUsed: response.fallback_used,
+        fallbackReason: response.fallback_reason,
+        narrativeContext: response.narrative_context,
+        cognitiveTrace: response.cognitive_trace,
+        executionAllowed: response.execution_allowed,
+        canExecuteNow: response.can_execute_now,
+        latencyMs: response.latency_ms,
+        tokensIn: response.tokens_in,
+        tokensOut: response.tokens_out,
+        audit: response.audit,
+        traceId: response.trace_id,
       }
 
       if (!response.ok) {

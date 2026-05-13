@@ -86,6 +86,21 @@ export async function sendSovereignMessage(
         ? data.decision_source : undefined,
       confidence_score: typeof data.confidence_score === 'number' && Number.isFinite(data.confidence_score)
         ? data.confidence_score : undefined,
+      // ALPHA PHASE 1 — provenance metadata
+      response_source: data.response_source,
+      provider_used: data.provider_used,
+      model_used: data.model_used,
+      cognitive_generation: data.cognitive_generation,
+      fallback_used: data.fallback_used,
+      fallback_reason: data.fallback_reason,
+      narrative_context: data.narrative_context,
+      cognitive_trace: data.cognitive_trace,
+      execution_allowed: data.execution_allowed,
+      can_execute_now: data.can_execute_now,
+      latency_ms: data.latency_ms,
+      tokens_in: data.tokens_in,
+      tokens_out: data.tokens_out,
+      audit: data.audit,
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Network error'

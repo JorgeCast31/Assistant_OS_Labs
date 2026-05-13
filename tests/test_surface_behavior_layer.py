@@ -220,6 +220,8 @@ class TestGetSurfaceBehaviorResponse(unittest.TestCase):
             "ok", "message", "trace_id", "domain", "intent", "mode",
             "needs_confirmation", "missing_fields", "plan", "ui_actions",
             "session", "audit", "identity", "guard",
+            "execution_allowed", "can_execute_now",
+            "response_source", "execution_status",
         ]
         for field in required:
             self.assertIn(field, resp, msg=f"missing field: {field}")
@@ -820,7 +822,10 @@ class TestMsoDirectCognitiveGeneration(unittest.TestCase):
                 "used_execution": False,
                 "cognitive_only": True,
                 "error": None,
-                "metadata": {},
+                "metadata": {
+                    "tokens_in": 100,
+                    "tokens_out": 50,
+                },
             },
         )
 
@@ -882,6 +887,11 @@ class TestMsoDirectCognitiveGeneration(unittest.TestCase):
         self.assertIsInstance(resp.get("model_used"), str)
         self.assertTrue(resp.get("cognitive_generation"))
         self.assertFalse(resp.get("fallback_used"))
+        self.assertEqual(resp.get("response_source"), "llm_economic")
+        self.assertEqual(resp.get("execution_status"), "real")
+        self.assertIsInstance(resp.get("latency_ms"), int)
+        self.assertEqual(resp.get("tokens_in"), 100)
+        self.assertEqual(resp.get("tokens_out"), 50)
 
     def test_cognitive_response_result_type_is_surface_response(self):
         with self._mock_provider_ok():
@@ -906,6 +916,9 @@ class TestMsoDirectCognitiveGeneration(unittest.TestCase):
             resp = self._call("cuéntame sobre el sistema")
         self.assertIsNotNone(resp)
         self.assertTrue(resp.get("fallback_used"), "fallback_used must be True when provider fails")
+        self.assertEqual(resp.get("response_source"), "provider_unavailable")
+        self.assertEqual(resp.get("execution_status"), "unavailable")
+        self.assertIn("API_KEY not configured", resp.get("fallback_reason"))
 
     def test_provider_exception_falls_back_to_narrative(self):
         with patch("assistant_os.surface_behavior._call_mso_cognitive", side_effect=RuntimeError("boom")):

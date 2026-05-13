@@ -136,6 +136,9 @@ def call_mso_chat_provider(
             messages=messages,
         )
         raw_text: str = response.content[0].text
+        usage = getattr(response, "usage", None)
+        tokens_in = getattr(usage, "input_tokens", None) if usage else None
+        tokens_out = getattr(usage, "output_tokens", None) if usage else None
 
     except Exception as exc:
         _log.debug("mso_chat_provider: provider call failed: %s", exc)
@@ -164,5 +167,7 @@ def call_mso_chat_provider(
             "non_executing": True,
             "mso_chat": True,
             "grounding_operational_mode": grounding_context.get("operational_mode", "UNKNOWN"),
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
         },
     )
