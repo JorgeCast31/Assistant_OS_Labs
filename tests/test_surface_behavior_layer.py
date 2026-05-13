@@ -433,6 +433,152 @@ class TestAssistantChatSurfaceBehavior(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# mso_direct narrative runtime fallback — SPRINT-MSO-BE-02
+# ---------------------------------------------------------------------------
+
+class TestMsoDirectNarrativeRuntime(unittest.TestCase):
+    """mso_direct narrative runtime fallback — SPRINT-MSO-BE-02."""
+
+    def _mock_identity(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {"principal": "anon"}
+        return m
+
+    def _mock_guard(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {"decision": "allow"}
+        return m
+
+    def _call(self, text: str):
+        return get_surface_behavior_response(
+            surface="mso_direct",
+            text=text,
+            context_id="ctx-mso-narrative-test",
+            identity=self._mock_identity(),
+            guard_result=self._mock_guard(),
+        )
+
+    # ------------------------------------------------------------------
+    # Narrative queries must return a grounded MSO narrative response
+    # ------------------------------------------------------------------
+
+    def test_narrative_status_query_returns_response(self):
+        resp = self._call("como esta el mso")
+        self.assertIsNotNone(resp, "narrative status query must not fall through to kernel")
+        self.assertTrue(resp["ok"])
+        self.assertEqual(resp["domain"], "MSO")
+        self.assertEqual(resp["intent"], "mso_narrative_status")
+        self.assertEqual(resp["result_type"], "surface_response")
+        self.assertEqual(resp["plan"], [])
+        self.assertFalse(resp["needs_confirmation"])
+        self.assertEqual(resp["audit"]["surface"], "mso_direct")
+
+    def test_narrative_next_step_query_returns_response(self):
+        resp = self._call("que sigue")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["domain"], "MSO")
+        self.assertEqual(resp["intent"], "mso_narrative_status")
+
+    def test_narrative_operational_mode_query(self):
+        resp = self._call("resumen operacional")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["domain"], "MSO")
+        self.assertEqual(resp["intent"], "mso_narrative_status")
+
+    def test_narrative_pending_queue_query(self):
+        resp = self._call("que hay pendiente")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["domain"], "MSO")
+
+    def test_narrative_mission_control_query(self):
+        resp = self._call("que hay en mission control")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["domain"], "MSO")
+        self.assertEqual(resp["intent"], "mso_narrative_status")
+
+    # ------------------------------------------------------------------
+    # Narrative response must carry execution_allowed/can_execute_now
+    # ------------------------------------------------------------------
+
+    def test_narrative_response_execution_not_allowed(self):
+        resp = self._call("como esta el mso")
+        self.assertIsNotNone(resp)
+        ctx = resp.get("narrative_context")
+        self.assertIsNotNone(ctx, "narrative response must include narrative_context")
+        self.assertFalse(ctx["execution_allowed"])
+        self.assertFalse(ctx["can_execute_now"])
+
+    def test_narrative_response_no_plan_no_confirmation(self):
+        resp = self._call("resumen operacional")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["plan"], [])
+        self.assertFalse(resp["needs_confirmation"])
+        self.assertFalse(resp["audit"]["mso_decided"])
+        self.assertEqual(resp["audit"]["execution_mode"], "")
+
+    def test_narrative_response_message_is_non_empty_string(self):
+        resp = self._call("como esta el mso")
+        self.assertIsInstance(resp["message"], str)
+        self.assertGreater(len(resp["message"]), 10)
+
+    # ------------------------------------------------------------------
+    # Executive inputs must still fall through — not swallowed
+    # ------------------------------------------------------------------
+
+    def test_executive_still_falls_through_after_narrative_wiring(self):
+        for phrase in ("crea una tarea", "ejecuta el script", "deploy the service", "run the build"):
+            with self.subTest(phrase=phrase):
+                resp = self._call(phrase)
+                self.assertIsNone(resp, f"'{phrase}' must fall through to kernel")
+
+    # ------------------------------------------------------------------
+    # Existing exact-match conversational responses must remain unchanged
+    # ------------------------------------------------------------------
+
+    def test_existing_greeting_still_works(self):
+        resp = self._call("hola")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["domain"], "MSO")
+        self.assertNotEqual(resp["intent"], "mso_narrative_status")
+
+    def test_existing_identity_question_still_works(self):
+        resp = self._call("quien eres")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["domain"], "MSO")
+        self.assertIn("mso", resp["message"].lower())
+        self.assertNotEqual(resp["intent"], "mso_narrative_status")
+
+    def test_existing_capabilities_question_still_works(self):
+        resp = self._call("que puedes hacer")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["domain"], "MSO")
+
+    # ------------------------------------------------------------------
+    # Non-narrative, non-conversational, non-executive must still return None
+    # ------------------------------------------------------------------
+
+    def test_non_narrative_non_conversational_still_returns_none(self):
+        resp = self._call("necesito analisis completo de arquitectura")
+        self.assertIsNone(resp)
+
+    # ------------------------------------------------------------------
+    # assistant_chat narrative behavior must remain unchanged
+    # ------------------------------------------------------------------
+
+    def test_assistant_chat_narrative_still_wired(self):
+        resp = get_surface_behavior_response(
+            surface="assistant_chat",
+            text="como esta el mso",
+            context_id="ctx-ac-narrative",
+            identity=self._mock_identity(),
+            guard_result=self._mock_guard(),
+        )
+        self.assertIsNotNone(resp, "assistant_chat narrative must still work after mso_direct wiring")
+        self.assertEqual(resp["domain"], "MSO")
+        self.assertEqual(resp["intent"], "mso_narrative_status")
+
+
+# ---------------------------------------------------------------------------
 # Integration tests — via HTTP webhook server
 # ---------------------------------------------------------------------------
 
