@@ -1148,15 +1148,33 @@ def get_surface_behavior_response(
     if surface == "mso_direct":
         if _is_executive(normalized):
             return None
-        if normalized not in _MSO_DIRECT_CONVERSATIONAL:
-            return None
-        return _build_surface_response(
-            message=_mso_conversational_message(normalized),
-            domain="MSO",
-            surface=surface,
-            context_id=context_id,
-            identity=identity,
-            guard_result=guard_result,
-        )
+        if normalized in _MSO_DIRECT_CONVERSATIONAL:
+            return _build_surface_response(
+                message=_mso_conversational_message(normalized),
+                domain="MSO",
+                surface=surface,
+                context_id=context_id,
+                identity=identity,
+                guard_result=guard_result,
+            )
+        try:
+            from .mso.narrative_runtime import is_mso_narrative_intent, build_narrative_context_message
+            if is_mso_narrative_intent(normalized):
+                _msg, _ctx = build_narrative_context_message()
+                _resp = _build_surface_response(
+                    message=_msg,
+                    domain="MSO",
+                    surface=surface,
+                    context_id=context_id,
+                    identity=identity,
+                    guard_result=guard_result,
+                    result_type="surface_response",
+                    intent="mso_narrative_status",
+                )
+                _resp["narrative_context"] = _ctx
+                return _resp
+        except Exception:
+            pass
+        return None
 
     return None
