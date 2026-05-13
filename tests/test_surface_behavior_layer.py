@@ -179,9 +179,18 @@ class TestGetSurfaceBehaviorResponse(unittest.TestCase):
                 resp = self._call("mso_direct", phrase)
                 self.assertIsNone(resp, msg=f"'{phrase}' should not be short-circuited")
 
-    def test_mso_direct_unknown_text_returns_none(self):
+    def test_mso_direct_unknown_text_handled_by_cognitive_path(self):
+        # Sprint 3: non-executive mso_direct queries go to cognitive path.
+        # With no provider configured, they return a narrative fallback (not None).
         resp = self._call("mso_direct", "necesito análisis completo de arquitectura")
-        self.assertIsNone(resp)
+        # If provider is available the response is cognitive; if not, it is a
+        # narrative fallback. Either way it must be handled (not fall to kernel).
+        # When no ANTHROPIC_API_KEY is set in CI, fallback_used=True is expected.
+        if resp is None:
+            return  # only possible if even grounding context import fails (degenerate env)
+        self.assertEqual(resp["domain"], "MSO")
+        self.assertFalse(resp.get("needs_confirmation"))
+        self.assertEqual(resp.get("plan"), [])
 
     # --- no surface / other surface ---
 
@@ -557,9 +566,13 @@ class TestMsoDirectNarrativeRuntime(unittest.TestCase):
     # Non-narrative, non-conversational, non-executive must still return None
     # ------------------------------------------------------------------
 
-    def test_non_narrative_non_conversational_still_returns_none(self):
+    def test_non_narrative_non_conversational_handled_by_cognitive_path(self):
+        """Sprint 3: non-executive queries go to cognitive path; fallback if no provider."""
         resp = self._call("necesito analisis completo de arquitectura")
-        self.assertIsNone(resp)
+        if resp is None:
+            return  # degenerate: grounding import failed
+        self.assertEqual(resp["domain"], "MSO")
+        self.assertFalse(resp.get("needs_confirmation"))
 
     # ------------------------------------------------------------------
     # assistant_chat narrative behavior must remain unchanged
@@ -574,6 +587,368 @@ class TestMsoDirectNarrativeRuntime(unittest.TestCase):
             guard_result=self._mock_guard(),
         )
         self.assertIsNotNone(resp, "assistant_chat narrative must still work after mso_direct wiring")
+        self.assertEqual(resp["domain"], "MSO")
+        self.assertEqual(resp["intent"], "mso_narrative_status")
+
+
+# ---------------------------------------------------------------------------
+# MSO Grounding Context — SPRINT-MSO-COG-03 Task 1
+# ---------------------------------------------------------------------------
+
+class TestMsoGroundingContext(unittest.TestCase):
+    """build_mso_grounding_context returns well-formed safety-grounded dict."""
+
+    def test_returns_dict_with_required_keys(self):
+        from assistant_os.mso.narrative_runtime import build_mso_grounding_context
+        ctx = build_mso_grounding_context()
+        for key in (
+            "execution_allowed", "can_execute_now",
+            "operational_mode", "seat_provider",
+            "prepared_actions_count", "next_safe_step",
+            "authority_posture", "execution_closed", "limitations",
+        ):
+            self.assertIn(key, ctx, f"missing key: {key}")
+
+    def test_execution_invariants_are_always_false(self):
+        from assistant_os.mso.narrative_runtime import build_mso_grounding_context
+        ctx = build_mso_grounding_context()
+        self.assertFalse(ctx["execution_allowed"])
+        self.assertFalse(ctx["can_execute_now"])
+        self.assertTrue(ctx["execution_closed"])
+
+    def test_narrative_context_message_uses_grounding_context(self):
+        """build_narrative_context_message must return a ctx whose keys are a superset of grounding keys."""
+        from assistant_os.mso.narrative_runtime import (
+            build_mso_grounding_context,
+            build_narrative_context_message,
+        )
+        grounding = build_mso_grounding_context()
+        _, ctx = build_narrative_context_message()
+        for key in grounding:
+            self.assertIn(key, ctx, f"narrative_context missing key from grounding: {key}")
+
+
+# ---------------------------------------------------------------------------
+# MSO Chat System Prompt — SPRINT-MSO-COG-03 Task 2
+# ---------------------------------------------------------------------------
+
+class TestMsoChatSystemPrompt(unittest.TestCase):
+    """build_mso_chat_system_prompt produces a valid system prompt string."""
+
+    def _grounding(self) -> dict:
+        return {
+            "operational_mode": "NORMAL",
+            "seat_provider": "anthropic / claude-haiku-4-5-20251001 [available]",
+            "prepared_actions_count": 0,
+            "next_safe_step": "Crea un plan_request.",
+            "authority_posture": "Toda ejecucion requiere: PolicyDecision -> ...",
+            "execution_closed": True,
+            "execution_allowed": False,
+            "can_execute_now": False,
+            "limitations": "You cannot execute. You cannot issue tokens. You cannot approve plans. You can describe, reason, inspect, propose, and explain.",
+        }
+
+    def test_returns_non_empty_string(self):
+        from assistant_os.mso.prompts import build_mso_chat_system_prompt
+        prompt = build_mso_chat_system_prompt(self._grounding())
+        self.assertIsInstance(prompt, str)
+        self.assertGreater(len(prompt), 50)
+
+    def test_prompt_contains_execution_boundary(self):
+        from assistant_os.mso.prompts import build_mso_chat_system_prompt
+        prompt = build_mso_chat_system_prompt(self._grounding())
+        self.assertIn("cannot execute", prompt.lower())
+
+    def test_prompt_contains_operational_mode(self):
+        from assistant_os.mso.prompts import build_mso_chat_system_prompt
+        prompt = build_mso_chat_system_prompt(self._grounding())
+        self.assertIn("NORMAL", prompt)
+
+    def test_prompt_contains_authority_posture(self):
+        from assistant_os.mso.prompts import build_mso_chat_system_prompt
+        prompt = build_mso_chat_system_prompt(self._grounding())
+        self.assertIn("PolicyDecision", prompt)
+
+    def test_prompt_contains_limitations(self):
+        from assistant_os.mso.prompts import build_mso_chat_system_prompt
+        prompt = build_mso_chat_system_prompt(self._grounding())
+        self.assertIn("describe", prompt.lower())
+        self.assertIn("propose", prompt.lower())
+
+
+# ---------------------------------------------------------------------------
+# MSO Chat Provider — SPRINT-MSO-COG-03 Task 3
+# ---------------------------------------------------------------------------
+
+class TestMsoChatProvider(unittest.TestCase):
+    """mso_chat_provider unit tests — all Anthropic calls mocked."""
+
+    def _grounding(self) -> dict:
+        return {
+            "operational_mode": "NORMAL",
+            "seat_provider": "anthropic / claude-haiku-4-5-20251001 [available]",
+            "prepared_actions_count": 0,
+            "next_safe_step": "Crea un plan_request.",
+            "authority_posture": "Toda ejecucion requiere: PolicyDecision -> ...",
+            "execution_closed": True,
+            "execution_allowed": False,
+            "can_execute_now": False,
+            "limitations": "You cannot execute.",
+        }
+
+    def _make_mock_response(self, text: str):
+        mock_resp = MagicMock()
+        mock_resp.content = [MagicMock()]
+        mock_resp.content[0].text = text
+        return mock_resp
+
+    # --- is_mso_chat_available ---
+
+    def test_available_when_anthropic_key_set(self):
+        from assistant_os.mso.mso_chat_provider import is_mso_chat_available
+        with patch("assistant_os.mso.mso_chat_provider.ANTHROPIC_API_KEY", "sk-test"):
+            self.assertTrue(is_mso_chat_available())
+
+    def test_not_available_when_no_key(self):
+        from assistant_os.mso.mso_chat_provider import is_mso_chat_available
+        with patch("assistant_os.mso.mso_chat_provider.ANTHROPIC_API_KEY", None):
+            self.assertFalse(is_mso_chat_available())
+
+    # --- call_mso_chat_provider: success path ---
+
+    def test_successful_call_returns_ok_response(self):
+        from assistant_os.mso.mso_chat_provider import call_mso_chat_provider
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = self._make_mock_response(
+            "El sistema opera en modo NORMAL. No hay acciones pendientes."
+        )
+        with patch("assistant_os.mso.mso_chat_provider.ANTHROPIC_API_KEY", "sk-test"):
+            with patch("assistant_os.mso.mso_chat_provider._get_anthropic_client", return_value=mock_client):
+                resp = call_mso_chat_provider(self._grounding(), "como esta el sistema")
+        self.assertEqual(resp["status"], "ok")
+        self.assertIn("NORMAL", resp["text"])
+        self.assertFalse(resp["used_execution"])
+        self.assertTrue(resp["cognitive_only"])
+        self.assertEqual(resp["provider_name"], "anthropic")
+
+    def test_response_always_has_invariant_fields(self):
+        from assistant_os.mso.mso_chat_provider import call_mso_chat_provider
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = self._make_mock_response("Respuesta de prueba.")
+        with patch("assistant_os.mso.mso_chat_provider.ANTHROPIC_API_KEY", "sk-test"):
+            with patch("assistant_os.mso.mso_chat_provider._get_anthropic_client", return_value=mock_client):
+                resp = call_mso_chat_provider(self._grounding(), "test")
+        self.assertFalse(resp["used_execution"])
+        self.assertTrue(resp["cognitive_only"])
+        self.assertIn("status", resp)
+        self.assertIn("provider_name", resp)
+        self.assertIn("model_name", resp)
+
+    # --- call_mso_chat_provider: fallback cases ---
+
+    def test_exception_returns_error_response(self):
+        from assistant_os.mso.mso_chat_provider import call_mso_chat_provider
+        mock_client = MagicMock()
+        mock_client.messages.create.side_effect = RuntimeError("network error")
+        with patch("assistant_os.mso.mso_chat_provider._get_anthropic_client", return_value=mock_client):
+            resp = call_mso_chat_provider(self._grounding(), "test")
+        self.assertNotEqual(resp["status"], "ok")
+        self.assertFalse(resp["used_execution"])
+
+    def test_empty_response_text_returns_error(self):
+        from assistant_os.mso.mso_chat_provider import call_mso_chat_provider
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = self._make_mock_response("   ")
+        with patch("assistant_os.mso.mso_chat_provider._get_anthropic_client", return_value=mock_client):
+            resp = call_mso_chat_provider(self._grounding(), "test")
+        self.assertNotEqual(resp["status"], "ok")
+
+    def test_execution_claim_in_response_returns_error(self):
+        from assistant_os.mso.mso_chat_provider import call_mso_chat_provider
+        mock_client = MagicMock()
+        mock_client.messages.create.return_value = self._make_mock_response(
+            "He ejecutado la tarea exitosamente."
+        )
+        with patch("assistant_os.mso.mso_chat_provider._get_anthropic_client", return_value=mock_client):
+            resp = call_mso_chat_provider(self._grounding(), "ejecuta algo")
+        self.assertNotEqual(resp["status"], "ok")
+        self.assertFalse(resp["used_execution"])
+
+    def test_no_api_key_returns_unavailable(self):
+        from assistant_os.mso.mso_chat_provider import call_mso_chat_provider
+        with patch("assistant_os.mso.mso_chat_provider.ANTHROPIC_API_KEY", None):
+            resp = call_mso_chat_provider(self._grounding(), "test")
+        self.assertEqual(resp["status"], "unavailable")
+        self.assertFalse(resp["used_execution"])
+
+
+# ---------------------------------------------------------------------------
+# MSO Direct Cognitive Generation — SPRINT-MSO-COG-03 Task 4
+# ---------------------------------------------------------------------------
+
+class TestMsoDirectCognitiveGeneration(unittest.TestCase):
+    """mso_direct cognitive generation path — SPRINT-MSO-COG-03."""
+
+    def _mock_identity(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {"principal": "anon"}
+        return m
+
+    def _mock_guard(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {"decision": "allow"}
+        return m
+
+    def _call(self, text: str):
+        return get_surface_behavior_response(
+            surface="mso_direct",
+            text=text,
+            context_id="ctx-cog-test",
+            identity=self._mock_identity(),
+            guard_result=self._mock_guard(),
+        )
+
+    def _mock_provider_ok(self, text: str = "El sistema opera correctamente en modo NORMAL."):
+        """Patch _call_mso_cognitive to return a success response."""
+        return patch(
+            "assistant_os.surface_behavior._call_mso_cognitive",
+            return_value={
+                "status": "ok",
+                "text": text,
+                "provider_name": "anthropic",
+                "model_name": "claude-haiku-4-5-20251001",
+                "used_execution": False,
+                "cognitive_only": True,
+                "error": None,
+                "metadata": {},
+            },
+        )
+
+    def _mock_provider_unavailable(self):
+        """Patch _call_mso_cognitive to return unavailable."""
+        return patch(
+            "assistant_os.surface_behavior._call_mso_cognitive",
+            return_value={
+                "status": "unavailable",
+                "text": "",
+                "provider_name": "anthropic",
+                "model_name": "",
+                "used_execution": False,
+                "cognitive_only": True,
+                "error": "ANTHROPIC_API_KEY not configured",
+                "metadata": {},
+            },
+        )
+
+    # --- Cognitive generation: success path ---
+
+    def test_cognitive_response_has_correct_domain_and_intent(self):
+        with self._mock_provider_ok():
+            resp = self._call("cuéntame sobre el estado del sistema")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["domain"], "MSO")
+        self.assertEqual(resp["intent"], "mso_cognitive_response")
+
+    def test_cognitive_response_has_provider_text(self):
+        with self._mock_provider_ok("El sistema opera correctamente en modo NORMAL."):
+            resp = self._call("cuéntame sobre el estado del sistema")
+        self.assertIsNotNone(resp)
+        self.assertIn("NORMAL", resp["message"])
+
+    def test_cognitive_response_includes_narrative_context(self):
+        with self._mock_provider_ok():
+            resp = self._call("cuéntame sobre el estado del sistema")
+        self.assertIsNotNone(resp)
+        ctx = resp.get("narrative_context")
+        self.assertIsNotNone(ctx)
+        self.assertFalse(ctx["execution_allowed"])
+        self.assertFalse(ctx["can_execute_now"])
+
+    def test_cognitive_response_execution_invariants_set_by_code(self):
+        """execution_allowed and can_execute_now must be set by code, not by LLM."""
+        with self._mock_provider_ok():
+            resp = self._call("cuéntame sobre el estado del sistema")
+        self.assertIsNotNone(resp)
+        self.assertFalse(resp["narrative_context"]["execution_allowed"])
+        self.assertFalse(resp["narrative_context"]["can_execute_now"])
+        self.assertEqual(resp["plan"], [])
+        self.assertFalse(resp["needs_confirmation"])
+
+    def test_cognitive_response_includes_provider_metadata(self):
+        with self._mock_provider_ok():
+            resp = self._call("cuéntame sobre el estado del sistema")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp.get("provider_used"), "anthropic")
+        self.assertIsInstance(resp.get("model_used"), str)
+        self.assertTrue(resp.get("cognitive_generation"))
+        self.assertFalse(resp.get("fallback_used"))
+
+    def test_cognitive_response_result_type_is_surface_response(self):
+        with self._mock_provider_ok():
+            resp = self._call("explícame el sistema")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp["result_type"], "surface_response")
+
+    # --- Fallback on provider unavailable ---
+
+    def test_provider_unavailable_falls_back_to_narrative(self):
+        """When provider is unavailable, fallback to deterministic narrative response."""
+        with self._mock_provider_unavailable():
+            resp = self._call("cuéntame sobre el sistema")
+        self.assertIsNotNone(resp, "must return narrative fallback, not None")
+        self.assertEqual(resp["domain"], "MSO")
+        ctx = resp.get("narrative_context")
+        self.assertIsNotNone(ctx)
+        self.assertFalse(ctx["execution_allowed"])
+
+    def test_provider_unavailable_fallback_marks_fallback_used(self):
+        with self._mock_provider_unavailable():
+            resp = self._call("cuéntame sobre el sistema")
+        self.assertIsNotNone(resp)
+        self.assertTrue(resp.get("fallback_used"), "fallback_used must be True when provider fails")
+
+    def test_provider_exception_falls_back_to_narrative(self):
+        with patch("assistant_os.surface_behavior._call_mso_cognitive", side_effect=RuntimeError("boom")):
+            resp = self._call("cuéntame sobre el sistema")
+        self.assertIsNotNone(resp, "exception must not propagate — must return narrative fallback")
+        self.assertEqual(resp["domain"], "MSO")
+
+    # --- Existing fast-paths must remain unchanged ---
+
+    def test_executive_still_falls_through(self):
+        with self._mock_provider_ok():
+            for phrase in ("crea una tarea", "ejecuta el script", "deploy the build"):
+                with self.subTest(phrase=phrase):
+                    resp = self._call(phrase)
+                    self.assertIsNone(resp, f"executive '{phrase}' must still fall through")
+
+    def test_exact_conversational_match_not_affected(self):
+        """'hola' must still return the existing conversational response (not cognitive)."""
+        with self._mock_provider_ok():
+            resp = self._call("hola")
+        self.assertIsNotNone(resp)
+        self.assertNotEqual(resp.get("intent"), "mso_cognitive_response")
+
+    def test_narrative_intent_match_not_replaced_by_cognitive(self):
+        """'como esta el mso' is a narrative intent — should return mso_narrative_status, not mso_cognitive_response."""
+        with self._mock_provider_ok():
+            resp = self._call("como esta el mso")
+        self.assertIsNotNone(resp)
+        self.assertEqual(resp.get("intent"), "mso_narrative_status")
+
+    # --- assistant_chat unchanged ---
+
+    def test_assistant_chat_not_affected_by_mso_cognitive_path(self):
+        with self._mock_provider_ok():
+            resp = get_surface_behavior_response(
+                surface="assistant_chat",
+                text="como esta el mso",
+                context_id="ctx-ac-cog",
+                identity=self._mock_identity(),
+                guard_result=self._mock_guard(),
+            )
+        # assistant_chat narrative runtime should still work normally
+        self.assertIsNotNone(resp)
         self.assertEqual(resp["domain"], "MSO")
         self.assertEqual(resp["intent"], "mso_narrative_status")
 

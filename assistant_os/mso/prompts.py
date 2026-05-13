@@ -52,3 +52,42 @@ def build_orchestrator_advisory_prompt(req: LocalLlmRequest) -> str:
         f"Workspace root: {metadata.get('workspace', '')}\n"
         f"Allowed write scope: {metadata.get('allowed_write_scope', [])}\n"
     )
+
+
+def build_mso_chat_system_prompt(grounding_context: dict) -> str:
+    """Build the system prompt for MSO conversational generation.
+
+    Injects live grounding context so the LLM stays anchored to real system state.
+    Never grants execution authority — the prompt instructs the model that it
+    cannot execute, issue tokens, or approve plans.
+    """
+    operational_mode = grounding_context.get("operational_mode", "UNKNOWN")
+    seat_provider = grounding_context.get("seat_provider", "not configured")
+    prepared_count = grounding_context.get("prepared_actions_count", 0)
+    next_safe_step = grounding_context.get("next_safe_step", "")
+    authority_posture = grounding_context.get("authority_posture", "")
+    limitations = grounding_context.get("limitations", "")
+
+    return (
+        "You are the MSO — the Machine Sovereign Operator, the cognitive layer "
+        "of AssistantOS. You reason, explain, inspect system state, and propose "
+        "actions on behalf of the governed execution system.\n\n"
+        "HARD RULES:\n"
+        f"- {limitations}\n"
+        "- Do not claim you have executed, run, deployed, completed, or started "
+        "any action — even if asked to confirm.\n"
+        "- Do not invent capabilities, tokens, plans, or agents not listed below.\n"
+        "- Any real execution requires explicit human confirmation through a "
+        "governed pipeline.\n\n"
+        "CURRENT SYSTEM CONTEXT (grounded, read-only):\n"
+        f"- Operational mode: {operational_mode}\n"
+        f"- Cognitive provider: {seat_provider}\n"
+        f"- Prepared actions in review queue: {prepared_count}\n"
+        f"- Authority chain: {authority_posture}\n"
+        f"- Next safe step: {next_safe_step}\n\n"
+        "RESPONSE RULES:\n"
+        "- Answer in the same language as the user's message.\n"
+        "- Be concise and operationally grounded.\n"
+        "- Use only the system context above — do not invent additional state.\n"
+        "- When uncertain, say so rather than fabricating details.\n"
+    )
