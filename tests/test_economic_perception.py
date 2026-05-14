@@ -5,11 +5,15 @@ Tests:
   bounded reads, subsystem mocking.
 - build_mso_grounding_context(): backward compat + new frame keys present.
 - build_mso_chat_system_prompt(): expanded sections rendered correctly.
+- build_narrative_context_message() / is_mso_narrative_intent(): Alpha Phase 3 additions.
+- Vault section present in system prompt: SPRINT-ALPHA-03.
 """
 from __future__ import annotations
 
 import unittest
 from unittest.mock import patch
+
+import pytest
 
 from assistant_os.mso.perception import build_economic_perception_frame
 
@@ -132,9 +136,6 @@ class TestBuildEconomicPerceptionFrameFailSafety(unittest.TestCase):
         )
 
     def test_frame_never_raises_even_with_bad_subsystems(self):
-        # Simulate the entire internal path raising for prepared_actions
-        # The internal reader already wraps with try/except, so patch to verify
-        # even a badly behaving reader doesn't escape build_economic_perception_frame
         try:
             frame = build_economic_perception_frame()
             self.assertIn("execution_allowed", frame)
@@ -275,12 +276,11 @@ class TestBuildMsoGroundingContextBackwardCompat(unittest.TestCase):
     def test_pending_review_items_alias_present(self):
         from assistant_os.mso.narrative_runtime import build_mso_grounding_context
         ctx = build_mso_grounding_context()
-        # pending_review_items must equal prepared_actions_summary
         self.assertEqual(ctx["pending_review_items"], ctx["prepared_actions_summary"])
 
 
 # ---------------------------------------------------------------------------
-# Prompt expansion
+# Prompt expansion (Alpha 2 + Alpha 3 sections)
 # ---------------------------------------------------------------------------
 
 class TestBuildMsoChatSystemPromptExpansion(unittest.TestCase):
@@ -407,6 +407,89 @@ class TestBuildMsoChatSystemPromptExpansion(unittest.TestCase):
         from assistant_os.mso.prompts import build_mso_chat_system_prompt
         prompt = build_mso_chat_system_prompt(self._make_frame())
         self.assertIn("execution_allowed=false", prompt.lower())
+
+    def test_prompt_contains_vault_section(self):
+        from assistant_os.mso.prompts import build_mso_chat_system_prompt
+        prompt = build_mso_chat_system_prompt(self._make_frame())
+        self.assertIn("VAULT SEMANTIC CONTEXT", prompt)
+
+    def test_prompt_contains_system_perception_frame(self):
+        from assistant_os.mso.prompts import build_mso_chat_system_prompt
+        prompt = build_mso_chat_system_prompt(self._make_frame())
+        self.assertIn("SYSTEM PERCEPTION FRAME", prompt)
+
+
+# ---------------------------------------------------------------------------
+# Narrative context message (Alpha Phase 3 — build_narrative_context_message)
+# ---------------------------------------------------------------------------
+
+def test_narrative_context_message_returns_str_and_dict():
+    from assistant_os.mso.narrative_runtime import build_narrative_context_message
+    msg, ctx = build_narrative_context_message()
+    assert isinstance(msg, str)
+    assert len(msg) > 0
+    assert isinstance(ctx, dict)
+
+
+def test_narrative_context_message_execution_invariants():
+    from assistant_os.mso.narrative_runtime import build_narrative_context_message
+    _msg, ctx = build_narrative_context_message()
+    assert ctx.get("execution_allowed") is False
+    assert ctx.get("can_execute_now") is False
+
+
+def test_narrative_context_message_contains_grounding_keys():
+    from assistant_os.mso.narrative_runtime import build_narrative_context_message
+    _msg, ctx = build_narrative_context_message()
+    assert "operational_mode" in ctx
+    assert "seat_provider" in ctx
+
+
+def test_narrative_context_message_never_raises():
+    from assistant_os.mso.narrative_runtime import build_narrative_context_message
+    try:
+        msg, ctx = build_narrative_context_message()
+        assert isinstance(msg, str)
+        assert isinstance(ctx, dict)
+    except Exception as exc:
+        pytest.fail(f"build_narrative_context_message() raised: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# Narrative intent detection (Alpha Phase 3 — is_mso_narrative_intent)
+# ---------------------------------------------------------------------------
+
+def test_narrative_intent_detects_known_phrases():
+    from assistant_os.mso.narrative_runtime import is_mso_narrative_intent, _NARRATIVE_EXACT
+    for phrase in list(_NARRATIVE_EXACT)[:3]:
+        assert is_mso_narrative_intent(phrase), (
+            f"Expected narrative intent for known phrase: {phrase!r}"
+        )
+
+
+def test_narrative_intent_rejects_executive_phrases():
+    from assistant_os.mso.narrative_runtime import is_mso_narrative_intent
+    non_narrative = ["crea un archivo", "ejecuta el plan", "abre el repo"]
+    for phrase in non_narrative:
+        assert not is_mso_narrative_intent(phrase), (
+            f"Expected NOT narrative intent for: {phrase!r}"
+        )
+
+
+def test_narrative_intent_returns_bool():
+    from assistant_os.mso.narrative_runtime import is_mso_narrative_intent
+    result = is_mso_narrative_intent("cualquier texto")
+    assert isinstance(result, bool)
+
+
+def test_narrative_intent_never_raises_on_bad_input():
+    from assistant_os.mso.narrative_runtime import is_mso_narrative_intent
+    for bad_input in ["", "   "]:
+        try:
+            result = is_mso_narrative_intent(bad_input)
+            assert isinstance(result, bool)
+        except Exception as exc:
+            pytest.fail(f"is_mso_narrative_intent({bad_input!r}) raised: {exc}")
 
 
 if __name__ == "__main__":
