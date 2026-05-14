@@ -1080,10 +1080,22 @@ def _call_mso_cognitive(grounding_context: dict, text: str) -> dict:
     return call_mso_chat_provider(grounding_context=grounding_context, user_text=text)
 
 
-def _get_vault_context(query: str) -> dict:
+def _get_vault_context(query: str, allowed_packs: list[str] | None = None) -> dict:
     """Thin wrapper around vault_context.build_vault_context for clean test patching."""
     from .mso.vault_context import build_vault_context
-    return build_vault_context(query=query)
+    return build_vault_context(query=query, allowed_packs=allowed_packs)
+
+
+def build_mso_grounding_context() -> dict:
+    """Module-level wrapper so tests can patch assistant_os.surface_behavior.build_mso_grounding_context."""
+    from .mso.narrative_runtime import build_mso_grounding_context as _build
+    return _build()
+
+
+def build_narrative_context_message() -> tuple[str, dict]:
+    """Module-level wrapper so tests can patch assistant_os.surface_behavior.build_narrative_context_message."""
+    from .mso.narrative_runtime import build_narrative_context_message as _build
+    return _build()
 
 
 # ---------------------------------------------------------------------------
@@ -1253,7 +1265,6 @@ def get_surface_behavior_response(
         # Cognitive generation path (Sprint 4) — provider-backed with Vault, fails closed
         try:
             import time as _time
-            from .mso.narrative_runtime import build_mso_grounding_context, build_narrative_context_message
             grounding = build_mso_grounding_context()
             vault_ctx = _get_vault_context(query=text)
             grounding_with_vault = {**grounding, "vault_context": vault_ctx}
@@ -1283,6 +1294,7 @@ def get_surface_behavior_response(
                         "vault_retrieval_method": vault_ctx.get("retrieval_method", "keyword_topk"),
                         "vault_warnings": vault_ctx.get("warnings", []),
                         "vault_truncated": vault_ctx.get("truncated", False),
+                        "vault_packs_consulted": vault_ctx.get("packs_consulted", []),
                         "synthesis_mode": "economic",
                         "perception_frame_version": grounding.get("version", ""),
                     }

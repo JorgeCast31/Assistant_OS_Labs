@@ -245,6 +245,12 @@ def build_mso_chat_system_prompt(grounding_context: dict) -> str:
     )
 
 
+def _chunk_pack_label(chunk: dict) -> str:
+    """Return pack label string for a chunk, or empty string if no pack."""
+    pack = chunk.get("pack")
+    return f" [{pack}]" if pack else ""
+
+
 def _build_vault_prompt_section(vault_context: dict | None) -> str:
     """Render the bounded Vault section for the system prompt."""
     if not vault_context or not vault_context.get("enabled"):
@@ -262,11 +268,25 @@ def _build_vault_prompt_section(vault_context: dict | None) -> str:
             "- No relevant chunks found."
         )
 
+    pack_filter_active = vault_context.get("pack_filter_active", False)
+    packs_consulted = vault_context.get("packs_consulted", [])
+
+    if pack_filter_active:
+        packs_str = ", ".join(packs_consulted) if packs_consulted else "SYSTEM"
+        filter_line = f"- Pack filter active: yes — Packs consulted: {packs_str}\n"
+        not_consulted_line = (
+            "- Notes from packs not listed above were not retrieved for this query.\n"
+        )
+    else:
+        consulted_str = ", ".join(packs_consulted) if packs_consulted else "ALL"
+        filter_line = f"- Pack filter active: no — Packs consulted: {consulted_str}\n"
+        not_consulted_line = ""
+
     sources_lines = "\n".join(
-        f"  - {c['note_path']} ({c['title']})" for c in chunks
+        f"  - {c['note_path']} ({c['title']}){_chunk_pack_label(c)}" for c in chunks
     )
     chunk_blocks = "\n\n".join(
-        f"[{c['title']}]\n{c['content'][:800]}"
+        f"[{c['title']}{_chunk_pack_label(c)}]\n{c['content'][:800]}"
         for c in chunks
     )
     truncated_note = " [truncated]" if vault_context.get("truncated") else ""
@@ -274,6 +294,8 @@ def _build_vault_prompt_section(vault_context: dict | None) -> str:
     return (
         "VAULT SEMANTIC CONTEXT:\n"
         "- Retrieval enabled: yes\n"
+        f"{filter_line}"
+        f"{not_consulted_line}"
         f"- Sources:\n{sources_lines}\n"
         f"- Chunks{truncated_note}:\n{chunk_blocks}"
     )
