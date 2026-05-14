@@ -31,6 +31,9 @@ _EXECUTION_CLAIM_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(completado\s+la\s+tarea|completed\s+the\s+task|task\s+completed|tarea\s+completada)\b", re.IGNORECASE),
     re.compile(r"\b(running\s+the\s+(?:task|action|plan|proceso)|corriendo\s+el\s+proceso)\b", re.IGNORECASE),
     re.compile(r"\b(deployed?|desplegado|lanzado\s+el\s+proceso)\b", re.IGNORECASE),
+    re.compile(r"\b(i\s+approved|he\s+aprobado|aprobé\s+la|approved\s+the\s+(?:request|action|plan))\b", re.IGNORECASE),
+    re.compile(r"\b(i\s+issued\s+a\s+token|issued\s+a\s+token|se\s+emitió\s+un\s+token|emití\s+un\s+token|token\s+issued)\b", re.IGNORECASE),
+    re.compile(r"\b(i\s+changed\s+the\s+system|changed\s+the\s+system|cambié\s+el\s+sistema|sistema\s+(?:fue\s+)?cambiado)\b", re.IGNORECASE),
 )
 
 
