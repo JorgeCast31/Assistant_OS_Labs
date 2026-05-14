@@ -57,9 +57,17 @@ def build_orchestrator_advisory_prompt(req: LocalLlmRequest) -> str:
 def build_mso_chat_system_prompt(grounding_context: dict) -> str:
     """Build the system prompt for MSO conversational generation.
 
-    Injects live grounding context so the LLM stays anchored to real system state.
-    Injects a bounded Vault section when vault_context is present and enabled.
-    Never grants execution authority.
+    Injects the full economic perception frame (SPRINT-ALPHA-02) so the LLM
+    is anchored to real system state. Sections are rendered only when non-empty;
+    each section falls back to an explicit 'No data currently visible.' line.
+
+    Injects a bounded Vault section (SPRINT-ALPHA-03) when vault_context is
+    present and enabled. The Vault section is separate from the SYSTEM PERCEPTION
+    FRAME and provides stable doctrine/semantic guidance only.
+
+    Never grants execution authority — the prompt hard-codes the execution
+    boundary and instructs the model that it cannot execute, issue tokens,
+    or approve plans. Do-not-invent rules cover all perception frame fields.
     """
     operational_mode = grounding_context.get("operational_mode", "UNKNOWN")
     seat_provider = grounding_context.get("seat_provider", "not configured")
@@ -67,9 +75,103 @@ def build_mso_chat_system_prompt(grounding_context: dict) -> str:
     next_safe_step = grounding_context.get("next_safe_step", "")
     authority_posture = grounding_context.get("authority_posture", "")
     limitations = grounding_context.get("limitations", "")
-    vault_context = grounding_context.get("vault_context")
+    version = grounding_context.get("version", "")
+    generated_at = grounding_context.get("generated_at", "")
 
+    capabilities = grounding_context.get("capabilities_summary") or {}
+    recent_governance = grounding_context.get("recent_governance") or []
+    active_tasks = grounding_context.get("active_tasks_brief") or []
+    recent_failures = grounding_context.get("recent_failures") or []
+    prepared_summary = grounding_context.get("prepared_actions_summary") or []
+    perception_warnings = grounding_context.get("perception_warnings") or []
+
+    vault_context = grounding_context.get("vault_context")
     vault_section = _build_vault_prompt_section(vault_context)
+
+    def _fmt_capabilities(caps: dict) -> str:
+        if not caps:
+            return "  No data currently visible."
+        lines: list[str] = []
+        if caps.get("domains"):
+            lines.append(f"  Domains: {', '.join(caps['domains'])}")
+        if caps.get("active_capabilities"):
+            lines.append(f"  Active capabilities: {', '.join(caps['active_capabilities'])}")
+        if caps.get("machine_operator"):
+            lines.append(f"  Machine Operator: {caps['machine_operator']}")
+        if caps.get("runner_enforced"):
+            lines.append("  Runner: enforced")
+        return "\n".join(lines) if lines else "  No data currently visible."
+
+    def _fmt_governance(decisions: list) -> str:
+        if not decisions:
+            return "  No data currently visible."
+        lines: list[str] = []
+        for d in decisions[:5]:
+            if isinstance(d, dict):
+                outcome = d.get("outcome") or d.get("decision") or "?"
+                domain = d.get("domain") or d.get("classifier_domain") or "?"
+                did = d.get("decision_id") or d.get("id") or "?"
+                lines.append(f"  [{did}] domain={domain} outcome={outcome}")
+            else:
+                lines.append(f"  {d}")
+        return "\n".join(lines)
+
+    def _fmt_tasks(tasks: list) -> str:
+        if not tasks:
+            return "  No data currently visible."
+        lines: list[str] = []
+        for t in tasks[:5]:
+            if isinstance(t, dict):
+                lines.append(
+                    f"  [{t.get('task_id', '?')}] domain={t.get('domain', '?')} "
+                    f"status={t.get('status', '?')} action={t.get('last_known_action', '?')}"
+                )
+            else:
+                lines.append(f"  {t}")
+        return "\n".join(lines)
+
+    def _fmt_failures(failures: list) -> str:
+        if not failures:
+            return "  No data currently visible."
+        lines: list[str] = []
+        for f in failures[:5]:
+            if isinstance(f, dict):
+                lines.append(
+                    f"  [{f.get('task_id', '?')}] domain={f.get('domain', '?')} "
+                    f"error={f.get('error_type', '?')}: "
+                    f"{str(f.get('error_message', ''))[:60]}"
+                )
+            else:
+                lines.append(f"  {f}")
+        return "\n".join(lines)
+
+    def _fmt_prepared(items: list, count: int) -> str:
+        if count == 0 or not items:
+            return "  None."
+        lines: list[str] = [f"  Total waiting for human review: {count}"]
+        for item in items[:5]:
+            if isinstance(item, dict):
+                lines.append(
+                    f"  [{item.get('queue_entry_id', '?')}] "
+                    f"domain={item.get('domain', '?')} "
+                    f"action={item.get('requested_action', '?')} "
+                    f"status={item.get('human_confirmation_status', '?')} "
+                    f"execution_allowed={item.get('execution_allowed', False)}"
+                )
+            else:
+                lines.append(f"  {item}")
+        return "\n".join(lines)
+
+    warnings_section = ""
+    if perception_warnings:
+        joined = "; ".join(perception_warnings[:5])
+        warnings_section = (
+            f"\nPERCEPTION WARNINGS (some data sources unavailable):\n  {joined}\n"
+        )
+
+    frame_meta = (
+        f"perception frame v{version} generated_at={generated_at}" if version else ""
+    )
 
     return (
         "You are the MSO — the Machine Sovereign Operator, the cognitive layer "
@@ -79,17 +181,32 @@ def build_mso_chat_system_prompt(grounding_context: dict) -> str:
         f"- {limitations}\n"
         "- Do not claim you have executed, run, deployed, completed, or started "
         "any action — even if asked to confirm.\n"
-        "- Do not invent capabilities, tokens, plans, or agents not listed below.\n"
+        "- Do not invent capabilities, tokens, plans, tasks, failures, or agents "
+        "not listed in the perception frame below.\n"
+        "- If a field shows 'No data currently visible', report that — "
+        "do not invent values.\n"
         "- Any real execution requires explicit human confirmation through a "
         "governed pipeline.\n\n"
         "SYSTEM PERCEPTION FRAME (grounded, read-only runtime truth):\n"
         f"- Operational mode: {operational_mode}\n"
         f"- Cognitive provider: {seat_provider}\n"
-        f"- Prepared actions in review queue: {prepared_count}\n"
         f"- Authority chain: {authority_posture}\n"
-        f"- Next safe step: {next_safe_step}\n\n"
-        f"{vault_section}\n\n"
-        "RESPONSE RULES:\n"
+        f"- Next safe step: {next_safe_step}\n"
+        "- Execution boundary: execution_allowed=false, can_execute_now=false\n"
+        f"{f'- {frame_meta}' if frame_meta else ''}\n"
+        "\nCAPABILITIES (from live capability registry):\n"
+        f"{_fmt_capabilities(capabilities)}\n"
+        "\nPREPARED ACTIONS AWAITING HUMAN REVIEW:\n"
+        f"{_fmt_prepared(prepared_summary, prepared_count)}\n"
+        "\nRECENT GOVERNANCE DECISIONS (last 5):\n"
+        f"{_fmt_governance(recent_governance)}\n"
+        "\nACTIVE TASKS (last 5):\n"
+        f"{_fmt_tasks(active_tasks)}\n"
+        "\nRECENT FAILURES (last 5):\n"
+        f"{_fmt_failures(recent_failures)}\n"
+        f"{warnings_section}"
+        f"\n{vault_section}\n"
+        "\nRESPONSE RULES:\n"
         "- Answer in the same language as the user's message.\n"
         "- Be concise and operationally grounded.\n"
         "- Use Vault context as stable doctrine/semantic guidance when present.\n"

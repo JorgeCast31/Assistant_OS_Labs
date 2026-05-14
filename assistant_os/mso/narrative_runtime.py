@@ -108,70 +108,18 @@ def is_mso_narrative_intent(normalized: str) -> bool:
 def build_mso_grounding_context() -> dict:
     """Return a grounding context dict for MSO cognitive generation.
 
+    Delegates to build_economic_perception_frame() (SPRINT-ALPHA-02) and adds
+    the legacy 'pending_review_items' key as an alias for 'prepared_actions_summary'
+    so Phase 1 callers receive the field they expect.
+
     Reads local system state — no network calls, no execution, no side effects.
     Always returns execution_allowed=False, can_execute_now=False, execution_closed=True.
     """
-    operational_mode = "UNKNOWN"
-    seat_provider_description = "No cognitive provider is currently seated/configured."
-    prepared_count = 0
-    pending_review_items: list[dict] = []
-
-    try:
-        from .seat_model_provider_registry import describe_seated_provider
-        seat_provider_description = describe_seated_provider()
-    except Exception:
-        pass
-
-    try:
-        from ..operability import build_mso_state_response
-        state = build_mso_state_response()
-        operational_mode = state.get("operational_mode", "UNKNOWN")
-    except Exception:
-        pass
-
-    try:
-        from .prepared_action_queue import list_pending_confirmable_action_dicts
-        pending_review_items = list_pending_confirmable_action_dicts()
-        prepared_count = len(pending_review_items)
-    except Exception:
-        pass
-
-    if operational_mode not in ("NORMAL", "UNKNOWN"):
-        next_safe_step = (
-            f"Resuelve la restriccion de gobernanza. "
-            f"Modo operacional: {operational_mode}."
-        )
-    elif prepared_count > 0:
-        next_safe_step = (
-            f"Revisa {prepared_count} accion(es) preparada(s) en la cola de confirmacion. "
-            "Cada accion incluye una linea de autoridad de 11 etapas. "
-            "La ejecucion permanece cerrada."
-        )
-    else:
-        next_safe_step = (
-            "Crea un plan_request para iniciar un flujo gobernado. "
-            "No hay acciones pendientes de confirmacion."
-        )
-
-    return {
-        "execution_allowed": False,
-        "can_execute_now": False,
-        "execution_closed": True,
-        "operational_mode": operational_mode,
-        "seat_provider": seat_provider_description,
-        "prepared_actions_count": prepared_count,
-        "pending_review_items": pending_review_items,
-        "next_safe_step": next_safe_step,
-        "authority_posture": (
-            "Toda ejecucion requiere: PolicyDecision -> CapabilityToken -> "
-            "OperationBinding -> AuthorizedPlan -> PoliceGate."
-        ),
-        "limitations": (
-            "You cannot execute. You cannot issue tokens. "
-            "You cannot approve plans. "
-            "You can describe, reason, inspect, propose, and explain."
-        ),
-    }
+    from .perception import build_economic_perception_frame
+    frame = build_economic_perception_frame()
+    # Legacy alias: Phase 1 callers (build_narrative_context_message) expect this key
+    frame["pending_review_items"] = frame.get("prepared_actions_summary", [])
+    return frame
 
 
 def build_narrative_context_message() -> tuple[str, dict]:
