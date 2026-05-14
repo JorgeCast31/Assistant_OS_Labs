@@ -61,9 +61,17 @@ def build_mso_chat_system_prompt(grounding_context: dict) -> str:
     is anchored to real system state. Sections are rendered only when non-empty;
     each section falls back to an explicit 'No data currently visible.' line.
 
+    Injects a bounded Vault section (SPRINT-ALPHA-03) when vault_context is
+    present and enabled. The Vault section is strictly separate from the
+    SYSTEM PERCEPTION FRAME and provides stable doctrine/semantic guidance only.
+
+    Adds ECONOMIC SYNTHESIS TASK (SPRINT-ALPHA-04) to contract the model's
+    synthesis behavior: how to combine perception frame and Vault context,
+    what to say when Vault is absent, and how to handle uncertainty.
+
     Never grants execution authority — the prompt hard-codes the execution
     boundary and instructs the model that it cannot execute, issue tokens,
-    or approve plans. Do-not-invent rules cover all perception frame fields.
+    or approve plans.
     """
     operational_mode = grounding_context.get("operational_mode", "UNKNOWN")
     seat_provider = grounding_context.get("seat_provider", "not configured")
@@ -80,6 +88,9 @@ def build_mso_chat_system_prompt(grounding_context: dict) -> str:
     recent_failures = grounding_context.get("recent_failures") or []
     prepared_summary = grounding_context.get("prepared_actions_summary") or []
     perception_warnings = grounding_context.get("perception_warnings") or []
+
+    vault_context = grounding_context.get("vault_context")
+    vault_section = _build_vault_prompt_section(vault_context)
 
     def _fmt_capabilities(caps: dict) -> str:
         if not caps:
@@ -180,7 +191,7 @@ def build_mso_chat_system_prompt(grounding_context: dict) -> str:
         "do not invent values.\n"
         "- Any real execution requires explicit human confirmation through a "
         "governed pipeline.\n\n"
-        "CURRENT SYSTEM CONTEXT (grounded, read-only):\n"
+        "SYSTEM PERCEPTION FRAME (grounded, read-only runtime truth):\n"
         f"- Operational mode: {operational_mode}\n"
         f"- Cognitive provider: {seat_provider}\n"
         f"- Authority chain: {authority_posture}\n"
@@ -198,9 +209,71 @@ def build_mso_chat_system_prompt(grounding_context: dict) -> str:
         "\nRECENT FAILURES (last 5):\n"
         f"{_fmt_failures(recent_failures)}\n"
         f"{warnings_section}"
+        f"\n{vault_section}\n"
+        "\nECONOMIC SYNTHESIS TASK:\n"
+        "Use the user's request, the SYSTEM PERCEPTION FRAME, and VAULT SEMANTIC CONTEXT "
+        "above to produce a grounded operational answer.\n"
+        "- If the user asks about current state or 'what do you see?' → answer from "
+        "the SYSTEM PERCEPTION FRAME.\n"
+        "- If the user asks about meaning, doctrine, or 'what does it mean?' → answer "
+        "using VAULT SEMANTIC CONTEXT when available.\n"
+        "- If both are relevant → combine them explicitly, labeling runtime fact vs. "
+        "stable doctrine.\n"
+        "- If vault_chunks_used is 0 → do not claim you used Vault context; if the "
+        "topic calls for it, state that no stable Vault context was retrieved.\n"
+        "- Do not invent capabilities, tokens, tasks, failures, or agents not listed "
+        "in the perception frame.\n"
+        "- Do not claim to have executed, approved, issued tokens, or changed system "
+        "state — real execution requires human confirmation through the governed pipeline.\n"
+        "- If uncertain about system state → acknowledge uncertainty and offer the next "
+        "safe step when one is visible in the perception frame.\n"
+        "- Keep the response conversational, operationally grounded, concise, and honest "
+        "about limits.\n"
         "\nRESPONSE RULES:\n"
         "- Answer in the same language as the user's message.\n"
         "- Be concise and operationally grounded.\n"
-        "- Use only the system context above — do not invent additional state.\n"
+        "- Use the SYSTEM PERCEPTION FRAME as current runtime truth — never invent facts "
+        "outside it.\n"
+        "- Use VAULT SEMANTIC CONTEXT as stable doctrine/semantic guidance when present — "
+        "it does not authorize execution and does not override governance.\n"
+        "- Do not blend Vault doctrine with runtime facts — label them separately when "
+        "combining both sources.\n"
+        "- If no Vault context was retrieved and the topic calls for it, say so explicitly.\n"
         "- When uncertain, say so rather than fabricating details.\n"
+        "- Propose a next safe step when appropriate and one is visible in the perception "
+        "frame.\n"
+    )
+
+
+def _build_vault_prompt_section(vault_context: dict | None) -> str:
+    """Render the bounded Vault section for the system prompt."""
+    if not vault_context or not vault_context.get("enabled"):
+        return (
+            "VAULT SEMANTIC CONTEXT:\n"
+            "- Retrieval enabled: no\n"
+            "- No stable Vault context was retrieved for this query."
+        )
+
+    chunks = vault_context.get("chunks", [])
+    if not chunks:
+        return (
+            "VAULT SEMANTIC CONTEXT:\n"
+            "- Retrieval enabled: yes\n"
+            "- No relevant chunks found."
+        )
+
+    sources_lines = "\n".join(
+        f"  - {c['note_path']} ({c['title']})" for c in chunks
+    )
+    chunk_blocks = "\n\n".join(
+        f"[{c['title']}]\n{c['content'][:800]}"
+        for c in chunks
+    )
+    truncated_note = " [truncated]" if vault_context.get("truncated") else ""
+
+    return (
+        "VAULT SEMANTIC CONTEXT:\n"
+        "- Retrieval enabled: yes\n"
+        f"- Sources:\n{sources_lines}\n"
+        f"- Chunks{truncated_note}:\n{chunk_blocks}"
     )
