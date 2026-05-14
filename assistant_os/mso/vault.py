@@ -70,7 +70,6 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
         rest_val = rest_val.strip()
 
         if rest_val.startswith("[") and rest_val.endswith("]"):
-            # Inline list: key: [a, b, c]
             items = [
                 v.strip().strip("\"'")
                 for v in rest_val[1:-1].split(",")
@@ -79,7 +78,6 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
             metadata[key] = items
             i += 1
         elif rest_val == "":
-            # Possibly a block list follows
             items = []
             i += 1
             while i < len(lines) and re.match(r"^\s+-\s", lines[i]):

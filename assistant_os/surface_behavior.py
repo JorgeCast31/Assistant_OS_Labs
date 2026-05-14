@@ -1250,14 +1250,13 @@ def get_surface_behavior_response(
                 )
         except Exception:
             pass
-        # Cognitive generation path (Sprint 3) — provider-backed, fails closed
+        # Cognitive generation path (Sprint 4) — provider-backed with Vault, fails closed
         try:
             import time as _time
             from .mso.narrative_runtime import build_mso_grounding_context, build_narrative_context_message
             grounding = build_mso_grounding_context()
             vault_ctx = _get_vault_context(query=text)
             grounding_with_vault = {**grounding, "vault_context": vault_ctx}
-            _provider_ok = False
             _start_time = _time.perf_counter()
             _provider_err = None
             try:
@@ -1284,6 +1283,8 @@ def get_surface_behavior_response(
                         "vault_retrieval_method": vault_ctx.get("retrieval_method", "keyword_topk"),
                         "vault_warnings": vault_ctx.get("warnings", []),
                         "vault_truncated": vault_ctx.get("truncated", False),
+                        "synthesis_mode": "economic",
+                        "perception_frame_version": grounding.get("version", ""),
                     }
                     return _build_surface_response(
                         message=provider_resp["text"].strip(),

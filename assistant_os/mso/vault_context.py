@@ -12,9 +12,8 @@ from pathlib import Path
 from assistant_os.config import ASSISTANT_OS_VAULT_PATH
 from assistant_os.mso.vault import keyword_search
 
-# Economic Mode defaults
 _ECONOMIC_TOP_K: int = 3
-_ECONOMIC_TOKEN_BUDGET: int = 800  # approx tokens; keyword_search uses *4 for chars
+_ECONOMIC_TOKEN_BUDGET: int = 800
 
 
 def build_vault_context(

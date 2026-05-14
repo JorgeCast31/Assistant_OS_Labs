@@ -1,7 +1,8 @@
-"""Tests for Vault Context Layer — Alpha Phase 3.
+"""Tests for Vault Context Layer — Alpha Phase 3 + 4.
 
-Covers vault.py (tests 1-7), vault_context.py (tests 8-9),
-and build_mso_chat_system_prompt vault section (tests 11-12).
+Tests 1-7:  vault.py primitives (parse_frontmatter, keyword_search, VaultReader)
+Tests 8-10: vault_context.py (build_vault_context)
+Tests 11-13: build_mso_chat_system_prompt vault section
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ def test_parse_frontmatter_valid():
 
 
 # ---------------------------------------------------------------------------
-# Test 2: parse_frontmatter tolerates missing frontmatter
+# Test 2: parse_frontmatter tolerates missing / malformed frontmatter
 # ---------------------------------------------------------------------------
 
 def test_parse_frontmatter_missing():
@@ -78,7 +79,7 @@ def test_parse_frontmatter_block_list():
 
 
 # ---------------------------------------------------------------------------
-# Test 3: VaultReader lists only .md files
+# Test 3: VaultReader lists only .md files and ignores hidden dirs
 # ---------------------------------------------------------------------------
 
 def test_vault_reader_lists_markdown_only(tmp_path: Path):
@@ -133,7 +134,7 @@ def test_deprecated_notes_included_when_opted_in(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Test 5: stable notes score higher than draft/no-frontmatter
+# Test 5: stable notes score higher than draft
 # ---------------------------------------------------------------------------
 
 def test_stable_notes_score_higher_than_draft(tmp_path: Path):
@@ -190,10 +191,8 @@ def test_token_budget_truncates_content(tmp_path: Path):
     (tmp_path / "big.md").write_text(
         f"---\ntitle: Big Note\nstatus: stable\n---\n{long_content}"
     )
-    # budget = 20 tokens → ~80 chars budget
     chunks = keyword_search(str(tmp_path), query="word", top_k=1, token_budget=20)
     assert len(chunks) == 1
-    # Content must fit within budget (4 chars/token * 20 = 80, with some tolerance)
     assert len(chunks[0].content) <= 100
 
 
@@ -208,7 +207,7 @@ def test_keyword_search_chunk_has_score(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# Tests 8-9: build_vault_context (added after vault_context.py is created)
+# Tests 8-10: build_vault_context (vault_context.py)
 # ---------------------------------------------------------------------------
 
 from assistant_os.mso.vault_context import build_vault_context
@@ -238,7 +237,7 @@ def test_build_vault_context_warning_when_path_invalid(monkeypatch):
 
 
 def test_build_vault_context_returns_chunks_when_vault_valid(tmp_path, monkeypatch):
-    """build_vault_context returns enabled=True and chunks when vault is valid."""
+    """Test 10: enabled=True and chunks returned when vault has matching notes."""
     (tmp_path / "doc.md").write_text(
         "---\ntitle: Economic Framework\nstatus: stable\n---\neconomic budget planning"
     )
@@ -266,21 +265,49 @@ def test_build_vault_context_shape(monkeypatch):
     assert required_keys.issubset(result.keys())
 
 
+def test_build_vault_context_handles_retrieval_exception(monkeypatch):
+    """build_vault_context returns disabled context (no raise) when retrieval errors."""
+    import assistant_os.mso.vault_context as vc_mod
+    from pathlib import Path as _Path
+
+    monkeypatch.setattr(vc_mod, "ASSISTANT_OS_VAULT_PATH", "/some/path")
+
+    # Make the directory check pass by patching Path.is_dir
+    monkeypatch.setattr(_Path, "is_dir", lambda self: True)
+
+    # Make keyword_search raise
+    def _raise(*args, **kwargs):
+        raise RuntimeError("vault disk error")
+    monkeypatch.setattr(vc_mod, "keyword_search", _raise)
+
+    result = build_vault_context("anything")
+    assert result["enabled"] is False
+    assert any("vault retrieval error" in w.lower() for w in result["warnings"])
+
+
 # ---------------------------------------------------------------------------
-# Tests 11-12: build_mso_chat_system_prompt vault section
+# Tests 11-13: build_mso_chat_system_prompt vault section
 # ---------------------------------------------------------------------------
 
 from assistant_os.mso.prompts import build_mso_chat_system_prompt
 
 
-def _make_grounding(vault_context=None) -> dict:
+def _make_prompt_grounding(vault_context=None) -> dict:
     return {
         "operational_mode": "TEST_MODE",
         "seat_provider": "test-provider",
         "prepared_actions_count": 0,
+        "prepared_actions_summary": [],
         "next_safe_step": "none",
         "authority_posture": "test chain",
         "limitations": "You cannot execute.",
+        "version": "alpha-04",
+        "generated_at": "2026-05-13T00:00:00",
+        "capabilities_summary": {},
+        "recent_governance": [],
+        "active_tasks_brief": [],
+        "recent_failures": [],
+        "perception_warnings": [],
         "vault_context": vault_context,
     }
 
@@ -293,7 +320,7 @@ def test_prompt_includes_vault_section_when_chunks_exist(tmp_path, monkeypatch):
         "---\ntitle: Budget Framework\nstatus: stable\n---\nBudget planning doctrine."
     )
     vault_ctx = build_vault_context("budget planning")
-    grounding = _make_grounding(vault_context=vault_ctx)
+    grounding = _make_prompt_grounding(vault_context=vault_ctx)
     prompt = build_mso_chat_system_prompt(grounding)
     assert "VAULT SEMANTIC CONTEXT" in prompt
     assert "Budget Framework" in prompt
@@ -309,15 +336,16 @@ def test_prompt_vault_disabled_does_not_raise():
         "vault_chunks_used": 0,
         "warnings": [],
     }
-    grounding = _make_grounding(vault_context=disabled_ctx)
+    grounding = _make_prompt_grounding(vault_context=disabled_ctx)
     prompt = build_mso_chat_system_prompt(grounding)
     assert "VAULT SEMANTIC CONTEXT" in prompt
     assert "Retrieval enabled: no" in prompt
 
 
 def test_prompt_vault_none_does_not_raise():
-    """Prompt must tolerate vault_context=None."""
-    grounding = _make_grounding(vault_context=None)
+    """Test 13: Prompt must tolerate vault_context=None."""
+    grounding = _make_prompt_grounding(vault_context=None)
     prompt = build_mso_chat_system_prompt(grounding)
     assert isinstance(prompt, str)
     assert len(prompt) > 0
+    assert "SYSTEM PERCEPTION FRAME" in prompt

@@ -143,6 +143,9 @@ MSO_SEAT_PROVIDER: str = os.environ.get("MSO_SEAT_PROVIDER", "").strip().lower()
 # Optional model name override for the seated provider.
 # If blank, each provider uses its own sensible default.
 MSO_SEAT_MODEL: str = os.environ.get("MSO_SEAT_MODEL", "").strip()
+# Path to the Obsidian Vault directory for MSO semantic context retrieval.
+# If blank, Vault context is disabled (safe default).
+ASSISTANT_OS_VAULT_PATH: str = os.environ.get("ASSISTANT_OS_VAULT_PATH", "").strip()
 
 # ---------------------------------------------------------------------------
 # Obsidian Vault integration — read-only semantic context layer
