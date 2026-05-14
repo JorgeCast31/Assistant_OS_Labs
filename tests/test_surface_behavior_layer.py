@@ -1402,5 +1402,176 @@ class TestMSODirectV2(unittest.TestCase):
         self.assertIsNone(self._call("Borra algo"))
 
 
+# ---------------------------------------------------------------------------
+# Alpha Phase 3: Vault context wiring tests (tests 10, 13, 14, 15)
+# ---------------------------------------------------------------------------
+
+class TestVaultContextWiring(unittest.TestCase):
+    """Verify vault context is wired into mso_direct cognitive path."""
+
+    def _mock_identity(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {"operator_id": "test"}
+        return m
+
+    def _mock_guard(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {"decision": "allow"}
+        return m
+
+    def _cognitive_call(self, mock_vault_return, mock_cognitive_return, text=None):
+        """Helper: call get_surface_behavior_response with mocked vault and cognitive."""
+        if text is None:
+            text = "cuéntame sobre el estado del sistema"
+        with patch("assistant_os.surface_behavior._call_mso_cognitive") as mock_cog, \
+             patch("assistant_os.surface_behavior._get_vault_context") as mock_vault:
+            mock_vault.return_value = mock_vault_return
+            mock_cog.return_value = mock_cognitive_return
+            return get_surface_behavior_response(
+                text=text,
+                surface="mso_direct",
+                context_id="test-vault-01",
+                identity=self._mock_identity(),
+                guard_result=self._mock_guard(),
+            )
+
+    def _enabled_vault(self, chunks=None):
+        if chunks is None:
+            chunks = [
+                {
+                    "note_path": "/vault/doc.md",
+                    "title": "Doc",
+                    "tags": [],
+                    "frontmatter": {},
+                    "content": "test content",
+                    "score": 0.8,
+                }
+            ]
+        return {
+            "enabled": True,
+            "query": "test",
+            "retrieval_method": "keyword_topk",
+            "chunks": chunks,
+            "vault_sources": [c["note_path"] for c in chunks],
+            "vault_chunks_used": len(chunks),
+            "token_budget_used": 10,
+            "truncated": False,
+            "warnings": [],
+        }
+
+    def _disabled_vault(self):
+        return {
+            "enabled": False,
+            "query": "test",
+            "retrieval_method": "keyword_topk",
+            "chunks": [],
+            "vault_sources": [],
+            "vault_chunks_used": 0,
+            "token_budget_used": 0,
+            "truncated": False,
+            "warnings": [],
+        }
+
+    def _ok_cognitive(self, text="Vault-informed response"):
+        return {
+            "status": "ok",
+            "text": text,
+            "provider_name": "anthropic",
+            "model_name": "test-model",
+            "metadata": {"tokens_in": 100, "tokens_out": 50},
+            "used_execution": False,
+            "cognitive_only": True,
+        }
+
+    def test_mso_direct_cognitive_includes_vault_trace_when_enabled(self):
+        """Test 10: cognitive_trace includes all vault fields when vault enabled."""
+        resp = self._cognitive_call(
+            mock_vault_return=self._enabled_vault(),
+            mock_cognitive_return=self._ok_cognitive(),
+        )
+        self.assertIsNotNone(resp)
+        ct = resp.get("cognitive_trace", {})
+        self.assertTrue(ct.get("vault_enabled"))
+        self.assertEqual(ct.get("vault_chunks_used"), 1)
+        self.assertEqual(ct.get("vault_sources"), ["/vault/doc.md"])
+        self.assertEqual(ct.get("vault_retrieval_method"), "keyword_topk")
+        self.assertEqual(ct.get("vault_warnings"), [])
+        self.assertFalse(ct.get("vault_truncated"))
+
+    def test_mso_direct_cognitive_vault_disabled_trace(self):
+        """Vault fields present in trace even when vault is disabled."""
+        resp = self._cognitive_call(
+            mock_vault_return=self._disabled_vault(),
+            mock_cognitive_return=self._ok_cognitive("Response without vault"),
+        )
+        self.assertIsNotNone(resp)
+        ct = resp.get("cognitive_trace", {})
+        self.assertFalse(ct.get("vault_enabled"))
+        self.assertEqual(ct.get("vault_chunks_used"), 0)
+
+    def test_alpha1_provenance_fields_intact_with_vault(self):
+        """Test 13: Alpha 1 provenance fields remain intact when vault is wired."""
+        resp = self._cognitive_call(
+            mock_vault_return=self._disabled_vault(),
+            mock_cognitive_return=self._ok_cognitive("Alpha 1 still works"),
+        )
+        self.assertIsNotNone(resp)
+        ct = resp.get("cognitive_trace", {})
+        # Alpha 1 fields
+        self.assertEqual(ct.get("response_source"), "llm_economic")
+        self.assertEqual(ct.get("execution_status"), "real")
+        self.assertEqual(ct.get("provider_used"), "anthropic")
+        self.assertEqual(ct.get("model_used"), "test-model")
+        self.assertTrue(ct.get("cognitive_generation"))
+        self.assertFalse(ct.get("fallback_used"))
+        self.assertIn("latency_ms", ct)
+        self.assertEqual(ct.get("tokens_in"), 100)
+        self.assertEqual(ct.get("tokens_out"), 50)
+        self.assertFalse(ct.get("execution_allowed"))
+        self.assertFalse(ct.get("can_execute_now"))
+
+    def test_alpha2_perception_frame_intact_with_vault(self):
+        """Test 14: Alpha 2 perception frame fields remain intact in narrative_context."""
+        resp = self._cognitive_call(
+            mock_vault_return=self._disabled_vault(),
+            mock_cognitive_return=self._ok_cognitive("Alpha 2 still works"),
+        )
+        self.assertIsNotNone(resp)
+        nc = resp.get("narrative_context", {})
+        # Alpha 2 fields from build_mso_grounding_context
+        self.assertFalse(nc.get("execution_allowed"))
+        self.assertFalse(nc.get("can_execute_now"))
+        self.assertIn("operational_mode", nc)
+        self.assertIn("seat_provider", nc)
+        self.assertIn("prepared_actions_count", nc)
+        self.assertIn("authority_posture", nc)
+        self.assertIn("limitations", nc)
+
+    def test_no_authority_police_machine_operator_imports_in_vault_modules(self):
+        """Test 15: vault.py and vault_context.py have no restricted module imports."""
+        import ast
+        from pathlib import Path
+
+        restricted = {"police", "authority", "machine_operator"}
+        vault_files = [
+            Path("assistant_os/mso/vault.py"),
+            Path("assistant_os/mso/vault_context.py"),
+        ]
+        for vf in vault_files:
+            tree = ast.parse(vf.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.Import, ast.ImportFrom)):
+                    module = ""
+                    if isinstance(node, ast.ImportFrom) and node.module:
+                        module = node.module
+                    elif isinstance(node, ast.Import):
+                        module = " ".join(alias.name for alias in node.names)
+                    for r in restricted:
+                        self.assertNotIn(
+                            r, module,
+                            f"{vf} imports from restricted module '{r}': {module}",
+                        )
+
+
 if __name__ == "__main__":
     unittest.main()

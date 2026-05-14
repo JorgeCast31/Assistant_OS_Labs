@@ -1080,6 +1080,12 @@ def _call_mso_cognitive(grounding_context: dict, text: str) -> dict:
     return call_mso_chat_provider(grounding_context=grounding_context, user_text=text)
 
 
+def _get_vault_context(query: str) -> dict:
+    """Thin wrapper around vault_context.build_vault_context for clean test patching."""
+    from .mso.vault_context import build_vault_context
+    return build_vault_context(query=query)
+
+
 # ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
@@ -1249,14 +1255,36 @@ def get_surface_behavior_response(
             import time as _time
             from .mso.narrative_runtime import build_mso_grounding_context, build_narrative_context_message
             grounding = build_mso_grounding_context()
+            vault_ctx = _get_vault_context(query=text)
+            grounding_with_vault = {**grounding, "vault_context": vault_ctx}
             _provider_ok = False
             _start_time = _time.perf_counter()
             _provider_err = None
             try:
-                provider_resp = _call_mso_cognitive(grounding, text)
+                provider_resp = _call_mso_cognitive(grounding_with_vault, text)
                 _latency_ms = int((_time.perf_counter() - _start_time) * 1000)
                 if provider_resp.get("status") == "ok" and provider_resp.get("text", "").strip():
                     provider_metadata = provider_resp.get("metadata") or {}
+                    cognitive_trace = {
+                        "response_source": "llm_economic",
+                        "execution_status": "real",
+                        "provider_used": provider_resp.get("provider_name", ""),
+                        "model_used": provider_resp.get("model_name", ""),
+                        "cognitive_generation": True,
+                        "fallback_used": False,
+                        "fallback_reason": None,
+                        "latency_ms": _latency_ms,
+                        "tokens_in": provider_metadata.get("tokens_in"),
+                        "tokens_out": provider_metadata.get("tokens_out"),
+                        "execution_allowed": False,
+                        "can_execute_now": False,
+                        "vault_enabled": vault_ctx.get("enabled", False),
+                        "vault_chunks_used": vault_ctx.get("vault_chunks_used", 0),
+                        "vault_sources": vault_ctx.get("vault_sources", []),
+                        "vault_retrieval_method": vault_ctx.get("retrieval_method", "keyword_topk"),
+                        "vault_warnings": vault_ctx.get("warnings", []),
+                        "vault_truncated": vault_ctx.get("truncated", False),
+                    }
                     return _build_surface_response(
                         message=provider_resp["text"].strip(),
                         domain="MSO",
@@ -1273,13 +1301,14 @@ def get_surface_behavior_response(
                         cognitive_generation=True,
                         fallback_used=False,
                         narrative_context={
-                            **grounding,
+                            **grounding_with_vault,
                             "execution_allowed": False,
                             "can_execute_now": False,
                         },
                         latency_ms=_latency_ms,
                         tokens_in=provider_metadata.get("tokens_in"),
                         tokens_out=provider_metadata.get("tokens_out"),
+                        cognitive_trace=cognitive_trace,
                     )
                 else:
                     _provider_err = provider_resp.get("error") or provider_resp.get("reason") or "unusable provider response"
