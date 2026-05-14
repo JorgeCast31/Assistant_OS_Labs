@@ -892,6 +892,11 @@ class TestMsoDirectCognitiveGeneration(unittest.TestCase):
         self.assertIsInstance(resp.get("latency_ms"), int)
         self.assertEqual(resp.get("tokens_in"), 100)
         self.assertEqual(resp.get("tokens_out"), 50)
+        self.assertIn("cognitive_trace", resp)
+        trace = resp["cognitive_trace"]
+        self.assertEqual(trace["response_source"], "llm_economic")
+        self.assertEqual(trace["execution_status"], "real")
+        self.assertEqual(trace["provider_used"], "anthropic")
 
     def test_cognitive_response_result_type_is_surface_response(self):
         with self._mock_provider_ok():
@@ -919,6 +924,8 @@ class TestMsoDirectCognitiveGeneration(unittest.TestCase):
         self.assertEqual(resp.get("response_source"), "provider_unavailable")
         self.assertEqual(resp.get("execution_status"), "unavailable")
         self.assertIn("API_KEY not configured", resp.get("fallback_reason"))
+        self.assertIn("cognitive_trace", resp)
+        self.assertEqual(resp["cognitive_trace"]["response_source"], "provider_unavailable")
 
     def test_provider_exception_falls_back_to_narrative(self):
         with patch("assistant_os.surface_behavior._call_mso_cognitive", side_effect=RuntimeError("boom")):

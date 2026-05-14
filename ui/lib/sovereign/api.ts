@@ -101,6 +101,7 @@ export async function sendSovereignMessage(
       tokens_in: data.tokens_in,
       tokens_out: data.tokens_out,
       audit: data.audit,
+      raw_response: data,
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Network error'

@@ -593,28 +593,36 @@ def _build_surface_response(
 
     if response_source:
         resp["response_source"] = response_source
-    if execution_status:
         resp["execution_status"] = execution_status
-    if provider_used:
         resp["provider_used"] = provider_used
-    if model_used:
         resp["model_used"] = model_used
-    if cognitive_generation:
         resp["cognitive_generation"] = cognitive_generation
-    if fallback_used:
         resp["fallback_used"] = fallback_used
-    if fallback_reason:
         resp["fallback_reason"] = fallback_reason
+        resp["latency_ms"] = latency_ms
+        resp["tokens_in"] = tokens_in
+        resp["tokens_out"] = tokens_out
+
+        if not cognitive_trace:
+            resp["cognitive_trace"] = {
+                "response_source": response_source,
+                "execution_status": execution_status,
+                "provider_used": provider_used,
+                "model_used": model_used,
+                "cognitive_generation": cognitive_generation,
+                "fallback_used": fallback_used,
+                "fallback_reason": fallback_reason,
+                "latency_ms": latency_ms,
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "execution_allowed": False,
+                "can_execute_now": False,
+            }
+        else:
+            resp["cognitive_trace"] = cognitive_trace
+
     if narrative_context:
         resp["narrative_context"] = narrative_context
-    if cognitive_trace:
-        resp["cognitive_trace"] = cognitive_trace
-    if latency_ms is not None:
-        resp["latency_ms"] = latency_ms
-    if tokens_in is not None:
-        resp["tokens_in"] = tokens_in
-    if tokens_out is not None:
-        resp["tokens_out"] = tokens_out
 
     return resp
 

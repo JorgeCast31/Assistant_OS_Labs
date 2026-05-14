@@ -75,6 +75,7 @@ export interface SovereignMessage {
   tokensOut?: number
   audit?: Record<string, unknown>
   traceId?: string
+  rawResponse?: Record<string, unknown>
   // ALFA-FLIGHT-02 §3 — when present, render redirect chips below the message.
   redirectTargets?: ('mso' | 'machine_operator')[]
 }
@@ -240,6 +241,7 @@ export interface SovereignChatResponse {
   tokens_in?: number
   tokens_out?: number
   audit?: Record<string, unknown>
+  raw_response?: Record<string, unknown>
 }
 
 export interface PolicyDecision {

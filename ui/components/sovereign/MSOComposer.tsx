@@ -75,6 +75,7 @@ export function MSOComposer({ sessionId }: MSOComposerProps) {
         tokensOut: response.tokens_out,
         audit: response.audit,
         traceId: response.trace_id,
+        rawResponse: response.raw_response,
       }
 
       if (!response.ok) {

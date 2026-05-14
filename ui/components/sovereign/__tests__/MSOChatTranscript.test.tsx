@@ -115,4 +115,23 @@ describe('MSOChatTranscript', () => {
     render(<MSOChatTranscript messages={[msg]} />)
     expect(screen.getByText(/\{ raw \}/i)).toBeInTheDocument()
   })
+
+  it('opens raw drawer when raw toggle is clicked', async () => {
+    const msg = makeMsg({
+      role: 'assistant',
+      responseSource: 'llm_economic',
+      rawResponse: { foo: 'bar' }
+    })
+    const { userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+
+    render(<MSOChatTranscript messages={[msg]} />)
+    const toggle = screen.getByText(/\{ raw \}/i)
+    await user.click(toggle)
+
+    // Check for drawer title
+    expect(screen.getByText(/raw message metadata/i)).toBeInTheDocument()
+    // Check for formatted JSON content (or part of it)
+    expect(screen.getByText(/"foo": "bar"/)).toBeInTheDocument()
+  })
 })

@@ -12,8 +12,8 @@ interface MSOMessageRawDrawerProps {
 export function MSOMessageRawDrawer({ msg, isOpen, onClose }: MSOMessageRawDrawerProps) {
   if (!isOpen) return null
 
-  // Extract metadata fields from the message object
-  const metadata = {
+  // Show raw response if preserved, otherwise fall back to mapped metadata
+  const displayMetadata = msg.rawResponse || {
     response_source: msg.responseSource,
     execution_status: msg.executionStatus,
     provider_used: msg.providerUsed,
@@ -32,7 +32,7 @@ export function MSOMessageRawDrawer({ msg, isOpen, onClose }: MSOMessageRawDrawe
     decision_source: msg.decisionSource,
     confidence_score: msg.confidenceScore,
     audit: msg.audit,
-    trace_id: msg.traceId || msg.id,
+    trace_id: msg.traceId,
   }
 
   return (
@@ -77,16 +77,18 @@ export function MSOMessageRawDrawer({ msg, isOpen, onClose }: MSOMessageRawDrawe
                 <p className="text-tx-primary truncate">{msg.providerUsed || 'None'}</p>
               </div>
               <div className="rounded border border-os-border bg-os-surface p-2">
-                <p className="text-[9px] text-tx-muted mb-0.5">Latency</p>
-                <p className="text-tx-primary truncate">{msg.latencyMs ? `${msg.latencyMs}ms` : 'N/A'}</p>
+                <p className="text-[9px] text-tx-muted mb-0.5">Trace ID</p>
+                <p className="text-tx-primary truncate">{msg.traceId || 'Not reported'}</p>
               </div>
             </div>
           </section>
 
           <section>
-            <p className="mb-2 uppercase text-tx-muted tracking-widest text-[9px] font-bold">Full JSON Metadata</p>
+            <p className="mb-2 uppercase text-tx-muted tracking-widest text-[9px] font-bold">
+              {msg.rawResponse ? 'Exact Backend Response' : 'Mapped Backend Metadata'}
+            </p>
             <div className="rounded border border-os-border bg-os-surface p-4 overflow-x-auto whitespace-pre leading-relaxed text-tx-secondary">
-              {JSON.stringify(metadata, null, 2)}
+              {JSON.stringify(displayMetadata, null, 2)}
             </div>
           </section>
 
