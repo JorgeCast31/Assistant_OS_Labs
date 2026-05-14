@@ -148,6 +148,14 @@ MSO_SEAT_MODEL: str = os.environ.get("MSO_SEAT_MODEL", "").strip()
 ASSISTANT_OS_VAULT_PATH: str = os.environ.get("ASSISTANT_OS_VAULT_PATH", "").strip()
 
 # ---------------------------------------------------------------------------
+# Obsidian Vault integration — read-only semantic context layer
+# ---------------------------------------------------------------------------
+# Path to the Obsidian Vault root directory.
+# If unset or empty, Vault retrieval is disabled and MSO responses are
+# unaffected — the system emits vault_context=disabled with no chunks.
+ASSISTANT_OS_VAULT_PATH: str = os.environ.get("ASSISTANT_OS_VAULT_PATH", "").strip()
+
+# ---------------------------------------------------------------------------
 # Google Sheets Integration (FIN module)
 # ---------------------------------------------------------------------------
 # Service account credentials JSON file path (from .env)
