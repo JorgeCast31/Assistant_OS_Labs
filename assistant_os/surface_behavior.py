@@ -546,6 +546,18 @@ def _build_surface_response(
     intent: str = "informational_response",
     missing_fields: list[str] | None = None,
     context_request: dict | None = None,
+    response_source: str | None = None,
+    execution_status: str | None = None,
+    provider_used: str | None = None,
+    model_used: str | None = None,
+    cognitive_generation: bool = False,
+    fallback_used: bool = False,
+    fallback_reason: str | None = None,
+    narrative_context: dict | None = None,
+    cognitive_trace: dict | None = None,
+    latency_ms: int | None = None,
+    tokens_in: int | None = None,
+    tokens_out: int | None = None,
 ) -> dict:
     session = {"context_id": context_id, "last_domain": domain}
     audit = {
@@ -559,7 +571,7 @@ def _build_surface_response(
         session["context_request"] = dict(context_request)
         audit["context_request"] = dict(context_request)
 
-    return {
+    resp = {
         "ok": True,
         "message": message,
         "result_type": result_type,
@@ -575,7 +587,44 @@ def _build_surface_response(
         "audit": audit,
         "identity": identity.to_audit_dict(),
         "guard": guard_result.to_audit_dict(),
+        "execution_allowed": False,
+        "can_execute_now": False,
     }
+
+    if response_source:
+        resp["response_source"] = response_source
+        resp["execution_status"] = execution_status
+        resp["provider_used"] = provider_used
+        resp["model_used"] = model_used
+        resp["cognitive_generation"] = cognitive_generation
+        resp["fallback_used"] = fallback_used
+        resp["fallback_reason"] = fallback_reason
+        resp["latency_ms"] = latency_ms
+        resp["tokens_in"] = tokens_in
+        resp["tokens_out"] = tokens_out
+
+        if not cognitive_trace:
+            resp["cognitive_trace"] = {
+                "response_source": response_source,
+                "execution_status": execution_status,
+                "provider_used": provider_used,
+                "model_used": model_used,
+                "cognitive_generation": cognitive_generation,
+                "fallback_used": fallback_used,
+                "fallback_reason": fallback_reason,
+                "latency_ms": latency_ms,
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "execution_allowed": False,
+                "can_execute_now": False,
+            }
+        else:
+            resp["cognitive_trace"] = cognitive_trace
+
+    if narrative_context:
+        resp["narrative_context"] = narrative_context
+
+    return resp
 
 
 def _build_plan_request_provider_context() -> dict:
@@ -1069,6 +1118,8 @@ def get_surface_behavior_response(
             context_id=context_id,
             identity=identity,
             guard_result=guard_result,
+            response_source="deterministic_conversational",
+            execution_status="stub",
         )
 
     if surface == "assistant_chat":
@@ -1170,13 +1221,15 @@ def get_surface_behavior_response(
                 context_id=context_id,
                 identity=identity,
                 guard_result=guard_result,
+                response_source="deterministic_conversational",
+                execution_status="stub",
             )
         # Deterministic narrative fast-path (Sprint 2)
         try:
             from .mso.narrative_runtime import is_mso_narrative_intent, build_narrative_context_message
             if is_mso_narrative_intent(normalized):
                 _msg, _ctx = build_narrative_context_message()
-                _resp = _build_surface_response(
+                return _build_surface_response(
                     message=_msg,
                     domain="MSO",
                     surface=surface,
@@ -1185,20 +1238,26 @@ def get_surface_behavior_response(
                     guard_result=guard_result,
                     result_type="surface_response",
                     intent="mso_narrative_status",
+                    response_source="deterministic_narrative",
+                    execution_status="stub",
+                    narrative_context=_ctx,
                 )
-                _resp["narrative_context"] = _ctx
-                return _resp
         except Exception:
             pass
         # Cognitive generation path (Sprint 3) — provider-backed, fails closed
         try:
+            import time as _time
             from .mso.narrative_runtime import build_mso_grounding_context, build_narrative_context_message
             grounding = build_mso_grounding_context()
             _provider_ok = False
+            _start_time = _time.perf_counter()
+            _provider_err = None
             try:
                 provider_resp = _call_mso_cognitive(grounding, text)
+                _latency_ms = int((_time.perf_counter() - _start_time) * 1000)
                 if provider_resp.get("status") == "ok" and provider_resp.get("text", "").strip():
-                    _resp = _build_surface_response(
+                    provider_metadata = provider_resp.get("metadata") or {}
+                    return _build_surface_response(
                         message=provider_resp["text"].strip(),
                         domain="MSO",
                         surface=surface,
@@ -1207,22 +1266,31 @@ def get_surface_behavior_response(
                         guard_result=guard_result,
                         result_type="surface_response",
                         intent="mso_cognitive_response",
+                        response_source="llm_economic",
+                        execution_status="real",
+                        provider_used=provider_resp.get("provider_name", ""),
+                        model_used=provider_resp.get("model_name", ""),
+                        cognitive_generation=True,
+                        fallback_used=False,
+                        narrative_context={
+                            **grounding,
+                            "execution_allowed": False,
+                            "can_execute_now": False,
+                        },
+                        latency_ms=_latency_ms,
+                        tokens_in=provider_metadata.get("tokens_in"),
+                        tokens_out=provider_metadata.get("tokens_out"),
                     )
-                    _resp["narrative_context"] = {
-                        **grounding,
-                        "execution_allowed": False,
-                        "can_execute_now": False,
-                    }
-                    _resp["provider_used"] = provider_resp.get("provider_name", "")
-                    _resp["model_used"] = provider_resp.get("model_name", "")
-                    _resp["cognitive_generation"] = True
-                    _resp["fallback_used"] = False
-                    return _resp
-            except Exception:
-                pass
+                else:
+                    _provider_err = provider_resp.get("error") or provider_resp.get("reason") or "unusable provider response"
+            except Exception as e:
+                _latency_ms = int((_time.perf_counter() - _start_time) * 1000)
+                _provider_err = str(e)
+
             # Provider call failed or returned unusable response — fall back to narrative
             _msg, _ctx = build_narrative_context_message()
-            _resp = _build_surface_response(
+            _fallback_source = "provider_unavailable" if "key not configured" in str(_provider_err).lower() else "deterministic_fallback"
+            return _build_surface_response(
                 message=_msg,
                 domain="MSO",
                 surface=surface,
@@ -1231,10 +1299,13 @@ def get_surface_behavior_response(
                 guard_result=guard_result,
                 result_type="surface_response",
                 intent="mso_narrative_status",
+                response_source=_fallback_source,
+                execution_status="unavailable",
+                fallback_used=True,
+                fallback_reason=_provider_err,
+                narrative_context=_ctx,
+                latency_ms=_latency_ms if '_latency_ms' in locals() else None,
             )
-            _resp["narrative_context"] = _ctx
-            _resp["fallback_used"] = True
-            return _resp
         except Exception:
             pass
         return None

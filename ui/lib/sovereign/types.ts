@@ -17,6 +17,14 @@ export type SystemHealth = 'healthy' | 'degraded' | 'unavailable'
 export type ExecutionStatus = 'real' | 'stub' | 'unavailable' | 'partial'
 export type ExecutionStatusSource = 'backend' | 'ui_fallback'
 
+export type ResponseSource =
+  | 'deterministic_conversational'
+  | 'deterministic_narrative'
+  | 'llm_economic'
+  | 'deterministic_fallback'
+  | 'provider_unavailable'
+  | 'orchestrator'
+
 /**
  * ALFA-FLIGHT-02 §5 — optional traceability for assistant decisions.
  * Absence is never inferred as a value; renderers hide the badge when
@@ -51,6 +59,23 @@ export interface SovereignMessage {
   // ALFA-FLIGHT-02 §5 — optional traceability badge data.
   decisionSource?: DecisionSource
   confidenceScore?: number
+  // ALPHA PHASE 1 — provenance metadata
+  responseSource?: ResponseSource
+  providerUsed?: string
+  modelUsed?: string
+  cognitiveGeneration?: boolean
+  fallbackUsed?: boolean
+  fallbackReason?: string
+  narrativeContext?: Record<string, unknown>
+  cognitiveTrace?: Record<string, unknown>
+  executionAllowed?: boolean
+  canExecuteNow?: boolean
+  latencyMs?: number
+  tokensIn?: number
+  tokensOut?: number
+  audit?: Record<string, unknown>
+  traceId?: string
+  rawResponse?: Record<string, unknown>
   // ALFA-FLIGHT-02 §3 — when present, render redirect chips below the message.
   redirectTargets?: ('mso' | 'machine_operator')[]
 }
@@ -201,6 +226,22 @@ export interface SovereignChatResponse {
   // ALFA-FLIGHT-02 §5 — optional traceability. Absent = no signal.
   decision_source?: DecisionSource
   confidence_score?: number
+  // ALPHA PHASE 1 — provenance metadata
+  response_source?: ResponseSource
+  provider_used?: string
+  model_used?: string
+  cognitive_generation?: boolean
+  fallback_used?: boolean
+  fallback_reason?: string
+  narrative_context?: Record<string, unknown>
+  cognitive_trace?: Record<string, unknown>
+  execution_allowed?: boolean
+  can_execute_now?: boolean
+  latency_ms?: number
+  tokens_in?: number
+  tokens_out?: number
+  audit?: Record<string, unknown>
+  raw_response?: Record<string, unknown>
 }
 
 export interface PolicyDecision {

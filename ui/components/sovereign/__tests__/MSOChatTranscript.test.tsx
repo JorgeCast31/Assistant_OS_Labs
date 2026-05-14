@@ -81,4 +81,57 @@ describe('MSOChatTranscript', () => {
     expect(items[0].textContent).toBe('first message')
     expect(items[1].textContent).toBe('second message')
   })
+
+  it('renders responseSource badge when present', () => {
+    const msg = makeMsg({ role: 'assistant', responseSource: 'llm_economic' })
+    render(<MSOChatTranscript messages={[msg]} />)
+    expect(screen.getByText(/llm economic/i)).toBeInTheDocument()
+  })
+
+  it('renders provider and model pill when providerUsed is present', () => {
+    const msg = makeMsg({
+      role: 'assistant',
+      providerUsed: 'anthropic',
+      modelUsed: 'claude-3-haiku'
+    })
+    render(<MSOChatTranscript messages={[msg]} />)
+    expect(screen.getByText(/anthropic \/ claude-3-haiku/i)).toBeInTheDocument()
+  })
+
+  it('renders fallback chip when fallbackUsed is true', () => {
+    const msg = makeMsg({ role: 'assistant', fallbackUsed: true, fallbackReason: 'test reason' })
+    render(<MSOChatTranscript messages={[msg]} />)
+    expect(screen.getByText(/fallback/i)).toBeInTheDocument()
+  })
+
+  it('renders latency pill when latencyMs is present', () => {
+    const msg = makeMsg({ role: 'assistant', latencyMs: 123 })
+    render(<MSOChatTranscript messages={[msg]} />)
+    expect(screen.getByText(/123ms/i)).toBeInTheDocument()
+  })
+
+  it('renders raw toggle button for assistant messages', () => {
+    const msg = makeMsg({ role: 'assistant' })
+    render(<MSOChatTranscript messages={[msg]} />)
+    expect(screen.getByText(/\{ raw \}/i)).toBeInTheDocument()
+  })
+
+  it('opens raw drawer when raw toggle is clicked', async () => {
+    const msg = makeMsg({
+      role: 'assistant',
+      responseSource: 'llm_economic',
+      rawResponse: { foo: 'bar' }
+    })
+    const { userEvent } = await import('@testing-library/user-event')
+    const user = userEvent.setup()
+
+    render(<MSOChatTranscript messages={[msg]} />)
+    const toggle = screen.getByText(/\{ raw \}/i)
+    await user.click(toggle)
+
+    // Check for drawer title
+    expect(screen.getByText(/raw message metadata/i)).toBeInTheDocument()
+    // Check for formatted JSON content (or part of it)
+    expect(screen.getByText(/"foo": "bar"/)).toBeInTheDocument()
+  })
 })

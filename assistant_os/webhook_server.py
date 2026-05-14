@@ -616,6 +616,7 @@ def _chat_wire_from_domain_result(
         "audit": base_audit,
         "identity": identity.to_audit_dict(),
         "guard": guard_result.to_audit_dict(),
+        "response_source": "orchestrator",
     }
     if "execution_status" in dr:
         wire["execution_status"] = dr["execution_status"]
