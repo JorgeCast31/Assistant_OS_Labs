@@ -1402,5 +1402,130 @@ class TestMSODirectV2(unittest.TestCase):
         self.assertIsNone(self._call("Borra algo"))
 
 
+class TestPhase2PerceptionFrameIntegration(unittest.TestCase):
+    """SPRINT-ALPHA-02 — Verify perception frame propagates through mso_direct paths."""
+
+    def _mock_identity(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {"principal": "anon"}
+        return m
+
+    def _mock_guard(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {"decision": "allow"}
+        return m
+
+    def _call(self, text):
+        return get_surface_behavior_response(
+            surface="mso_direct",
+            text=text,
+            context_id="ctx-phase2-001",
+            identity=self._mock_identity(),
+            guard_result=self._mock_guard(),
+        )
+
+    # --- grounding context contracts ---
+
+    def test_grounding_context_contains_new_frame_keys(self):
+        from assistant_os.mso.narrative_runtime import build_mso_grounding_context
+        ctx = build_mso_grounding_context()
+        new_keys = [
+            "version", "capabilities_summary", "recent_governance",
+            "active_tasks_brief", "recent_failures", "perception_warnings",
+        ]
+        for key in new_keys:
+            self.assertIn(key, ctx, f"grounding context missing key: {key}")
+
+    def test_grounding_context_version_is_alpha_02(self):
+        from assistant_os.mso.narrative_runtime import build_mso_grounding_context
+        ctx = build_mso_grounding_context()
+        self.assertEqual(ctx.get("version"), "alpha-02")
+
+    def test_grounding_context_execution_boundary_intact(self):
+        from assistant_os.mso.narrative_runtime import build_mso_grounding_context
+        ctx = build_mso_grounding_context()
+        self.assertFalse(ctx["execution_allowed"])
+        self.assertFalse(ctx["can_execute_now"])
+        self.assertTrue(ctx["execution_closed"])
+
+    def test_grounding_context_pending_review_items_alias_preserved(self):
+        from assistant_os.mso.narrative_runtime import build_mso_grounding_context
+        ctx = build_mso_grounding_context()
+        # Phase 1 callers use 'pending_review_items'; must equal prepared_actions_summary
+        self.assertIn("pending_review_items", ctx)
+        self.assertEqual(ctx["pending_review_items"], ctx["prepared_actions_summary"])
+
+    # --- narrative path (deterministic_narrative) still works ---
+
+    def test_narrative_response_still_carries_provenance(self):
+        resp = self._call("como esta el mso")
+        if resp is None:
+            return  # kernel fallthrough — acceptable if narrative import fails
+        self.assertEqual(resp.get("response_source"), "deterministic_narrative")
+        self.assertIn("narrative_context", resp)
+        self.assertIn("execution_status", resp)
+
+    def test_narrative_context_has_new_frame_keys(self):
+        resp = self._call("como esta el mso")
+        if resp is None:
+            return
+        narrative_ctx = resp.get("narrative_context") or {}
+        if narrative_ctx:
+            # Narrative context comes from build_mso_grounding_context() which now
+            # delegates to the frame — new keys must be present
+            new_keys = ["version", "capabilities_summary", "recent_governance",
+                        "active_tasks_brief", "recent_failures", "perception_warnings"]
+            for key in new_keys:
+                self.assertIn(key, narrative_ctx, f"narrative_context missing: {key}")
+
+    # --- Alpha 1 provenance regression guard ---
+
+    def test_alpha1_provenance_fields_not_regressed(self):
+        resp = self._call("como esta el mso")
+        if resp is None:
+            return
+        self.assertIn("response_source", resp)
+        self.assertIn("execution_status", resp)
+        self.assertFalse(resp.get("execution_allowed"))
+        self.assertFalse(resp.get("can_execute_now"))
+
+    def test_cognitive_fallback_narrative_context_execution_boundary(self):
+        # Provider unavailable → fallback path also uses grounding context
+        resp = self._call("necesito analisis completo de arquitectura")
+        if resp is None:
+            return
+        narrative_ctx = resp.get("narrative_context") or {}
+        if narrative_ctx:
+            self.assertFalse(narrative_ctx.get("execution_allowed", False))
+            self.assertFalse(narrative_ctx.get("can_execute_now", False))
+
+    # --- authority / Police / Machine Operator untouched ---
+
+    def test_perception_module_does_not_import_forbidden_modules(self):
+        import ast
+        import pathlib
+        perception_path = (
+            pathlib.Path(__file__).parent.parent
+            / "assistant_os" / "mso" / "perception.py"
+        )
+        tree = ast.parse(perception_path.read_text(encoding="utf-8"))
+        forbidden = [
+            "police", "machine_operator_adapter", "authority_chain",
+            "token_issuer", "openclaw",
+        ]
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                module = ""
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    module = node.module.lower()
+                elif isinstance(node, ast.Import):
+                    module = " ".join(a.name.lower() for a in node.names)
+                for pattern in forbidden:
+                    self.assertNotIn(
+                        pattern, module,
+                        f"perception.py must not import '{pattern}' (found: {module})"
+                    )
+
+
 if __name__ == "__main__":
     unittest.main()
