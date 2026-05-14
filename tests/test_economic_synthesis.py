@@ -12,6 +12,18 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 
+def _mock_guard():
+    m = MagicMock()
+    m.to_audit_dict.return_value = {"principal": "anon", "decision": "allow"}
+    return m
+
+
+def _mock_identity():
+    m = MagicMock()
+    m.to_audit_dict.return_value = {"user_id": "test", "role": "anon"}
+    return m
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -253,8 +265,8 @@ def test_llm_economic_response_includes_synthesis_mode_in_cognitive_trace(monkey
         surface="mso_direct",
         text="qué ves del sistema",
         context_id="test-ctx",
-        identity=None,
-        guard_result=None,
+        identity=_mock_identity(),
+        guard_result=_mock_guard(),
     )
     assert resp is not None
     trace = resp.get("cognitive_trace") or {}
@@ -283,8 +295,8 @@ def test_llm_economic_response_includes_vault_trace_fields(monkeypatch):
         surface="mso_direct",
         text="qué significa provider_unavailable",
         context_id="test-ctx",
-        identity=None,
-        guard_result=None,
+        identity=_mock_identity(),
+        guard_result=_mock_guard(),
     )
     assert resp is not None
     trace = resp.get("cognitive_trace") or {}
@@ -309,8 +321,8 @@ def test_fallback_works_when_vault_disabled(monkeypatch):
         surface="mso_direct",
         text="cuáles son tus límites",
         context_id="test-ctx",
-        identity=None,
-        guard_result=None,
+        identity=_mock_identity(),
+        guard_result=_mock_guard(),
     )
     assert resp is not None
     assert resp.get("response_source") in ("provider_unavailable", "deterministic_fallback", "deterministic_narrative")
@@ -356,8 +368,8 @@ def test_alpha1_provenance_fields_intact(monkeypatch):
         surface="mso_direct",
         text="qué ves del sistema",
         context_id="test-ctx",
-        identity=None,
-        guard_result=None,
+        identity=_mock_identity(),
+        guard_result=_mock_guard(),
     )
     assert resp is not None
     assert resp.get("response_source") == "llm_economic"
@@ -381,8 +393,8 @@ def test_alpha2_perception_frame_fields_in_narrative_context(monkeypatch):
         surface="mso_direct",
         text="qué ves del sistema",
         context_id="test-ctx",
-        identity=None,
-        guard_result=None,
+        identity=_mock_identity(),
+        guard_result=_mock_guard(),
     )
     assert resp is not None
     ctx = resp.get("narrative_context") or {}
@@ -401,8 +413,8 @@ def test_alpha3_vault_trace_fields_present(monkeypatch):
         surface="mso_direct",
         text="qué ves del sistema",
         context_id="test-ctx",
-        identity=None,
-        guard_result=None,
+        identity=_mock_identity(),
+        guard_result=_mock_guard(),
     )
     assert resp is not None
     trace = resp.get("cognitive_trace") or {}
@@ -435,8 +447,8 @@ def test_no_second_llm_call(monkeypatch):
         surface="mso_direct",
         text="qué ves del sistema",
         context_id="test-ctx",
-        identity=None,
-        guard_result=None,
+        identity=_mock_identity(),
+        guard_result=_mock_guard(),
     )
     assert call_count["n"] == 1, f"Expected 1 LLM call, got {call_count['n']}"
 
