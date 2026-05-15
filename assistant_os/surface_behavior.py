@@ -869,6 +869,20 @@ def _assistant_chat_router_response(
         response["authority_preparation"] = authority_data.get("authority_preparation")
         response["confirmable_action"] = authority_data.get("confirmable_action")
         response["queued_prepared_action"] = authority_data.get("queued_prepared_action")
+        _ac_queued = authority_data.get("queued_prepared_action") or {}
+        response["response_source"] = "assistant_chat_plan_request_prepared"
+        response["execution_status"] = "not_executed"
+        response["used_execution"] = False
+        response["operation_trace"] = {
+            "plan_request_prepared": True,
+            "prepared_action_id": _ac_queued.get("queue_entry_id"),
+            "confirmation_required": True,
+            "visible_in_mission_control": True,
+            "source_surface": surface,
+            "execution_allowed": False,
+            "can_execute_now": False,
+            "used_execution": False,
+        }
         return response
 
     if intent_type == "review_queue_status":
@@ -1235,6 +1249,45 @@ def get_surface_behavior_response(
                 response_source="deterministic_conversational",
                 execution_status="stub",
             )
+        # SPRINT-ALPHA-05.1: Intercept plan_request BEFORE narrative_runtime so
+        # "Prepárame un plan" is governed as plan_request, not LLM freeform.
+        try:
+            _pr_router = route_text(normalized)
+            if _pr_router.get("intent_type") == "plan_request":
+                _pr_provider_ctx = _build_plan_request_provider_context()
+                _pr_auth_data = _build_plan_request_authority_data(normalized)
+                _pr_queued = _pr_auth_data.get("queued_prepared_action") or {}
+                _pr_resp = _build_surface_response(
+                    message=_plan_request_message(_pr_provider_ctx, _pr_auth_data),
+                    domain="ASSISTANT",
+                    surface=surface,
+                    context_id=context_id,
+                    identity=identity,
+                    guard_result=guard_result,
+                    result_type="surface_response",
+                    intent="plan_request",
+                )
+                _pr_resp["provider_context"] = _pr_provider_ctx
+                _pr_resp["proposal_summary"] = _pr_auth_data.get("proposal_summary")
+                _pr_resp["authority_preparation"] = _pr_auth_data.get("authority_preparation")
+                _pr_resp["confirmable_action"] = _pr_auth_data.get("confirmable_action")
+                _pr_resp["queued_prepared_action"] = _pr_queued
+                _pr_resp["response_source"] = "mso_plan_request_prepared"
+                _pr_resp["execution_status"] = "not_executed"
+                _pr_resp["used_execution"] = False
+                _pr_resp["operation_trace"] = {
+                    "plan_request_prepared": True,
+                    "prepared_action_id": _pr_queued.get("queue_entry_id"),
+                    "confirmation_required": True,
+                    "visible_in_mission_control": True,
+                    "source_surface": "mso_direct",
+                    "execution_allowed": False,
+                    "can_execute_now": False,
+                    "used_execution": False,
+                }
+                return _pr_resp
+        except Exception:
+            pass
         # Deterministic narrative fast-path (Sprint 2)
         try:
             from .mso.narrative_runtime import is_mso_narrative_intent, build_narrative_context_message
