@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 from ..config import ANTHROPIC_API_KEY
 from .seat_model_provider import make_unavailable_response, make_cognitive_response
+from . import seat_model_provider_registry as _registry
 
 _log = logging.getLogger(__name__)
 
@@ -74,8 +75,19 @@ def is_mso_chat_available() -> bool:
     """Return True if the Anthropic provider is configured and can be called.
 
     No network calls — config-derived only.
+
+    Returns False if a non-Anthropic provider is explicitly seated, because
+    MSO chat does not yet have an adapter for other providers.
     """
-    return bool(ANTHROPIC_API_KEY and ANTHROPIC_API_KEY.strip())
+    if not bool(ANTHROPIC_API_KEY and ANTHROPIC_API_KEY.strip()):
+        return False
+    try:
+        seated = _registry.get_seated_provider()
+        if seated is not None and seated.provider_name.value != "anthropic":
+            return False
+    except Exception:
+        pass  # registry failure → assume Anthropic baseline
+    return True
 
 
 def call_mso_chat_provider(
@@ -111,6 +123,21 @@ def call_mso_chat_provider(
     model_name = _resolve_model()
 
     if not is_mso_chat_available():
+        # Check whether a non-Anthropic provider is explicitly seated.
+        # If so, report the actual reason honestly rather than a generic key error.
+        try:
+            seated = _registry.get_seated_provider()
+            if seated is not None and seated.provider_name.value != "anthropic":
+                return make_unavailable_response(
+                    provider_name=seated.provider_name.value,
+                    model_name=model_name,
+                    reason=(
+                        f"provider '{seated.provider_name.value}' is not yet implemented "
+                        "for MSO chat. Set MSO_SEAT_PROVIDER=anthropic."
+                    ),
+                )
+        except Exception:
+            pass  # registry failure → fall through to generic key-missing response
         return make_unavailable_response(
             provider_name=provider_name,
             model_name=model_name,

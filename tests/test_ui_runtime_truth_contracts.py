@@ -2900,5 +2900,127 @@ class TestMissionControlLiveChainView(unittest.TestCase):
         )
 
 
+class TestMSOChatProviderTruthContract(unittest.TestCase):
+    """G-01 — MSO chat provider must not silently call Anthropic when a
+    non-Anthropic provider is explicitly seated.
+
+    When MSO_SEAT_PROVIDER is set to a provider other than 'anthropic',
+    call_mso_chat_provider() must return status='unavailable' (not 'ok')
+    so that the UI falls back to deterministic_narrative instead of
+    silently invoking Anthropic while displaying a different provider name.
+    """
+
+    def _make_fake_provider(self, provider_name_value: str):
+        """Return a minimal MSOSeatModelProvider-like mock for the given name."""
+        from unittest.mock import MagicMock
+        from assistant_os.mso.seat_model_provider import ModelProviderName
+        m = MagicMock()
+        m.provider_name = MagicMock()
+        m.provider_name.value = provider_name_value
+        return m
+
+    def test_non_anthropic_seated_provider_returns_unavailable(self):
+        """When seated provider is 'llama', response status must be 'unavailable'."""
+        from unittest.mock import patch
+        from assistant_os.mso.mso_chat_provider import call_mso_chat_provider
+        import assistant_os.mso.seat_model_provider_registry as reg
+
+        fake_llama = self._make_fake_provider("llama")
+        with patch.object(reg, "get_seated_provider", return_value=fake_llama):
+            resp = call_mso_chat_provider(grounding_context={}, user_text="hola")
+
+        self.assertEqual(
+            resp["status"],
+            "unavailable",
+            "call_mso_chat_provider must return status='unavailable' when seated provider is 'llama'",
+        )
+
+    def test_non_anthropic_seated_provider_not_ok_status(self):
+        """Response status must NOT be 'ok' when a non-Anthropic provider is seated."""
+        from unittest.mock import patch
+        from assistant_os.mso.mso_chat_provider import call_mso_chat_provider
+        import assistant_os.mso.seat_model_provider_registry as reg
+
+        fake_openai = self._make_fake_provider("openai")
+        with patch.object(reg, "get_seated_provider", return_value=fake_openai):
+            resp = call_mso_chat_provider(grounding_context={}, user_text="hola")
+
+        self.assertNotEqual(
+            resp["status"],
+            "ok",
+            "call_mso_chat_provider must not return status='ok' when a non-Anthropic provider is seated",
+        )
+
+    def test_non_anthropic_reason_mentions_not_yet_implemented(self):
+        """The unavailable reason must mention 'not yet implemented' for honest diagnostics."""
+        from unittest.mock import patch
+        from assistant_os.mso.mso_chat_provider import call_mso_chat_provider
+        import assistant_os.mso.seat_model_provider_registry as reg
+
+        fake_llama = self._make_fake_provider("llama")
+        with patch.object(reg, "get_seated_provider", return_value=fake_llama):
+            resp = call_mso_chat_provider(grounding_context={}, user_text="hola")
+
+        error_text = (resp.get("error") or "").lower()
+        self.assertIn(
+            "not yet implemented",
+            error_text,
+            "Unavailable reason must mention 'not yet implemented' so the caller can diagnose",
+        )
+
+    def test_non_anthropic_provider_name_in_response_is_not_anthropic(self):
+        """Response provider_name must reflect the seated provider, not 'anthropic'."""
+        from unittest.mock import patch
+        from assistant_os.mso.mso_chat_provider import call_mso_chat_provider
+        import assistant_os.mso.seat_model_provider_registry as reg
+
+        fake_llama = self._make_fake_provider("llama")
+        with patch.object(reg, "get_seated_provider", return_value=fake_llama):
+            resp = call_mso_chat_provider(grounding_context={}, user_text="hola")
+
+        self.assertNotEqual(
+            resp.get("provider_name"),
+            "anthropic",
+            "Response provider_name must not be 'anthropic' when the seated provider is 'llama'",
+        )
+
+    def test_is_mso_chat_available_false_when_non_anthropic_seated(self):
+        """is_mso_chat_available() must return False when a non-Anthropic provider is seated."""
+        from unittest.mock import patch
+        from assistant_os.mso.mso_chat_provider import is_mso_chat_available
+        import assistant_os.mso.seat_model_provider_registry as reg
+
+        fake_llama = self._make_fake_provider("llama")
+        with patch.object(reg, "get_seated_provider", return_value=fake_llama):
+            available = is_mso_chat_available()
+
+        self.assertFalse(
+            available,
+            "is_mso_chat_available() must return False when a non-Anthropic provider is seated",
+        )
+
+    def test_none_seated_provider_proceeds_to_anthropic(self):
+        """When MSO_SEAT_PROVIDER is not set (None), the Anthropic baseline must be used.
+
+        With no API key, it should fail with key-missing, not with 'not yet implemented'.
+        """
+        from unittest.mock import patch
+        from assistant_os.mso.mso_chat_provider import call_mso_chat_provider
+        import assistant_os.mso.seat_model_provider_registry as reg
+        import assistant_os.mso.mso_chat_provider as _mod
+
+        with patch.object(reg, "get_seated_provider", return_value=None):
+            with patch.object(_mod, "ANTHROPIC_API_KEY", ""):
+                resp = call_mso_chat_provider(grounding_context={}, user_text="hola")
+
+        error_text = (resp.get("error") or "").lower()
+        self.assertNotIn(
+            "not yet implemented",
+            error_text,
+            "When seated provider is None (default Anthropic), reason must NOT say 'not yet implemented'",
+        )
+        self.assertEqual(resp["status"], "unavailable")
+
+
 if __name__ == "__main__":
     unittest.main()

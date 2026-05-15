@@ -1710,5 +1710,98 @@ class TestPhase2PerceptionFrameIntegration(unittest.TestCase):
                     )
 
 
+class TestMSODirectNonAnthropicProviderFallback(unittest.TestCase):
+    """G-01 — mso_direct surface must fall back to deterministic_narrative (not
+    llm_economic) when the seated cognitive provider is non-Anthropic.
+
+    This verifies the surface-level truth contract: if MSO_SEAT_PROVIDER=llama,
+    the surface response must NOT show response_source='llm_economic' because
+    no Anthropic call is made.  The expected fallback sources are
+    'provider_unavailable', 'deterministic_fallback', or 'deterministic_narrative'.
+    """
+
+    def _mock_identity(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {"principal": "anon"}
+        return m
+
+    def _mock_guard(self):
+        m = MagicMock()
+        m.to_audit_dict.return_value = {"decision": "allow"}
+        return m
+
+    def _make_fake_provider(self, provider_name_value: str):
+        m = MagicMock()
+        m.provider_name = MagicMock()
+        m.provider_name.value = provider_name_value
+        return m
+
+    def _call_with_seated(self, provider_name_value: str, text: str):
+        import assistant_os.mso.seat_model_provider_registry as reg
+        fake = self._make_fake_provider(provider_name_value)
+        with patch.object(reg, "get_seated_provider", return_value=fake):
+            return get_surface_behavior_response(
+                surface="mso_direct",
+                text=text,
+                context_id="ctx-g01-test",
+                identity=self._mock_identity(),
+                guard_result=self._mock_guard(),
+            )
+
+    def test_non_anthropic_provider_does_not_return_llm_economic(self):
+        """mso_direct with llama seated must not return response_source='llm_economic'."""
+        resp = self._call_with_seated("llama", "necesito análisis completo de arquitectura")
+        if resp is None:
+            return  # degenerate env — acceptable
+        self.assertNotEqual(
+            resp.get("response_source"),
+            "llm_economic",
+            "mso_direct must not use response_source='llm_economic' when 'llama' is seated",
+        )
+
+    def test_non_anthropic_provider_falls_back_to_deterministic(self):
+        """mso_direct with llama seated must fall back to a deterministic or unavailable source."""
+        resp = self._call_with_seated("llama", "necesito análisis completo de arquitectura")
+        if resp is None:
+            return  # degenerate env — acceptable
+        acceptable_sources = {
+            "provider_unavailable",
+            "deterministic_fallback",
+            "deterministic_narrative",
+            "deterministic_conversational",
+        }
+        source = resp.get("response_source", "")
+        self.assertIn(
+            source,
+            acceptable_sources,
+            f"mso_direct fallback response_source '{source}' is not an accepted deterministic source",
+        )
+
+    def test_non_anthropic_provider_response_has_no_execution(self):
+        """Fallback response with non-Anthropic provider must not allow execution."""
+        resp = self._call_with_seated("llama", "necesito análisis completo de arquitectura")
+        if resp is None:
+            return
+        self.assertFalse(
+            resp.get("execution_allowed", False),
+            "Fallback response must have execution_allowed=False",
+        )
+        self.assertFalse(
+            resp.get("can_execute_now", False),
+            "Fallback response must have can_execute_now=False",
+        )
+
+    def test_non_anthropic_provider_response_domain_is_mso(self):
+        """mso_direct cognitive path must always return domain='MSO' regardless of provider."""
+        resp = self._call_with_seated("llama", "necesito análisis completo de arquitectura")
+        if resp is None:
+            return
+        self.assertEqual(
+            resp.get("domain"),
+            "MSO",
+            "mso_direct response must have domain='MSO' even when provider is unavailable",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
