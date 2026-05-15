@@ -1,5 +1,6 @@
 'use client'
 
+import { getEntity } from '@/lib/sovereign/entity-registry'
 import { useUIStore } from '@/stores/ui-store'
 import { useSeatProviderStore } from '@/stores/seat-provider-store'
 import { usePreparedActionsStore } from '@/stores/prepared-actions-store'
@@ -87,6 +88,8 @@ export function MissionControlView() {
   useConfirmPendingPolling()
   useAuthorityStatusPolling()
 
+  const mcEntity = getEntity('mission_control')
+
   const { operationalMode, webhookStatus, apiStatus, lastUpdated } = useUIStore((s) => s.systemData)
   const seatProvider = useSeatProviderStore((s) => s.seatProvider)
   const preparedActions = usePreparedActionsStore((s) => s.preparedActions)
@@ -137,6 +140,11 @@ export function MissionControlView() {
           <p className="text-[10px] font-mono text-tx-muted mt-1">
             Prepared actions are waiting for manual review. No action from this panel approves, executes, or issues tokens.
           </p>
+          {mcEntity && (
+            <p className="text-[9px] font-mono text-tx-muted mt-1 tracking-wider">
+              entity:{mcEntity.id} · {mcEntity.execution_policy}
+            </p>
+          )}
         </div>
 
         {/* Runtime Snapshot */}
