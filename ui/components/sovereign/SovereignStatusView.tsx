@@ -190,14 +190,14 @@ export function SovereignStatusView() {
             <div className="space-y-2">
               <ChainRow label="MSO Governance" status="Active" tone="ok" />
               <ChainRow label="Delegated MSO Seat" status="Traceable / Non-executing" tone="ok" />
-              <ChainRow label="PolicyDecision" status="Present" tone="ok" />
-              <ChainRow label="CapabilityToken" status="Lifecycle checked" tone="ok" />
-              <ChainRow label="OperationBinding" status="Verified" tone="ok" />
-              <ChainRow label="AuthorizedPlan Ref" status="Bound" tone="ok" />
-              <ChainRow label="Capability Scope" status="Enforced" tone="ok" />
+              <ChainRow label="PolicyDecision" status="Policy-enforced" tone="ok" note="Required for all executive actions. Not queried at display time." />
+              <ChainRow label="CapabilityToken" status="Lifecycle-bound" tone="ok" note="Token lifecycle enforced at execution. No active token at rest." />
+              <ChainRow label="OperationBinding" status="Binding required" tone="ok" note="Verified at execution gate, not at rest." />
+              <ChainRow label="AuthorizedPlan Ref" status="Plan-bound" tone="ok" note="Bound at execution. No active plan at rest." />
+              <ChainRow label="Capability Scope" status="Scope-enforced" tone="ok" note="Police gate checks scope at execution." />
               <ChainRow label="Police Gate" status="Fail-closed" tone="ok" />
-              <ChainRow label="Temporal Restriction" status="Pending" tone="warn" />
-              <ChainRow label="CODE/docs Pilot" status="Next" tone="warn" />
+              <ChainRow label="Temporal Restriction" status="Pending implementation" tone="warn" />
+              <ChainRow label="CODE/docs Pilot" status="Next sprint" tone="warn" />
               <ChainRow label="HOST/MACHINE_OPERATOR" status="Guarded" tone="muted" />
               <ChainRow label="OpenClaw" status="Disabled" tone="muted" />
             </div>
