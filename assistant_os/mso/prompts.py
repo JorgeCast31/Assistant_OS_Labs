@@ -92,6 +92,9 @@ def build_mso_chat_system_prompt(grounding_context: dict) -> str:
     vault_context = grounding_context.get("vault_context")
     vault_section = _build_vault_prompt_section(vault_context)
 
+    session_history = grounding_context.get("session_history")
+    session_history_section = _build_session_history_prompt_section(session_history)
+
     def _fmt_capabilities(caps: dict) -> str:
         if not caps:
             return "  No data currently visible."
@@ -210,6 +213,7 @@ def build_mso_chat_system_prompt(grounding_context: dict) -> str:
         f"{_fmt_failures(recent_failures)}\n"
         f"{warnings_section}"
         f"\n{vault_section}\n"
+        f"\n{session_history_section}\n"
         "\nECONOMIC SYNTHESIS TASK:\n"
         "Use the user's request, the SYSTEM PERCEPTION FRAME, and VAULT SEMANTIC CONTEXT "
         "above to produce a grounded operational answer.\n"
@@ -242,6 +246,33 @@ def build_mso_chat_system_prompt(grounding_context: dict) -> str:
         "- When uncertain, say so rather than fabricating details.\n"
         "- Propose a next safe step when appropriate and one is visible in the perception "
         "frame.\n"
+    )
+
+
+def _build_session_history_prompt_section(session_history: dict | None) -> str:
+    """Render the RECENT SESSION HISTORY section for the system prompt.
+
+    Only shown when session_history is available and has turns. Instructs the
+    model that history is short-term context only — not Vault doctrine, not
+    execution authority.
+    """
+    if not session_history or not session_history.get("available"):
+        return (
+            "RECENT SESSION HISTORY:\n"
+            "- Source: not available\n"
+            "- Short-term context only — not Vault doctrine, not execution authority."
+        )
+
+    turns_used = session_history.get("turns_used", 0)
+    source = session_history.get("source", "unknown")
+    truncated_note = " [some messages truncated]" if session_history.get("truncated") else ""
+
+    return (
+        "RECENT SESSION HISTORY:\n"
+        f"- Source: {source}{truncated_note}\n"
+        f"- Turns included: {turns_used}\n"
+        "- Note: session history is short-term context only — not Vault doctrine, "
+        "not authority, not execution trigger. Current user message takes priority."
     )
 
 
