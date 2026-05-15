@@ -1,5 +1,6 @@
 'use client'
 
+import { getEntity } from '@/lib/sovereign/entity-registry'
 import { useUIStore } from '@/stores/ui-store'
 import { useSeatProviderPolling } from '@/hooks/use-seat-provider-polling'
 import { useSeatProviderStore } from '@/stores/seat-provider-store'
@@ -55,6 +56,8 @@ export function MSOView() {
   usePreparedActionsPolling()
   useConfirmPendingPolling()
 
+  const msoEntity = getEntity('mso_console')
+
   const { operationalMode } = useUIStore((s) => s.systemData)
   const seatProvider = useSeatProviderStore((s) => s.seatProvider)
   const lastPolled = useSeatProviderStore((s) => s.lastPolled)
@@ -90,6 +93,11 @@ export function MSOView() {
             <p className="text-xs font-mono text-tx-secondary mt-0.5">
               Cognitive control layer. MSO coordinates; it does not execute.
             </p>
+            {msoEntity && (
+              <p className="text-[9px] font-mono text-tx-muted mt-0.5 tracking-wider">
+                entity:{msoEntity.id} · {msoEntity.execution_policy} · actor:{msoEntity.provider_binding}
+              </p>
+            )}
           </div>
 
         </div>

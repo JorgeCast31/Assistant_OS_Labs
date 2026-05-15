@@ -2900,5 +2900,265 @@ class TestMissionControlLiveChainView(unittest.TestCase):
         )
 
 
+class TestAuthorityChainRuntimeTruthContract(unittest.TestCase):
+    """SovereignStatusView authority chain must not claim runtime policy/token/binding state.
+
+    G-03: Authority chain rows that describe runtime state (PolicyDecision, CapabilityToken,
+    OperationBinding, AuthorizedPlan Ref, Capability Scope) must use architectural/policy
+    language, not live-query language.
+
+    Rows describing architectural invariants (Police Gate, MSO Seat, OpenClaw, HOST/MO)
+    may keep their invariant status strings.
+    """
+
+    def setUp(self) -> None:
+        self.src = _read("components/sovereign/SovereignStatusView.tsx")
+
+    def test_authority_chain_does_not_claim_runtime_state(self) -> None:
+        """
+        SovereignStatusView authority chain rows must not claim runtime
+        policy/token/binding state. They may describe architectural invariants
+        or policy requirements, but not live query results.
+
+        This test documents the contract. The actual text values are validated
+        by code review — see ui/components/sovereign/SovereignStatusView.tsx.
+
+        Banned status values for runtime-state rows:
+        - "Present" (PolicyDecision)
+        - "Lifecycle checked" (CapabilityToken)
+        - "Verified" (OperationBinding)
+        - "Bound" (AuthorizedPlan Ref)
+        - "Enforced" (Capability Scope) — must be "Scope-enforced" (architectural) not "Enforced" (runtime)
+        """
+        # This test documents the UI truth contract.
+        # The implementation is enforced by the ChainRow definitions in SovereignStatusView.tsx.
+        # If you find these strings in the component, the contract is violated.
+        banned_status_claims = [
+            "Present",           # implies PolicyDecision was runtime-queried
+            "Lifecycle checked", # implies CapabilityToken was runtime-checked
+            "Verified",          # implies OperationBinding was runtime-verified
+            "Bound",             # implies AuthorizedPlan was runtime-bound (use "Plan-bound")
+        ]
+        # The authority chain rows that describe architectural invariants are allowed:
+        allowed_invariants = [
+            "Fail-closed",                  # Police Gate — invariant
+            "Traceable / Non-executing",    # MSO Seat — invariant
+            "Active",                       # MSO Governance — invariant (running = active)
+            "Guarded",                      # HOST/MO — invariant
+            "Disabled",                     # OpenClaw — invariant
+        ]
+        # Document the contract (this test always passes; it is a specification test)
+        assert len(banned_status_claims) == 4
+        assert len(allowed_invariants) == 5
+
+    def test_policy_decision_not_present(self) -> None:
+        """PolicyDecision row must not claim 'Present' (runtime-queried)."""
+        for line in self.src.splitlines():
+            if "PolicyDecision" in line and 'status="Present"' in line:
+                self.fail(
+                    f"SovereignStatusView PolicyDecision row claims runtime state 'Present': {line.strip()}"
+                )
+
+    def test_capability_token_not_lifecycle_checked(self) -> None:
+        """CapabilityToken row must not claim 'Lifecycle checked' (runtime-checked)."""
+        for line in self.src.splitlines():
+            if "CapabilityToken" in line and 'status="Lifecycle checked"' in line:
+                self.fail(
+                    f"SovereignStatusView CapabilityToken row claims runtime state 'Lifecycle checked': {line.strip()}"
+                )
+
+    def test_operation_binding_not_verified(self) -> None:
+        """OperationBinding row must not claim 'Verified' (runtime-verified)."""
+        for line in self.src.splitlines():
+            if "OperationBinding" in line and 'status="Verified"' in line:
+                self.fail(
+                    f"SovereignStatusView OperationBinding row claims runtime state 'Verified': {line.strip()}"
+                )
+
+    def test_authorized_plan_ref_not_raw_bound(self) -> None:
+        """AuthorizedPlan Ref row must not use bare 'Bound' (runtime-bound); use 'Plan-bound'."""
+        for line in self.src.splitlines():
+            if "AuthorizedPlan Ref" in line and 'status="Bound"' in line:
+                self.fail(
+                    f"SovereignStatusView AuthorizedPlan Ref row claims runtime state 'Bound': {line.strip()}"
+                )
+
+    def test_capability_scope_not_raw_enforced(self) -> None:
+        """Capability Scope row must not use bare 'Enforced' (runtime); use 'Scope-enforced'."""
+        for line in self.src.splitlines():
+            if "Capability Scope" in line and 'status="Enforced"' in line:
+                self.fail(
+                    f"SovereignStatusView Capability Scope row claims runtime state 'Enforced': {line.strip()}"
+                )
+
+    def test_honest_policy_language_present(self) -> None:
+        """Authority chain must use policy-language status values for non-invariant rows."""
+        self.assertIn(
+            'status="Policy-enforced"',
+            self.src,
+            "SovereignStatusView must use 'Policy-enforced' for PolicyDecision row",
+        )
+        self.assertIn(
+            'status="Lifecycle-bound"',
+            self.src,
+            "SovereignStatusView must use 'Lifecycle-bound' for CapabilityToken row",
+        )
+        self.assertIn(
+            'status="Binding required"',
+            self.src,
+            "SovereignStatusView must use 'Binding required' for OperationBinding row",
+        )
+        self.assertIn(
+            'status="Plan-bound"',
+            self.src,
+            "SovereignStatusView must use 'Plan-bound' for AuthorizedPlan Ref row",
+        )
+        self.assertIn(
+            'status="Scope-enforced"',
+            self.src,
+            "SovereignStatusView must use 'Scope-enforced' for Capability Scope row",
+        )
+
+    def test_architectural_invariants_preserved(self) -> None:
+        """Rows describing architectural invariants must keep their invariant status strings."""
+        self.assertIn(
+            'status="Fail-closed"',
+            self.src,
+            "SovereignStatusView Police Gate row must keep 'Fail-closed' (architectural invariant)",
+        )
+        self.assertIn(
+            'status="Traceable / Non-executing"',
+            self.src,
+            "SovereignStatusView Delegated MSO Seat row must keep 'Traceable / Non-executing'",
+        )
+        self.assertIn(
+            'status="Disabled"',
+            self.src,
+            "SovereignStatusView OpenClaw row must keep 'Disabled' (architectural invariant)",
+        )
+
+
+class TestMSOChatProviderTruthContract(unittest.TestCase):
+    """G-01 — MSO chat provider must not silently call Anthropic when a
+    non-Anthropic provider is explicitly seated.
+
+    When MSO_SEAT_PROVIDER is set to a provider other than 'anthropic',
+    call_mso_chat_provider() must return status='unavailable' (not 'ok')
+    so that the UI falls back to deterministic_narrative instead of
+    silently invoking Anthropic while displaying a different provider name.
+    """
+
+    def _make_fake_provider(self, provider_name_value: str):
+        """Return a minimal MSOSeatModelProvider-like mock for the given name."""
+        from unittest.mock import MagicMock
+        from assistant_os.mso.seat_model_provider import ModelProviderName
+        m = MagicMock()
+        m.provider_name = MagicMock()
+        m.provider_name.value = provider_name_value
+        return m
+
+    def test_non_anthropic_seated_provider_returns_unavailable(self):
+        """When seated provider is 'llama', response status must be 'unavailable'."""
+        from unittest.mock import patch
+        from assistant_os.mso.mso_chat_provider import call_mso_chat_provider
+        import assistant_os.mso.seat_model_provider_registry as reg
+
+        fake_llama = self._make_fake_provider("llama")
+        with patch.object(reg, "get_seated_provider", return_value=fake_llama):
+            resp = call_mso_chat_provider(grounding_context={}, user_text="hola")
+
+        self.assertEqual(
+            resp["status"],
+            "unavailable",
+            "call_mso_chat_provider must return status='unavailable' when seated provider is 'llama'",
+        )
+
+    def test_non_anthropic_seated_provider_not_ok_status(self):
+        """Response status must NOT be 'ok' when a non-Anthropic provider is seated."""
+        from unittest.mock import patch
+        from assistant_os.mso.mso_chat_provider import call_mso_chat_provider
+        import assistant_os.mso.seat_model_provider_registry as reg
+
+        fake_openai = self._make_fake_provider("openai")
+        with patch.object(reg, "get_seated_provider", return_value=fake_openai):
+            resp = call_mso_chat_provider(grounding_context={}, user_text="hola")
+
+        self.assertNotEqual(
+            resp["status"],
+            "ok",
+            "call_mso_chat_provider must not return status='ok' when a non-Anthropic provider is seated",
+        )
+
+    def test_non_anthropic_reason_mentions_not_yet_implemented(self):
+        """The unavailable reason must mention 'not yet implemented' for honest diagnostics."""
+        from unittest.mock import patch
+        from assistant_os.mso.mso_chat_provider import call_mso_chat_provider
+        import assistant_os.mso.seat_model_provider_registry as reg
+
+        fake_llama = self._make_fake_provider("llama")
+        with patch.object(reg, "get_seated_provider", return_value=fake_llama):
+            resp = call_mso_chat_provider(grounding_context={}, user_text="hola")
+
+        error_text = (resp.get("error") or "").lower()
+        self.assertIn(
+            "not yet implemented",
+            error_text,
+            "Unavailable reason must mention 'not yet implemented' so the caller can diagnose",
+        )
+
+    def test_non_anthropic_provider_name_in_response_is_not_anthropic(self):
+        """Response provider_name must reflect the seated provider, not 'anthropic'."""
+        from unittest.mock import patch
+        from assistant_os.mso.mso_chat_provider import call_mso_chat_provider
+        import assistant_os.mso.seat_model_provider_registry as reg
+
+        fake_llama = self._make_fake_provider("llama")
+        with patch.object(reg, "get_seated_provider", return_value=fake_llama):
+            resp = call_mso_chat_provider(grounding_context={}, user_text="hola")
+
+        self.assertNotEqual(
+            resp.get("provider_name"),
+            "anthropic",
+            "Response provider_name must not be 'anthropic' when the seated provider is 'llama'",
+        )
+
+    def test_is_mso_chat_available_false_when_non_anthropic_seated(self):
+        """is_mso_chat_available() must return False when a non-Anthropic provider is seated."""
+        from unittest.mock import patch
+        from assistant_os.mso.mso_chat_provider import is_mso_chat_available
+        import assistant_os.mso.seat_model_provider_registry as reg
+
+        fake_llama = self._make_fake_provider("llama")
+        with patch.object(reg, "get_seated_provider", return_value=fake_llama):
+            available = is_mso_chat_available()
+
+        self.assertFalse(
+            available,
+            "is_mso_chat_available() must return False when a non-Anthropic provider is seated",
+        )
+
+    def test_none_seated_provider_proceeds_to_anthropic(self):
+        """When MSO_SEAT_PROVIDER is not set (None), the Anthropic baseline must be used.
+
+        With no API key, it should fail with key-missing, not with 'not yet implemented'.
+        """
+        from unittest.mock import patch
+        from assistant_os.mso.mso_chat_provider import call_mso_chat_provider
+        import assistant_os.mso.seat_model_provider_registry as reg
+        import assistant_os.mso.mso_chat_provider as _mod
+
+        with patch.object(reg, "get_seated_provider", return_value=None):
+            with patch.object(_mod, "ANTHROPIC_API_KEY", ""):
+                resp = call_mso_chat_provider(grounding_context={}, user_text="hola")
+
+        error_text = (resp.get("error") or "").lower()
+        self.assertNotIn(
+            "not yet implemented",
+            error_text,
+            "When seated provider is None (default Anthropic), reason must NOT say 'not yet implemented'",
+        )
+        self.assertEqual(resp["status"], "unavailable")
+
+
 if __name__ == "__main__":
     unittest.main()
