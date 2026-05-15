@@ -189,3 +189,63 @@ def test_mso_direct_conversational_still_returns_greeting_after_plan_request_wir
     assert result is not None
     assert result["intent"] == "informational_response"
     assert result["execution_allowed"] is False
+
+
+# ---------------------------------------------------------------------------
+# 16-19: Mission Control visibility and hardening
+# ---------------------------------------------------------------------------
+
+def test_mso_direct_plan_request_visible_via_list_pending_confirmable_action_dicts() -> None:
+    """Mission Control visibility: prepared action appears in list_pending_confirmable_action_dicts().
+
+    This is the exact read path used by GET /mso/prepared-actions/pending.
+    """
+    from assistant_os.mso.prepared_action_queue import list_pending_confirmable_action_dicts
+
+    result = _route_mso_direct("preparame un plan para revisar el repo")
+    assert result is not None
+    assert result["intent"] == "plan_request"
+
+    pending = list_pending_confirmable_action_dicts()
+    assert len(pending) == 1
+
+    expected_id = result["queued_prepared_action"]["queue_entry_id"]
+    assert pending[0]["queue_entry_id"] == expected_id
+
+
+def test_mso_direct_plan_request_queue_entry_execution_invariants() -> None:
+    """Queue entry in list_pending_confirmable_action_dicts() has all execution-false invariants."""
+    from assistant_os.mso.prepared_action_queue import list_pending_confirmable_action_dicts
+
+    _route_mso_direct("hazme un plan para el despliegue")
+    pending = list_pending_confirmable_action_dicts()
+    assert len(pending) == 1
+
+    entry = pending[0]
+    assert entry["execution_allowed"] is False
+    assert entry["can_execute_now"] is False
+    assert entry["review_only"] is True
+    assert entry["human_confirmation_status"] == "pending"
+    assert entry["status"] == "pending_review"
+
+
+def test_mso_direct_plan_request_operation_trace_visible_in_mission_control_true_when_queued() -> None:
+    """visible_in_mission_control is True only when a real queue_entry_id was created."""
+    result = _route_mso_direct("preparame un plan para revisar el repo")
+    assert result is not None
+    trace = result.get("operation_trace")
+    assert trace is not None
+    # queue_entry_id must be a non-empty string for visible_in_mission_control to be True
+    assert trace["prepared_action_id"] is not None
+    assert isinstance(trace["prepared_action_id"], str)
+    assert len(trace["prepared_action_id"]) > 0
+    assert trace["visible_in_mission_control"] is True
+
+
+def test_mso_direct_plan_request_confirmation_required_true() -> None:
+    """operation_trace.confirmation_required is always True for plan_request responses."""
+    result = _route_mso_direct("quiero diagnosticar el servicio")
+    assert result is not None
+    trace = result.get("operation_trace")
+    assert trace is not None
+    assert trace["confirmation_required"] is True

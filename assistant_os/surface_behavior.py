@@ -1251,12 +1251,18 @@ def get_surface_behavior_response(
             )
         # SPRINT-ALPHA-05.1: Intercept plan_request BEFORE narrative_runtime so
         # "Prepárame un plan" is governed as plan_request, not LLM freeform.
+        # Fail-safe: if route_text or the builder raises, capture the reason and
+        # fall through to the narrative path — never raises to the caller.
+        _pr_route_error: str | None = None
         try:
             _pr_router = route_text(normalized)
             if _pr_router.get("intent_type") == "plan_request":
                 _pr_provider_ctx = _build_plan_request_provider_context()
                 _pr_auth_data = _build_plan_request_authority_data(normalized)
                 _pr_queued = _pr_auth_data.get("queued_prepared_action") or {}
+                # visible_in_mission_control only when a queue entry was actually created
+                _pr_queued_id = _pr_queued.get("queue_entry_id")
+                _pr_visible = bool(_pr_queued_id)
                 _pr_resp = _build_surface_response(
                     message=_plan_request_message(_pr_provider_ctx, _pr_auth_data),
                     domain="ASSISTANT",
@@ -1276,18 +1282,18 @@ def get_surface_behavior_response(
                 _pr_resp["execution_status"] = "not_executed"
                 _pr_resp["used_execution"] = False
                 _pr_resp["operation_trace"] = {
-                    "plan_request_prepared": True,
-                    "prepared_action_id": _pr_queued.get("queue_entry_id"),
+                    "plan_request_prepared": _pr_visible,
+                    "prepared_action_id": _pr_queued_id,
                     "confirmation_required": True,
-                    "visible_in_mission_control": True,
+                    "visible_in_mission_control": _pr_visible,
                     "source_surface": "mso_direct",
                     "execution_allowed": False,
                     "can_execute_now": False,
                     "used_execution": False,
                 }
                 return _pr_resp
-        except Exception:
-            pass
+        except Exception as _pr_exc:
+            _pr_route_error = str(_pr_exc)
         # Deterministic narrative fast-path (Sprint 2)
         try:
             from .mso.narrative_runtime import is_mso_narrative_intent, build_narrative_context_message
@@ -1405,9 +1411,11 @@ def get_surface_behavior_response(
                 _latency_ms = int((_time.perf_counter() - _start_time) * 1000)
                 _provider_err = str(e)
 
-            # Provider call failed or returned unusable response — fall back to narrative
+            # Provider call failed or returned unusable response — fall back to narrative.
+            # If plan_request routing also failed earlier, thread that reason in too.
             _msg, _ctx = build_narrative_context_message()
             _fallback_source = "provider_unavailable" if "key not configured" in str(_provider_err).lower() else "deterministic_fallback"
+            _combined_fallback_reason = "; ".join(filter(None, [_pr_route_error, _provider_err])) or None
             return _build_surface_response(
                 message=_msg,
                 domain="MSO",
@@ -1420,7 +1428,7 @@ def get_surface_behavior_response(
                 response_source=_fallback_source,
                 execution_status="unavailable",
                 fallback_used=True,
-                fallback_reason=_provider_err,
+                fallback_reason=_combined_fallback_reason,
                 narrative_context=_ctx,
                 latency_ms=_latency_ms if '_latency_ms' in locals() else None,
             )
