@@ -2840,6 +2840,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             context_id=_context_id,
             identity=request_identity,
             guard_result=guard_result,
+            session_id=session_id,
         )
         if _surface_resp is not None:
             self._send_json_response(200, _surface_resp)

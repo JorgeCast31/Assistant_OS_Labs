@@ -1070,14 +1070,14 @@ def get_assistant_chat_routing_context(
 # MSO cognitive generation helper
 # ---------------------------------------------------------------------------
 
-def _call_mso_cognitive(grounding_context: dict, text: str) -> dict:
+def _call_mso_cognitive(grounding_context: dict, text: str, history: list | None = None) -> dict:
     """Thin wrapper around mso_chat_provider.call_mso_chat_provider.
 
     Kept as a named module-level function so tests can patch it cleanly
     without importing from mso_chat_provider directly.
     """
     from .mso.mso_chat_provider import call_mso_chat_provider
-    return call_mso_chat_provider(grounding_context=grounding_context, user_text=text)
+    return call_mso_chat_provider(grounding_context=grounding_context, user_text=text, history=history)
 
 
 def _get_vault_context(query: str, allowed_packs: list[str] | None = None) -> dict:
@@ -1098,6 +1098,12 @@ def build_narrative_context_message() -> tuple[str, dict]:
     return _build()
 
 
+def _get_session_history(session_id: str | None, limit_turns: int = 5) -> dict:
+    """Module-level wrapper so tests can patch assistant_os.surface_behavior._get_session_history."""
+    from .mso.session_history import build_mso_session_history
+    return build_mso_session_history(session_id=session_id, limit_turns=limit_turns)
+
+
 # ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
@@ -1109,6 +1115,7 @@ def get_surface_behavior_response(
     context_id: str,
     identity: Any,
     guard_result: Any,
+    session_id: str | None = None,
 ) -> dict | None:
     """Return a surface-aware conversational response, or None to continue normal path.
 
@@ -1267,11 +1274,36 @@ def get_surface_behavior_response(
             import time as _time
             grounding = build_mso_grounding_context()
             vault_ctx = _get_vault_context(query=text)
-            grounding_with_vault = {**grounding, "vault_context": vault_ctx}
+
+            # Bounded session history — fail-closed: errors return empty history
+            try:
+                session_hist = _get_session_history(session_id)
+            except Exception as _hist_exc:
+                session_hist = {
+                    "available": False, "turns": [], "turns_used": 0,
+                    "source": "unavailable", "truncated": False,
+                    "warnings": [f"history retrieval failed: {_hist_exc}"],
+                }
+
+            grounding_with_vault = {
+                **grounding,
+                "vault_context": vault_ctx,
+                "session_history": session_hist,
+            }
             _start_time = _time.perf_counter()
             _provider_err = None
             try:
-                provider_resp = _call_mso_cognitive(grounding_with_vault, text)
+                _hist_turns = (
+                    session_hist["turns"]
+                    if session_hist.get("available") and session_hist.get("turns")
+                    else None
+                )
+                if _hist_turns:
+                    provider_resp = _call_mso_cognitive(
+                        grounding_with_vault, text, history=_hist_turns
+                    )
+                else:
+                    provider_resp = _call_mso_cognitive(grounding_with_vault, text)
                 _latency_ms = int((_time.perf_counter() - _start_time) * 1000)
                 if provider_resp.get("status") == "ok" and provider_resp.get("text", "").strip():
                     provider_metadata = provider_resp.get("metadata") or {}
@@ -1295,6 +1327,11 @@ def get_surface_behavior_response(
                         "vault_warnings": vault_ctx.get("warnings", []),
                         "vault_truncated": vault_ctx.get("truncated", False),
                         "vault_packs_consulted": vault_ctx.get("packs_consulted", []),
+                        "history_available": session_hist.get("available", False),
+                        "history_turns_used": session_hist.get("turns_used", 0),
+                        "history_source": session_hist.get("source", "none"),
+                        "history_truncated": session_hist.get("truncated", False),
+                        "history_warnings": session_hist.get("warnings", []),
                         "synthesis_mode": "economic",
                         "perception_frame_version": grounding.get("version", ""),
                     }
