@@ -71,9 +71,15 @@ class TestPatternSets(unittest.TestCase):
             self.assertIn(pattern, _SYSTEM_CHAT_CONVERSATIONAL, msg=f"missing: {pattern}")
 
     def test_mso_direct_includes_required_patterns(self):
-        required = ["hola", "quien eres", "que puedes hacer"]
+        required = ["hola", "que puedes hacer"]
         for pattern in required:
             self.assertIn(pattern, _MSO_DIRECT_CONVERSATIONAL, msg=f"missing: {pattern}")
+
+    def test_mso_direct_identity_not_in_conversational_set(self):
+        identity_prompts = ["quien eres", "quien eres tu", "que eres", "que eres tu"]
+        for prompt in identity_prompts:
+            self.assertNotIn(prompt, _MSO_DIRECT_CONVERSATIONAL,
+                             msg=f"identity prompt must not be in conversational set: {prompt}")
 
 
 class TestGetSurfaceBehaviorResponse(unittest.TestCase):
@@ -552,12 +558,16 @@ class TestMsoDirectNarrativeRuntime(unittest.TestCase):
         self.assertEqual(resp["domain"], "MSO")
         self.assertNotEqual(resp["intent"], "mso_narrative_status")
 
-    def test_existing_identity_question_still_works(self):
+    def test_existing_identity_question_reaches_cognitive_path(self):
+        # Identity questions now route to cognitive path (not deterministic_conversational).
+        # Without a provider, they fall back to narrative. Either way: non-None, domain=MSO.
         resp = self._call("quien eres")
         self.assertIsNotNone(resp)
         self.assertEqual(resp["domain"], "MSO")
         self.assertIn("mso", resp["message"].lower())
-        self.assertNotEqual(resp["intent"], "mso_narrative_status")
+        # response_source is llm_economic (provider available) or a fallback variant —
+        # never deterministic_conversational for identity questions.
+        self.assertNotEqual(resp.get("response_source"), "deterministic_conversational")
 
     def test_existing_capabilities_question_still_works(self):
         resp = self._call("que puedes hacer")
@@ -1225,8 +1235,8 @@ class TestPatternSetsV2(unittest.TestCase):
         "que puedes delegar",
         # existing patterns still present
         "hola",
-        "quien eres",
         "que puedes hacer",
+        # "quien eres" removed from conversational set (routes to cognitive path now)
     ]
 
     def test_system_chat_v2_patterns_present(self):

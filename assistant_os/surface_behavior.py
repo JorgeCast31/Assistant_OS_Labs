@@ -123,12 +123,6 @@ _MSO_DIRECT_CONVERSATIONAL: frozenset[str] = frozenset({
     "buenas tardes",
     "buenas noches",
 
-    # Identity
-    "quien eres",
-    "quien eres tu",
-    "que eres",
-    "que eres tu",
-
     # Capabilities / delegation
     "que puedes hacer",
     "que puedes delegar",
@@ -487,14 +481,6 @@ def _mso_conversational_message(normalized: str) -> str:
             "Proceso solicitudes ejecutivas a través de política, plan y confirmación explícita. "
             "Las acciones de trabajo, código, host o finanzas deben ser aprobadas antes de ejecutarse. "
             "¿Tienes alguna solicitud?"
-        )
-
-    if normalized in ("quien eres", "quien eres tu", "que eres", "que eres tu"):
-        return (
-            "Soy el MSO (Machine Operator) — la capa de decisiones soberana del sistema. "
-            "Evalúo cada solicitud contra la política de gobernanza, genero planes de ejecución "
-            "y requiero confirmación explícita antes de ejecutar acciones. "
-            "No ejecuto nada sin autoridad. ¿En qué puedo ayudarte?"
         )
 
     if normalized == "que puedes hacer":
