@@ -3085,6 +3085,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
             get_assistant_chat_routing_context as _get_assistant_chat_routing_context,
             get_surface_behavior_response as _get_surf_resp,
         )
+        # SPRINT-ALPHA-05.5: Extract mso_context for mode-based routing.
+        # Only accepted when it is a plain dict; any other type is stripped to None
+        # so it is treated as absent (backward-compat text-driven path).
+        _mso_context_raw = data.get("mso_context")
+        _mso_context: "dict | None" = (
+            _mso_context_raw if isinstance(_mso_context_raw, dict) else None
+        )
         _surface_resp = _get_surf_resp(
             surface=surface,
             text=text,
@@ -3092,6 +3099,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             identity=request_identity,
             guard_result=guard_result,
             session_id=session_id,
+            mso_context=_mso_context,
         )
         if _surface_resp is not None:
             self._send_json_response(200, _surface_resp)

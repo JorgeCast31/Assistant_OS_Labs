@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass, field as _dc_field
 from typing import Any
 
 from .cognition.context_resolver import (
@@ -21,6 +22,57 @@ from .cognition.context_resolver import (
 )
 from .cognition.router import RouterResult, route_text
 from .contracts import now_iso
+
+
+# ---------------------------------------------------------------------------
+# SPRINT-ALPHA-05.5: MSO context — seat / mode / cognition tier
+# ---------------------------------------------------------------------------
+
+_VALID_MSO_SEATS: frozenset[str] = frozenset({
+    "mso", "system_assistant", "machine_operator", "code", "work", "fin",
+})
+_VALID_MSO_MODES: frozenset[str] = frozenset({
+    "conversational", "planning", "validation", "orchestration",
+})
+_VALID_MSO_TIERS: frozenset[str] = frozenset({"economic", "advanced"})
+
+
+@dataclass(frozen=True)
+class _MSOContext:
+    agent_seat: str
+    interaction_mode: str
+    cognition_tier: str
+    mode_source: str = "ui_selected"
+    warnings: list = _dc_field(default_factory=list)
+
+
+def _parse_mso_context(raw: dict | None) -> _MSOContext | None:
+    """Return None when raw is None or not a dict (absent → backward-compat path).
+
+    On invalid values fail closed to safe defaults and record warnings.
+    Never raises.
+    """
+    if raw is None or not isinstance(raw, dict):
+        return None
+    warnings: list[str] = []
+    seat = raw.get("agent_seat", "mso")
+    if seat not in _VALID_MSO_SEATS:
+        warnings.append(f"unknown agent_seat={seat!r}; defaulting to 'mso'")
+        seat = "mso"
+    mode = raw.get("interaction_mode", "conversational")
+    if mode not in _VALID_MSO_MODES:
+        warnings.append(f"unknown interaction_mode={mode!r}; defaulting to 'conversational'")
+        mode = "conversational"
+    tier = raw.get("cognition_tier", "economic")
+    if tier not in _VALID_MSO_TIERS:
+        warnings.append(f"unknown cognition_tier={tier!r}; defaulting to 'economic'")
+        tier = "economic"
+    return _MSOContext(
+        agent_seat=seat,
+        interaction_mode=mode,
+        cognition_tier=tier,
+        warnings=warnings,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1105,6 +1157,351 @@ def _get_session_history(session_id: str | None, limit_turns: int = 5) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# SPRINT-ALPHA-05.5: perception context builder (used by all mso_direct modes)
+# ---------------------------------------------------------------------------
+
+def _build_mso_perception_context(text: str, session_id: str | None) -> dict:
+    """Build grounding + vault + session history for any mso_direct mode handler.
+
+    Perception invariant: all modes keep MSO informed — mode changes the
+    behavioral pipeline, not the observation context.
+
+    Never raises. Individual failures are recorded in perception_warnings and
+    surfaced honestly in the response, not silently swallowed.
+    """
+    perception_warnings: list[str] = []
+    grounding: dict = {}
+    vault_ctx: dict = {
+        "enabled": False, "chunks": [], "vault_chunks_used": 0,
+        "warnings": [], "packs_consulted": [],
+    }
+    session_hist: dict = {
+        "available": False, "turns": [], "turns_used": 0,
+        "source": "unavailable", "warnings": [],
+    }
+    try:
+        grounding = build_mso_grounding_context()
+    except Exception as _e:
+        perception_warnings.append(f"grounding_failed: {_e}")
+    try:
+        vault_ctx = _get_vault_context(query=text)
+    except Exception as _e:
+        perception_warnings.append(f"vault_failed: {_e}")
+    try:
+        session_hist = _get_session_history(session_id)
+    except Exception as _e:
+        perception_warnings.append(f"session_history_failed: {_e}")
+    return {
+        "grounding": grounding,
+        "vault_context": vault_ctx,
+        "session_history": session_hist,
+        "perception_context": {
+            "grounding_available": bool(grounding),
+            "vault_available": vault_ctx.get("enabled", False),
+            "vault_chunks_used": vault_ctx.get("vault_chunks_used", 0),
+            "vault_warnings": vault_ctx.get("warnings", []),
+            "session_history_available": session_hist.get("available", False),
+            "session_turns_used": session_hist.get("turns_used", 0),
+            "session_warnings": session_hist.get("warnings", []),
+            "perception_warnings": perception_warnings,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# SPRINT-ALPHA-05.5: mso_direct mode handlers
+# ---------------------------------------------------------------------------
+
+def _handle_mso_mode_conversational(
+    *,
+    text: str,
+    mso_ctx: _MSOContext,
+    perception: dict,
+    surface: str,
+    context_id: str,
+    identity: Any,
+    guard_result: Any,
+) -> dict | None:
+    """Mode: conversational — skip plan_request text check, go straight to cognitive path.
+
+    Only agent_seat='mso' receives full cognitive generation in this sprint.
+    Other seats degrade honestly through the MSO-controlled narrative path.
+    """
+    import time as _time
+    grounding = perception["grounding"]
+    vault_ctx = perception["vault_context"]
+    session_hist = perception["session_history"]
+    perception_context = perception["perception_context"]
+
+    grounding_with_vault = {**grounding, "vault_context": vault_ctx, "session_history": session_hist}
+
+    _start = _time.perf_counter()
+    _provider_err: str | None = None
+    try:
+        _hist_turns = (
+            session_hist["turns"]
+            if session_hist.get("available") and session_hist.get("turns")
+            else None
+        )
+        if _hist_turns:
+            provider_resp = _call_mso_cognitive(grounding_with_vault, text, history=_hist_turns)
+        else:
+            provider_resp = _call_mso_cognitive(grounding_with_vault, text)
+        _latency_ms = int((_time.perf_counter() - _start) * 1000)
+        if provider_resp.get("status") == "ok" and provider_resp.get("text", "").strip():
+            provider_metadata = provider_resp.get("metadata") or {}
+            cognitive_trace = {
+                "response_source": "llm_economic",
+                "execution_status": "real",
+                "provider_used": provider_resp.get("provider_name", ""),
+                "model_used": provider_resp.get("model_name", ""),
+                "cognitive_generation": True,
+                "fallback_used": False,
+                "fallback_reason": None,
+                "latency_ms": _latency_ms,
+                "tokens_in": provider_metadata.get("tokens_in"),
+                "tokens_out": provider_metadata.get("tokens_out"),
+                "execution_allowed": False,
+                "can_execute_now": False,
+                "vault_enabled": vault_ctx.get("enabled", False),
+                "vault_chunks_used": vault_ctx.get("vault_chunks_used", 0),
+                "vault_sources": vault_ctx.get("vault_sources", []),
+                "history_available": session_hist.get("available", False),
+                "history_turns_used": session_hist.get("turns_used", 0),
+                "synthesis_mode": "economic",
+                "interaction_mode": mso_ctx.interaction_mode,
+                "agent_seat": mso_ctx.agent_seat,
+                "cognition_tier": mso_ctx.cognition_tier,
+                "mode_source": mso_ctx.mode_source,
+                "mso_context_warnings": list(mso_ctx.warnings) or None,
+            }
+            resp = _build_surface_response(
+                message=provider_resp["text"].strip(),
+                domain="MSO",
+                surface=surface,
+                context_id=context_id,
+                identity=identity,
+                guard_result=guard_result,
+                result_type="surface_response",
+                intent="mso_cognitive_response",
+                response_source="llm_economic",
+                execution_status="real",
+                provider_used=provider_resp.get("provider_name", ""),
+                model_used=provider_resp.get("model_name", ""),
+                cognitive_generation=True,
+                fallback_used=False,
+                narrative_context={**grounding_with_vault, "execution_allowed": False, "can_execute_now": False},
+                latency_ms=_latency_ms,
+                tokens_in=provider_metadata.get("tokens_in"),
+                tokens_out=provider_metadata.get("tokens_out"),
+                cognitive_trace=cognitive_trace,
+            )
+            resp["perception_context"] = perception_context
+            return resp
+        else:
+            _provider_err = provider_resp.get("error") or provider_resp.get("reason") or "unusable provider response"
+    except Exception as _e:
+        _latency_ms = int((_time.perf_counter() - _start) * 1000)
+        _provider_err = str(_e)
+
+    # Fallback to narrative
+    try:
+        _msg, _ctx = build_narrative_context_message()
+        _fallback_source = (
+            "provider_unavailable"
+            if "key not configured" in str(_provider_err).lower()
+            else "deterministic_fallback"
+        )
+        resp = _build_surface_response(
+            message=_msg,
+            domain="MSO",
+            surface=surface,
+            context_id=context_id,
+            identity=identity,
+            guard_result=guard_result,
+            result_type="surface_response",
+            intent="mso_narrative_status",
+            response_source=_fallback_source,
+            execution_status="unavailable",
+            fallback_used=True,
+            fallback_reason=_provider_err,
+            narrative_context=_ctx,
+            latency_ms=_latency_ms if "_latency_ms" in dir() else None,
+        )
+        resp["perception_context"] = perception_context
+        return resp
+    except Exception:
+        return None
+
+
+def _handle_mso_mode_planning(
+    *,
+    text: str,
+    normalized: str,
+    mso_ctx: _MSOContext,
+    perception: dict,
+    surface: str,
+    context_id: str,
+    identity: Any,
+    guard_result: Any,
+) -> dict:
+    """Mode: planning — create governed plan entry regardless of text pattern.
+
+    Uses the same authority chain as the existing text-driven Tier 3 path:
+    make_orchestration_proposal → prepare_authority_from_proposal →
+    build_confirmable_from_preparation → enqueue_confirmable_prepared_action.
+
+    No token issuance. No PoliceGate. No runner. execution_allowed=False always.
+    Only agent_seat='mso' triggers full plan preparation. Other seats degrade
+    to the same path but are noted in operation_trace.
+    """
+    perception_context = perception["perception_context"]
+    _pr_provider_ctx = _build_plan_request_provider_context()
+    _pr_auth_data = _build_plan_request_authority_data(normalized)
+    _pr_queued = _pr_auth_data.get("queued_prepared_action") or {}
+    _pr_queued_id = _pr_queued.get("queue_entry_id")
+    _pr_visible = bool(_pr_queued_id)
+    resp = _build_surface_response(
+        message=_plan_request_message(_pr_provider_ctx, _pr_auth_data),
+        domain="ASSISTANT",
+        surface=surface,
+        context_id=context_id,
+        identity=identity,
+        guard_result=guard_result,
+        result_type="surface_response",
+        intent="plan_request",
+    )
+    resp["provider_context"] = _pr_provider_ctx
+    resp["proposal_summary"] = _pr_auth_data.get("proposal_summary")
+    resp["authority_preparation"] = _pr_auth_data.get("authority_preparation")
+    resp["confirmable_action"] = _pr_auth_data.get("confirmable_action")
+    resp["queued_prepared_action"] = _pr_queued
+    resp["response_source"] = "mso_mode_planning_prepared"
+    resp["execution_status"] = "not_executed"
+    resp["used_execution"] = False
+    resp["operation_trace"] = {
+        "plan_request_prepared": _pr_visible,
+        "prepared_action_id": _pr_queued_id,
+        "confirmation_required": True,
+        "visible_in_mission_control": _pr_visible,
+        "source_surface": "mso_direct",
+        "interaction_mode": "planning",
+        "mode_source": mso_ctx.mode_source,
+        "agent_seat": mso_ctx.agent_seat,
+        "cognition_tier": mso_ctx.cognition_tier,
+        "mso_context_warnings": list(mso_ctx.warnings) or None,
+        "execution_allowed": False,
+        "can_execute_now": False,
+        "used_execution": False,
+    }
+    resp["perception_context"] = perception_context
+    return resp
+
+
+def _handle_mso_mode_validation(
+    *,
+    mso_ctx: _MSOContext,
+    perception: dict,
+    surface: str,
+    context_id: str,
+    identity: Any,
+    guard_result: Any,
+) -> dict:
+    """Mode: validation — read current queue state. Strictly read-only.
+
+    May read/inspect: queue entries, confirmations, policy drafts, authority
+    binding drafts, traces, and state. Must NOT call confirm endpoints, policy-
+    review mutation, authority-binding mutation, token issuance, PoliceGate,
+    AuthorizedPlan, or runner.
+    """
+    perception_context = perception["perception_context"]
+    msg, pending_items = _build_review_queue_status_data()
+    resp = _build_surface_response(
+        message=msg,
+        domain="MSO",
+        surface=surface,
+        context_id=context_id,
+        identity=identity,
+        guard_result=guard_result,
+        result_type="surface_response",
+        intent="review_queue_status",
+        response_source="mso_mode_validation_read_only",
+        execution_status="stub",
+    )
+    resp["pending_review_items"] = pending_items
+    resp["count"] = len(pending_items)
+    resp["execution_allowed"] = False
+    resp["can_execute_now"] = False
+    resp["operation_trace"] = {
+        "interaction_mode": "validation",
+        "mode_source": mso_ctx.mode_source,
+        "agent_seat": mso_ctx.agent_seat,
+        "cognition_tier": mso_ctx.cognition_tier,
+        "mso_context_warnings": list(mso_ctx.warnings) or None,
+        "read_only": True,
+        "execution_allowed": False,
+        "can_execute_now": False,
+    }
+    resp["perception_context"] = perception_context
+    return resp
+
+
+def _handle_mso_mode_orchestration(
+    *,
+    mso_ctx: _MSOContext,
+    perception: dict,
+    surface: str,
+    context_id: str,
+    identity: Any,
+    guard_result: Any,
+) -> dict:
+    """Mode: orchestration — governed-entry narrative. No runner, no token, no execution.
+
+    Explains the current chain limit and guides the operator toward the next
+    governed bridge. execution_allowed=False always.
+    """
+    perception_context = perception["perception_context"]
+    msg = (
+        "Orchestration mode selected. "
+        "The current governed chain reaches AuthorityBindingDraft — "
+        "PolicyDecision → CapabilityToken → OperationBinding → AuthorizedPlan → PoliceGate "
+        "is not yet complete. "
+        "No productive execution has occurred and none is open. "
+        "execution_allowed=False, can_execute_now=False. "
+        "To advance the chain: confirm a prepared action (via Mission Control), "
+        "then request policy review, then authority binding. "
+        "Each step requires explicit human confirmation before the next is available."
+    )
+    resp = _build_surface_response(
+        message=msg,
+        domain="MSO",
+        surface=surface,
+        context_id=context_id,
+        identity=identity,
+        guard_result=guard_result,
+        result_type="surface_response",
+        intent="orchestration_mode_governed",
+        response_source="mso_mode_orchestration_governed",
+        execution_status="stub",
+    )
+    resp["execution_allowed"] = False
+    resp["can_execute_now"] = False
+    resp["operation_trace"] = {
+        "interaction_mode": "orchestration",
+        "mode_source": mso_ctx.mode_source,
+        "agent_seat": mso_ctx.agent_seat,
+        "cognition_tier": mso_ctx.cognition_tier,
+        "mso_context_warnings": list(mso_ctx.warnings) or None,
+        "chain_status": "authority_binding_draft_only",
+        "governed_explanation": True,
+        "execution_allowed": False,
+        "can_execute_now": False,
+    }
+    resp["perception_context"] = perception_context
+    return resp
+
+
+# ---------------------------------------------------------------------------
 # Public interface
 # ---------------------------------------------------------------------------
 
@@ -1116,15 +1513,19 @@ def get_surface_behavior_response(
     identity: Any,
     guard_result: Any,
     session_id: str | None = None,
+    mso_context: dict | None = None,
 ) -> dict | None:
     """Return a surface-aware conversational response, or None to continue normal path.
 
     Returns None for:
     - empty/unknown surface
-    - executive inputs on mso_direct (they must go through the orchestrator)
+    - executive inputs on mso_direct when mso_context is absent (backward compat)
     - any input not in the conversational pattern set
 
-    Never changes authority semantics. Never generates a plan.
+    When mso_context is present for surface=mso_direct, the selected
+    interaction_mode dominates routing before any text-pattern checks.
+
+    Never changes authority semantics. Never grants execution authority.
     """
     if not surface or not text:
         return None
@@ -1236,6 +1637,37 @@ def get_surface_behavior_response(
         )
 
     if surface == "mso_direct":
+        # SPRINT-ALPHA-05.5: When mso_context is present, selected mode dominates.
+        # Executive-prefix check does NOT apply — the operator explicitly chose a pipeline.
+        # All mode handlers build perception context (grounding/vault/history).
+        _mso_ctx = _parse_mso_context(mso_context)
+        if _mso_ctx is not None:
+            _perception = _build_mso_perception_context(text=text, session_id=session_id)
+            if _mso_ctx.interaction_mode == "conversational":
+                return _handle_mso_mode_conversational(
+                    text=text, mso_ctx=_mso_ctx, perception=_perception,
+                    surface=surface, context_id=context_id,
+                    identity=identity, guard_result=guard_result,
+                )
+            if _mso_ctx.interaction_mode == "planning":
+                return _handle_mso_mode_planning(
+                    text=text, normalized=normalized, mso_ctx=_mso_ctx,
+                    perception=_perception, surface=surface, context_id=context_id,
+                    identity=identity, guard_result=guard_result,
+                )
+            if _mso_ctx.interaction_mode == "validation":
+                return _handle_mso_mode_validation(
+                    mso_ctx=_mso_ctx, perception=_perception, surface=surface,
+                    context_id=context_id, identity=identity, guard_result=guard_result,
+                )
+            if _mso_ctx.interaction_mode == "orchestration":
+                return _handle_mso_mode_orchestration(
+                    mso_ctx=_mso_ctx, perception=_perception, surface=surface,
+                    context_id=context_id, identity=identity, guard_result=guard_result,
+                )
+            # _parse_mso_context always normalizes; this branch is unreachable.
+
+        # ── mso_context absent: existing text-driven path (backward compat) ──────
         if _is_executive(normalized):
             return None
         if normalized in _MSO_DIRECT_CONVERSATIONAL:

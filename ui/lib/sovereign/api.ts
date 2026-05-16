@@ -7,6 +7,7 @@ import type {
   SurfaceType,
   ExecutionStatus,
   ExecutionStatusSource,
+  MSOContext,
 } from './types'
 import type { ConfirmPreparedActionResult, MSOPolicyReviewResult, MSOAuthorityBindingResult } from '../types'
 
@@ -29,12 +30,14 @@ function statusSource(status: ExecutionStatus | undefined): ExecutionStatusSourc
 export async function sendSovereignMessage(
   text: string,
   surface: SurfaceType,
-  sessionId?: string
+  sessionId?: string,
+  msoContext?: MSOContext,
 ): Promise<SovereignChatResponse> {
   const payload: SovereignChatRequest = {
     text,
     surface,
     ...(sessionId && { session_id: sessionId }),
+    ...(msoContext && { mso_context: msoContext }),
   }
 
   try {
