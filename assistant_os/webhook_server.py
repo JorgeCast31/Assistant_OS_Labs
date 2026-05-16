@@ -411,6 +411,62 @@ def _read_chat_history(conversation_id: str, limit: int = 50) -> list[dict]:
 
 
 
+def _process_mso_confirm_request(body_bytes: bytes) -> tuple[int, dict]:
+    """Parse and validate a confirm request body. Returns (status_code, response_dict).
+
+    Writes a HumanConfirmationRecord. Does NOT grant execution authority, satisfy any
+    authority chain step, issue tokens, call PoliceGate, or invoke runner.
+    execution_allowed and can_execute_now remain False.
+    """
+    import json as _json
+
+    from .mso.human_confirmation import record_human_confirmation
+    from .mso.prepared_action_queue import get_confirmable_action_queue_entry
+
+    try:
+        data = _json.loads(body_bytes) if body_bytes else {}
+    except Exception:  # noqa: BLE001
+        return 400, {"ok": False, "error": "Invalid JSON body"}
+
+    entry_id = (data.get("entry_id") or "").strip()
+    action_id = (data.get("action_id") or "").strip()
+    confirmed = data.get("confirmed")
+    operator_note = data.get("operator_note") or ""
+
+    if not entry_id:
+        return 400, {"ok": False, "error": "entry_id required"}
+    if not action_id:
+        return 400, {"ok": False, "error": "action_id required"}
+    if not isinstance(confirmed, bool):
+        return 400, {"ok": False, "error": "confirmed must be bool (true or false)"}
+
+    entry = get_confirmable_action_queue_entry(entry_id)
+    if entry is None:
+        return 404, {"ok": False, "error": "prepared action not found", "entry_id": entry_id}
+
+    record = record_human_confirmation(
+        entry_id=entry_id,
+        action_id=action_id,
+        confirmed=confirmed,
+        operator_note=operator_note,
+    )
+
+    return 200, {
+        "ok": True,
+        "entry_id": entry_id,
+        "action_id": action_id,
+        "human_confirmation_status": "human_confirmed" if confirmed else "human_rejected",
+        "execution_allowed": False,
+        "can_execute_now": False,
+        "recorded_at": record.recorded_at.isoformat(),
+        "note": (
+            "Human confirmation recorded. Execution remains closed. "
+            "Full authority chain (PolicyDecision → CapabilityToken → OperationBinding "
+            "→ AuthorizedPlan → PoliceGate) is still required."
+        ),
+    }
+
+
 def _wrap_work_result(dr: "DomainResult", context_id: str) -> dict:
     """
     Wrap a DomainResult into the current Response transport format for WORK domain.
@@ -1462,6 +1518,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # UI operator freeze/restore — proxied from ui/app/api/system/freeze/route.ts
         if path == "/mso/freeze":
             self._handle_mso_freeze(remote)
+            return
+
+        # S-HUMAN-CONFIRM-01: record human confirmation signal for a prepared action
+        if path == "/mso/prepared-actions/confirm":
+            self._handle_mso_prepared_actions_confirm_post()
             return
 
         # Route: /machine_operator/execute (execute a bounded browser capability)
@@ -4677,8 +4738,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
             "This surface does not execute, approve, or issue tokens."
         )
         try:
+            from .mso.human_confirmation import merge_confirmation_into_dict
             from .mso.prepared_action_queue import list_pending_confirmable_action_dicts
-            items = list_pending_confirmable_action_dicts()
+            items = [
+                merge_confirmation_into_dict(i)
+                for i in list_pending_confirmable_action_dicts()
+            ]
             self._send_json_response(
                 200,
                 {
@@ -4707,6 +4772,24 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     "error": str(exc),
                 },
             )
+
+    def _handle_mso_prepared_actions_confirm_post(self) -> None:
+        """POST /mso/prepared-actions/confirm — record a human confirmation signal.
+
+        Writes a HumanConfirmationRecord for the given prepared action entry.
+        Does NOT grant execution authority, satisfy any authority chain step,
+        issue tokens, create AuthorizedPlan, call PoliceGate, or invoke runner.
+        execution_allowed and can_execute_now remain False.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        body = self._read_body()
+        status, response = _process_mso_confirm_request(body)
+        self._send_json_response(status, response)
 
     def _handle_mso_seat_provider_get(self) -> None:
         """GET /mso/seat/provider — read-only MSO Seat cognitive provider metadata.
