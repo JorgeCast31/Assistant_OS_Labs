@@ -467,6 +467,94 @@ def _process_mso_confirm_request(body_bytes: bytes) -> tuple[int, dict]:
     }
 
 
+def _process_mso_policy_review_request(body_bytes: bytes) -> tuple[int, dict]:
+    """Parse, validate, and evaluate MSO capability policy for a confirmed prepared action.
+
+    Returns (status_code, response_dict).
+    Produces an MSOPolicyDecisionDraft — the first authority chain artifact.
+
+    Does NOT: issue CapabilityToken, create OperationBinding/AuthorizedPlan, call
+    PoliceGate, invoke runner or Machine Operator, or change execution_allowed.
+    execution_allowed and can_execute_now remain False always.
+    """
+    import json as _json
+
+    try:
+        data = _json.loads(body_bytes) if body_bytes else {}
+    except Exception:  # noqa: BLE001
+        return 400, {"ok": False, "error": "Invalid JSON body"}
+
+    entry_id = (data.get("entry_id") or "").strip()
+    action_id = (data.get("action_id") or "").strip()
+
+    if not entry_id or not action_id:
+        return 400, {"ok": False, "error": "entry_id and action_id are required"}
+
+    from .mso.prepared_action_queue import get_confirmable_action_queue_entry
+    from .mso.human_confirmation import get_human_confirmation
+    from .mso.policy_review import evaluate_mso_policy_for_prepared_action
+
+    entry = get_confirmable_action_queue_entry(entry_id)
+    if entry is None:
+        return 404, {"ok": False, "error": f"Queue entry not found: {entry_id!r}"}
+
+    confirmation = get_human_confirmation(entry_id)
+    if confirmation is None:
+        return 422, {
+            "ok": False,
+            "error": "confirmation_required: no human confirmation recorded for this entry",
+            "execution_allowed": False,
+            "can_execute_now": False,
+        }
+
+    if not confirmation.confirmed:
+        return 422, {
+            "ok": False,
+            "error": "action_rejected: action was rejected by operator, cannot evaluate policy",
+            "execution_allowed": False,
+            "can_execute_now": False,
+        }
+
+    if confirmation.action_id != action_id:
+        return 400, {
+            "ok": False,
+            "error": (
+                f"action_id mismatch: confirmation has action_id={confirmation.action_id!r}, "
+                f"request has action_id={action_id!r}"
+            ),
+            "execution_allowed": False,
+            "can_execute_now": False,
+        }
+
+    try:
+        draft = evaluate_mso_policy_for_prepared_action(entry, confirmation)
+    except ValueError as exc:
+        return 422, {
+            "ok": False,
+            "error": str(exc),
+            "execution_allowed": False,
+            "can_execute_now": False,
+        }
+
+    return 200, {
+        "ok": True,
+        "entry_id": draft.entry_id,
+        "action_id": draft.action_id,
+        "policy_review_id": draft.policy_review_id,
+        "policy_outcome": draft.policy_outcome,
+        "capability_mode": draft.capability_mode,
+        "execution_allowed": False,
+        "can_execute_now": False,
+        "used_execution": False,
+        "human_confirmation_satisfied": draft.human_confirmation_satisfied,
+        "created_at": draft.created_at.isoformat(),
+        "note": (
+            "Policy decision draft recorded. Execution remains closed. "
+            "CapabilityToken → OperationBinding → AuthorizedPlan → PoliceGate still required."
+        ),
+    }
+
+
 def _wrap_work_result(dr: "DomainResult", context_id: str) -> dict:
     """
     Wrap a DomainResult into the current Response transport format for WORK domain.
@@ -1523,6 +1611,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # S-HUMAN-CONFIRM-01: record human confirmation signal for a prepared action
         if path == "/mso/prepared-actions/confirm":
             self._handle_mso_prepared_actions_confirm_post()
+            return
+
+        # S-MSO-POLICY-01: evaluate MSO capability policy for a confirmed prepared action
+        if path == "/mso/prepared-actions/policy-review":
+            self._handle_mso_prepared_actions_policy_review_post()
             return
 
         # Route: /machine_operator/execute (execute a bounded browser capability)
@@ -4739,9 +4832,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
         )
         try:
             from .mso.human_confirmation import merge_confirmation_into_dict
+            from .mso.policy_review import merge_policy_review_into_dict
             from .mso.prepared_action_queue import list_pending_confirmable_action_dicts
             items = [
-                merge_confirmation_into_dict(i)
+                merge_policy_review_into_dict(merge_confirmation_into_dict(i))
                 for i in list_pending_confirmable_action_dicts()
             ]
             self._send_json_response(
@@ -4789,6 +4883,24 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         body = self._read_body()
         status, response = _process_mso_confirm_request(body)
+        self._send_json_response(status, response)
+
+    def _handle_mso_prepared_actions_policy_review_post(self) -> None:
+        """POST /mso/prepared-actions/policy-review — evaluate MSO capability policy for a confirmed prepared action.
+
+        Produces an MSOPolicyDecisionDraft — the first authority chain artifact after HumanConfirmationRecord.
+        Does NOT issue CapabilityToken, create OperationBinding or AuthorizedPlan, call PoliceGate,
+        invoke runner, or grant execution authority.
+        execution_allowed and can_execute_now remain False.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        body = self._read_body()
+        status, response = _process_mso_policy_review_request(body)
         self._send_json_response(status, response)
 
     def _handle_mso_seat_provider_get(self) -> None:

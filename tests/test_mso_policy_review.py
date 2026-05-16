@@ -65,6 +65,13 @@ def _make_confirmation(entry, *, confirmed: bool = True):
     )
 
 
+def _make_confirmed_entry(**kwargs):
+    """Build a queue entry and record a confirmed human confirmation signal."""
+    entry = _make_queue_entry(**kwargs)
+    _make_confirmation(entry, confirmed=True)
+    return entry
+
+
 # ---------------------------------------------------------------------------
 # MSOPolicyDecisionDraft invariant tests
 # ---------------------------------------------------------------------------
