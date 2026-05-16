@@ -574,6 +574,8 @@ export interface PreparedActionQueueEntry {
   execution_allowed: false
   can_execute_now: false
   notes: string
+  confirmation_recorded_at?: string
+  operator_note?: string
 }
 
 export interface PreparedActionsQueueResponse {
@@ -585,6 +587,27 @@ export interface PreparedActionsQueueResponse {
   execution_allowed: false
   can_execute_now: false
   note: string
+  error?: string
+}
+
+// ── Human confirmation (S-HUMAN-CONFIRM-01) ───────────────────────────────
+
+export interface ConfirmPreparedActionPayload {
+  entry_id: string
+  action_id: string
+  confirmed: boolean
+  operator_note?: string
+}
+
+export interface ConfirmPreparedActionResult {
+  ok: boolean
+  entry_id?: string
+  action_id?: string
+  human_confirmation_status?: 'human_confirmed' | 'human_rejected'
+  execution_allowed: false
+  can_execute_now: false
+  recorded_at?: string
+  note?: string
   error?: string
 }
 
