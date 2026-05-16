@@ -1,8 +1,8 @@
 'use client'
 
 import { useState } from 'react'
-import type { PreparedActionQueueEntry, MSOPolicyReviewResult } from '@/lib/types'
-import { confirmPreparedAction, requestMSOPolicyReview } from '@/lib/sovereign/api'
+import type { PreparedActionQueueEntry, MSOPolicyReviewResult, MSOAuthorityBindingResult } from '@/lib/types'
+import { confirmPreparedAction, requestMSOPolicyReview, requestMSOAuthorityBinding } from '@/lib/sovereign/api'
 import { getPreparedActionsPending } from '@/lib/api'
 import { usePreparedActionsStore } from '@/stores/prepared-actions-store'
 
@@ -18,22 +18,28 @@ const POLICY_OUTCOME_COLORS: Record<string, string> = {
   denied: 'text-warn',
 }
 
+const APPROVED_OUTCOMES = new Set(['approved', 'approved_confirm_only'])
+
 export function PreparedActionConfirmSurface({ item }: { item: PreparedActionQueueEntry }) {
   const [isConfirming, setIsConfirming] = useState(false)
   const [confirmError, setConfirmError] = useState<string | null>(null)
   const [localStatus, setLocalStatus] = useState<string | null>(null)
   const [policyReview, setPolicyReview] = useState<MSOPolicyReviewResult | null>(null)
   const [policyError, setPolicyError] = useState<string | null>(null)
+  const [authorityBinding, setAuthorityBinding] = useState<MSOAuthorityBindingResult | null>(null)
+  const [bindingError, setBindingError] = useState<string | null>(null)
   const setPreparedActions = usePreparedActionsStore((s) => s.setPreparedActions)
 
   const effectiveStatus = localStatus ?? item.human_confirmation_status
   const effectivePolicyOutcome = policyReview?.policy_outcome ?? item.policy_outcome
+  const effectiveBindingStatus = authorityBinding?.binding_status ?? item.authority_binding_status
 
   async function handleConfirm(confirmed: boolean) {
     if (isConfirming) return
     setIsConfirming(true)
     setConfirmError(null)
     setPolicyError(null)
+    setBindingError(null)
     try {
       const result = await confirmPreparedAction(
         item.queue_entry_id,
@@ -54,6 +60,15 @@ export function PreparedActionConfirmSurface({ item }: { item: PreparedActionQue
         setPolicyReview(review)
         if (!review.ok) {
           setPolicyError(review.error ?? 'Policy review failed')
+        } else if (review.policy_outcome && APPROVED_OUTCOMES.has(review.policy_outcome)) {
+          const binding = await requestMSOAuthorityBinding(
+            item.queue_entry_id,
+            item.prepared_action_id ?? item.queue_entry_id,
+          )
+          setAuthorityBinding(binding)
+          if (!binding.ok) {
+            setBindingError(binding.error ?? 'Authority binding failed')
+          }
         }
       }
 
@@ -82,6 +97,14 @@ export function PreparedActionConfirmSurface({ item }: { item: PreparedActionQue
         )}
         {policyError && (
           <p className="text-[10px] font-mono text-warn mt-1">{policyError}</p>
+        )}
+        {effectiveBindingStatus && (
+          <p className="text-[10px] font-mono text-ok mt-1">
+            Authority binding: {effectiveBindingStatus}
+          </p>
+        )}
+        {bindingError && (
+          <p className="text-[10px] font-mono text-warn mt-1">{bindingError}</p>
         )}
         <p className="text-[10px] font-mono text-tx-muted mt-1 leading-relaxed">
           Signal recorded. Execution remains closed pending full authority chain.
