@@ -1300,11 +1300,13 @@ def _handle_mso_mode_conversational(
             )
             resp["perception_context"] = perception_context
             try:
-                from .mso.cognitive_usage_ledger import CognitiveUsageRecord, record_cognitive_usage
-                record_cognitive_usage(CognitiveUsageRecord(
+                from .mso.cognitive_usage_ledger import record_provider_call
+                record_provider_call(
                     trace_id=context_id,
-                    session_id=session_id,
+                    source_component="surface_behavior._handle_mso_mode_conversational",
                     surface=surface,
+                    domain="MSO",
+                    session_id=session_id,
                     agent_seat=mso_ctx.agent_seat,
                     effective_agent_seat="mso",
                     interaction_mode=mso_ctx.interaction_mode,
@@ -1312,15 +1314,12 @@ def _handle_mso_mode_conversational(
                     effective_cognition_tier=mso_ctx.cognition_tier,
                     provider_used=provider_resp.get("provider_name"),
                     model_used=provider_resp.get("model_name"),
-                    response_source="llm_economic",
-                    usage_kind="provider_call",
-                    fallback_used=False,
-                    fallback_reason=None,
-                    zero_token_interaction=False,
                     tokens_in=provider_metadata.get("tokens_in"),
                     tokens_out=provider_metadata.get("tokens_out"),
                     latency_ms=_latency_ms,
-                ))
+                    action="mso_cognitive_response",
+                    response_source="llm_economic",
+                )
             except Exception:
                 pass
             return resp
@@ -1356,23 +1355,23 @@ def _handle_mso_mode_conversational(
         )
         resp["perception_context"] = perception_context
         try:
-            from .mso.cognitive_usage_ledger import CognitiveUsageRecord, record_cognitive_usage
-            record_cognitive_usage(CognitiveUsageRecord(
+            from .mso.cognitive_usage_ledger import record_provider_fallback
+            record_provider_fallback(
                 trace_id=context_id,
-                session_id=session_id,
+                source_component="surface_behavior._handle_mso_mode_conversational",
                 surface=surface,
+                domain="MSO",
+                session_id=session_id,
                 agent_seat=mso_ctx.agent_seat,
                 effective_agent_seat="mso",
                 interaction_mode=mso_ctx.interaction_mode,
                 cognition_tier=mso_ctx.cognition_tier,
                 effective_cognition_tier=mso_ctx.cognition_tier,
                 response_source=_fallback_source,
-                usage_kind="provider_fallback",
-                fallback_used=True,
                 fallback_reason=_provider_err,
-                zero_token_interaction=False,
                 latency_ms=_latency_ms,
-            ))
+                action="mso_narrative_status",
+            )
         except Exception:
             pass
         return resp
@@ -1443,22 +1442,23 @@ def _handle_mso_mode_planning(
     }
     resp["perception_context"] = perception_context
     try:
-        from .mso.cognitive_usage_ledger import CognitiveUsageRecord, record_cognitive_usage
-        record_cognitive_usage(CognitiveUsageRecord(
+        from .mso.cognitive_usage_ledger import record_mode_interaction
+        record_mode_interaction(
             trace_id=context_id,
-            session_id=session_id,
+            source_component="surface_behavior._handle_mso_mode_planning",
             surface=surface,
+            domain="MSO",
+            session_id=session_id,
             agent_seat=mso_ctx.agent_seat,
             effective_agent_seat="mso",
             interaction_mode=mso_ctx.interaction_mode,
             cognition_tier=mso_ctx.cognition_tier,
             effective_cognition_tier=mso_ctx.cognition_tier,
             response_source="mso_mode_planning_prepared",
-            usage_kind="mode_interaction",
-            zero_token_interaction=True,
+            action="plan_request",
             prepared_action_id=_pr_queued.get("prepared_action_id"),
             queue_entry_id=_pr_queued_id,
-        ))
+        )
     except Exception:
         pass
     return resp
@@ -1511,20 +1511,21 @@ def _handle_mso_mode_validation(
     }
     resp["perception_context"] = perception_context
     try:
-        from .mso.cognitive_usage_ledger import CognitiveUsageRecord, record_cognitive_usage
-        record_cognitive_usage(CognitiveUsageRecord(
+        from .mso.cognitive_usage_ledger import record_mode_interaction
+        record_mode_interaction(
             trace_id=context_id,
-            session_id=session_id,
+            source_component="surface_behavior._handle_mso_mode_validation",
             surface=surface,
+            domain="MSO",
+            session_id=session_id,
             agent_seat=mso_ctx.agent_seat,
             effective_agent_seat="mso",
             interaction_mode=mso_ctx.interaction_mode,
             cognition_tier=mso_ctx.cognition_tier,
             effective_cognition_tier=mso_ctx.cognition_tier,
             response_source="mso_mode_validation_read_only",
-            usage_kind="mode_interaction",
-            zero_token_interaction=True,
-        ))
+            action="review_queue_status",
+        )
     except Exception:
         pass
     return resp
@@ -1584,20 +1585,21 @@ def _handle_mso_mode_orchestration(
     }
     resp["perception_context"] = perception_context
     try:
-        from .mso.cognitive_usage_ledger import CognitiveUsageRecord, record_cognitive_usage
-        record_cognitive_usage(CognitiveUsageRecord(
+        from .mso.cognitive_usage_ledger import record_mode_interaction
+        record_mode_interaction(
             trace_id=context_id,
-            session_id=session_id,
+            source_component="surface_behavior._handle_mso_mode_orchestration",
             surface=surface,
+            domain="MSO",
+            session_id=session_id,
             agent_seat=mso_ctx.agent_seat,
             effective_agent_seat="mso",
             interaction_mode=mso_ctx.interaction_mode,
             cognition_tier=mso_ctx.cognition_tier,
             effective_cognition_tier=mso_ctx.cognition_tier,
             response_source="mso_mode_orchestration_governed",
-            usage_kind="mode_interaction",
-            zero_token_interaction=True,
-        ))
+            action="orchestration_mode_governed",
+        )
     except Exception:
         pass
     return resp
@@ -1874,6 +1876,7 @@ def get_surface_behavior_response(
                 "session_history": session_hist,
             }
             _start_time = _time.perf_counter()
+            _latency_ms: int | None = None
             _provider_err = None
             try:
                 _hist_turns = (
@@ -1918,6 +1921,24 @@ def get_surface_behavior_response(
                         "synthesis_mode": "economic",
                         "perception_frame_version": grounding.get("version", ""),
                     }
+                    try:
+                        from .mso.cognitive_usage_ledger import record_provider_call
+                        record_provider_call(
+                            trace_id=context_id,
+                            source_component="surface_behavior.legacy_mso_direct",
+                            surface=surface,
+                            domain="MSO",
+                            session_id=session_id,
+                            provider_used=provider_resp.get("provider_name"),
+                            model_used=provider_resp.get("model_name"),
+                            tokens_in=provider_metadata.get("tokens_in"),
+                            tokens_out=provider_metadata.get("tokens_out"),
+                            latency_ms=_latency_ms,
+                            action="mso_cognitive_response",
+                            response_source="llm_economic",
+                        )
+                    except Exception:
+                        pass
                     return _build_surface_response(
                         message=provider_resp["text"].strip(),
                         domain="MSO",
@@ -1954,6 +1975,21 @@ def get_surface_behavior_response(
             _msg, _ctx = build_narrative_context_message()
             _fallback_source = "provider_unavailable" if "key not configured" in str(_provider_err).lower() else "deterministic_fallback"
             _combined_fallback_reason = "; ".join(filter(None, [_pr_route_error, _provider_err])) or None
+            try:
+                from .mso.cognitive_usage_ledger import record_provider_fallback
+                record_provider_fallback(
+                    trace_id=context_id,
+                    source_component="surface_behavior.legacy_mso_direct",
+                    surface=surface,
+                    domain="MSO",
+                    session_id=session_id,
+                    response_source=_fallback_source,
+                    fallback_reason=_combined_fallback_reason,
+                    latency_ms=_latency_ms,
+                    action="mso_narrative_status",
+                )
+            except Exception:
+                pass
             return _build_surface_response(
                 message=_msg,
                 domain="MSO",
@@ -1968,7 +2004,7 @@ def get_surface_behavior_response(
                 fallback_used=True,
                 fallback_reason=_combined_fallback_reason,
                 narrative_context=_ctx,
-                latency_ms=_latency_ms if '_latency_ms' in locals() else None,
+                latency_ms=_latency_ms,
             )
         except Exception:
             pass

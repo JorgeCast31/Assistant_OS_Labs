@@ -440,6 +440,8 @@ def build_claude_propose_executor(
 
         # Call Claude — 45 s hard timeout to avoid indefinite hangs
         _CALL_TIMEOUT = 45.0
+        import time as _time
+        _cp_start = _time.perf_counter()
         try:
             response = client.messages.create(
                 model=_model,
@@ -448,7 +450,28 @@ def build_claude_propose_executor(
                 messages=[{"role": "user", "content": prompt}],
                 timeout=_CALL_TIMEOUT,
             )
+            _cp_latency_ms = int((_time.perf_counter() - _cp_start) * 1000)
             raw_text: str = response.content[0].text
+            try:
+                _usage = getattr(response, "usage", None)
+                _tokens_in = getattr(_usage, "input_tokens", None) if _usage else None
+                _tokens_out = getattr(_usage, "output_tokens", None) if _usage else None
+                from ..mso.cognitive_usage_ledger import record_provider_call
+                record_provider_call(
+                    trace_id=inp.get("context_id") or inp.get("plan_id") or "",
+                    source_component="code_propose_executor",
+                    surface="code_executor",
+                    domain="CODE",
+                    action=action,
+                    provider_used="anthropic",
+                    model_used=_model,
+                    tokens_in=_tokens_in,
+                    tokens_out=_tokens_out,
+                    latency_ms=_cp_latency_ms,
+                    response_source="llm_code_propose",
+                )
+            except Exception:
+                pass
         except _anthropic.AuthenticationError as exc:
             return {"ok": False, "error": f"API authentication failed: {exc}"}
         except _anthropic.RateLimitError as exc:

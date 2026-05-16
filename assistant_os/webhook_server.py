@@ -4922,9 +4922,15 @@ class WebhookHandler(BaseHTTPRequestHandler):
             )
 
     def _handle_mso_cognitive_usage_recent_get(self) -> None:
-        """GET /mso/cognitive-usage/recent?limit=50 — read-only cognitive usage ledger.
+        """GET /mso/cognitive-usage/recent — read-only cognitive usage ledger.
 
-        Returns recent CognitiveUsageRecord entries, newest-first.
+        Query params:
+          limit          int   max records to return (default 50, max 200)
+          surface        str   filter by surface (e.g. mso_direct, code_executor)
+          usage_kind     str   filter by usage_kind (provider_call, provider_fallback, mode_interaction)
+          interaction_mode str filter by interaction_mode (conversational, planning, ...)
+          agent_seat     str   filter by agent_seat
+
         Observability only — no execution, no authority, no mutation.
         Ephemeral: data is process-local and not persisted across restarts.
         """
@@ -4942,9 +4948,20 @@ class WebhookHandler(BaseHTTPRequestHandler):
             limit = 50
         limit = max(1, min(200, limit))
 
+        filter_surface = params.get("surface") or None
+        filter_usage_kind = params.get("usage_kind") or None
+        filter_interaction_mode = params.get("interaction_mode") or None
+        filter_agent_seat = params.get("agent_seat") or None
+
         try:
             from .mso.cognitive_usage_ledger import list_recent_cognitive_usage
-            usage = list_recent_cognitive_usage(limit=limit)
+            usage = list_recent_cognitive_usage(
+                limit=limit,
+                surface=filter_surface,
+                usage_kind=filter_usage_kind,
+                interaction_mode=filter_interaction_mode,
+                agent_seat=filter_agent_seat,
+            )
             self._send_json_response(
                 200,
                 {
@@ -4953,6 +4970,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     "usage": usage,
                     "count": len(usage),
                     "limit": limit,
+                    "filters": {
+                        "surface": filter_surface,
+                        "usage_kind": filter_usage_kind,
+                        "interaction_mode": filter_interaction_mode,
+                        "agent_seat": filter_agent_seat,
+                    },
                     "ephemeral": True,
                 },
             )
