@@ -3,6 +3,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { sendSovereignMessage } from '@/lib/sovereign/api'
 import { useMSOChatStore } from '@/stores/mso-chat-store'
+import { MSOInteractionModeSelector } from './MSOInteractionModeSelector'
 import type { SovereignMessage } from '@/lib/sovereign/types'
 
 function makeId(): string {
@@ -19,7 +20,8 @@ interface MSOComposerProps {
 
 export function MSOComposer({ sessionId }: MSOComposerProps) {
   const [text, setText] = useState('')
-  const { isLoading, appendMessage, updateMessage, setLoading } = useMSOChatStore()
+  const { isLoading, appendMessage, updateMessage, setLoading, agentSeat, interactionMode, cognitionTier } =
+    useMSOChatStore()
   const loadingMsgId = useRef<string | null>(null)
 
   const submit = useCallback(async () => {
@@ -50,7 +52,11 @@ export function MSOComposer({ sessionId }: MSOComposerProps) {
     setLoading(true)
 
     try {
-      const response = await sendSovereignMessage(trimmed, 'mso_direct', sessionId)
+      const response = await sendSovereignMessage(trimmed, 'mso_direct', sessionId, {
+        agent_seat: agentSeat,
+        interaction_mode: interactionMode,
+        cognition_tier: cognitionTier,
+      })
 
       const assistantMsg: Partial<SovereignMessage> = {
         content: response.message || '(empty response)',
@@ -104,7 +110,8 @@ export function MSOComposer({ sessionId }: MSOComposerProps) {
 
   return (
     <div className="border-t border-os-border bg-os-base px-4 py-3">
-      <div className="flex gap-2 items-end">
+      <MSOInteractionModeSelector />
+      <div className="flex gap-2 items-end mt-2">
         <textarea
           className="flex-1 resize-none rounded-lg border border-os-border bg-os-surface px-3 py-2 text-xs font-mono text-tx-primary placeholder:text-tx-muted focus:outline-none focus:ring-1 focus:ring-accent/50 disabled:opacity-50"
           rows={2}
@@ -124,7 +131,7 @@ export function MSOComposer({ sessionId }: MSOComposerProps) {
         </button>
       </div>
       <p className="mt-1.5 text-[9px] font-mono text-tx-muted">
-        Execution is closed. MSO coordinates; it does not execute. · surface: mso_direct
+        {agentSeat} · {interactionMode} · {cognitionTier} · Execution is closed. · surface: mso_direct
       </p>
     </div>
   )

@@ -24,6 +24,10 @@ export type ResponseSource =
   | 'deterministic_fallback'
   | 'provider_unavailable'
   | 'orchestrator'
+  // SPRINT-ALPHA-05.5: mode-selected response sources
+  | 'mso_mode_planning_prepared'
+  | 'mso_mode_validation_read_only'
+  | 'mso_mode_orchestration_governed'
 
 /**
  * ALFA-FLIGHT-02 §5 — optional traceability for assistant decisions.
@@ -35,6 +39,30 @@ export type DecisionSource = 'llm' | 'rule' | 'hybrid'
 // ── Surface Types (for API routing) ───────────────────────────────────────────
 
 export type SurfaceType = 'system_chat' | 'mso_direct' | 'agent_command'
+
+// ── MSO Context (SPRINT-ALPHA-05.5) ──────────────────────────────────────────
+
+export type MSOAgentSeat =
+  | 'mso'
+  | 'system_assistant'
+  | 'machine_operator'
+  | 'code'
+  | 'work'
+  | 'fin'
+
+export type MSOInteractionMode =
+  | 'conversational'
+  | 'planning'
+  | 'validation'
+  | 'orchestration'
+
+export type MSOCognitionTier = 'economic' | 'advanced'
+
+export interface MSOContext {
+  agent_seat: MSOAgentSeat
+  interaction_mode: MSOInteractionMode
+  cognition_tier: MSOCognitionTier
+}
 
 // ── Message Types ─────────────────────────────────────────────────────────────
 
@@ -202,6 +230,7 @@ export interface SovereignChatRequest {
   text: string
   surface: SurfaceType
   session_id?: string
+  mso_context?: MSOContext
 }
 
 export interface SovereignChatResponse {
