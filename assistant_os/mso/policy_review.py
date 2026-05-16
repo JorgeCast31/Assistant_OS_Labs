@@ -270,6 +270,10 @@ def evaluate_mso_policy_for_prepared_action(
             "Policy review rejected to prevent cross-entry authority confusion."
         )
 
+    existing = get_mso_policy_review(entry.queue_entry_id)
+    if existing is not None:
+        return existing
+
     capability = check_capability(entry.requested_action, entry.domain)
 
     if capability.mode == "allow" and capability.allowed:
