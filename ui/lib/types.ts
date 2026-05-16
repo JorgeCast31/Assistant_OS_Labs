@@ -576,6 +576,11 @@ export interface PreparedActionQueueEntry {
   notes: string
   confirmation_recorded_at?: string
   operator_note?: string
+  // Policy review overlay fields (merged at read time from MSOPolicyDecisionDraft)
+  policy_review_id?: string
+  policy_outcome?: 'approved' | 'approved_confirm_only' | 'denied'
+  capability_mode?: string
+  policy_review_created_at?: string
 }
 
 export interface PreparedActionsQueueResponse {
@@ -607,6 +612,24 @@ export interface ConfirmPreparedActionResult {
   execution_allowed: false
   can_execute_now: false
   recorded_at?: string
+  note?: string
+  error?: string
+}
+
+// ── MSO policy review (S-MSO-POLICY-01) ──────────────────────────────────
+
+export interface MSOPolicyReviewResult {
+  ok: boolean
+  entry_id?: string
+  action_id?: string
+  policy_review_id?: string
+  policy_outcome?: 'approved' | 'approved_confirm_only' | 'denied'
+  capability_mode?: string
+  execution_allowed: false
+  can_execute_now: false
+  used_execution?: false
+  human_confirmation_satisfied?: boolean
+  created_at?: string
   note?: string
   error?: string
 }

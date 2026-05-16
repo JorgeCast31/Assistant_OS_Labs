@@ -1,23 +1,39 @@
 'use client'
 
 import { useState } from 'react'
-import type { PreparedActionQueueEntry } from '@/lib/types'
-import { confirmPreparedAction } from '@/lib/sovereign/api'
+import type { PreparedActionQueueEntry, MSOPolicyReviewResult } from '@/lib/types'
+import { confirmPreparedAction, requestMSOPolicyReview } from '@/lib/sovereign/api'
 import { getPreparedActionsPending } from '@/lib/api'
 import { usePreparedActionsStore } from '@/stores/prepared-actions-store'
+
+const POLICY_OUTCOME_LABELS: Record<string, string> = {
+  approved: 'Policy: Approved',
+  approved_confirm_only: 'Policy: Approved (confirm-only)',
+  denied: 'Policy: Denied',
+}
+
+const POLICY_OUTCOME_COLORS: Record<string, string> = {
+  approved: 'text-ok',
+  approved_confirm_only: 'text-ok',
+  denied: 'text-warn',
+}
 
 export function PreparedActionConfirmSurface({ item }: { item: PreparedActionQueueEntry }) {
   const [isConfirming, setIsConfirming] = useState(false)
   const [confirmError, setConfirmError] = useState<string | null>(null)
   const [localStatus, setLocalStatus] = useState<string | null>(null)
+  const [policyReview, setPolicyReview] = useState<MSOPolicyReviewResult | null>(null)
+  const [policyError, setPolicyError] = useState<string | null>(null)
   const setPreparedActions = usePreparedActionsStore((s) => s.setPreparedActions)
 
   const effectiveStatus = localStatus ?? item.human_confirmation_status
+  const effectivePolicyOutcome = policyReview?.policy_outcome ?? item.policy_outcome
 
   async function handleConfirm(confirmed: boolean) {
     if (isConfirming) return
     setIsConfirming(true)
     setConfirmError(null)
+    setPolicyError(null)
     try {
       const result = await confirmPreparedAction(
         item.queue_entry_id,
@@ -29,6 +45,18 @@ export function PreparedActionConfirmSurface({ item }: { item: PreparedActionQue
         return
       }
       setLocalStatus(result.human_confirmation_status ?? (confirmed ? 'human_confirmed' : 'human_rejected'))
+
+      if (confirmed) {
+        const review = await requestMSOPolicyReview(
+          item.queue_entry_id,
+          item.prepared_action_id ?? item.queue_entry_id,
+        )
+        setPolicyReview(review)
+        if (!review.ok) {
+          setPolicyError(review.error ?? 'Policy review failed')
+        }
+      }
+
       const refreshed = await getPreparedActionsPending()
       setPreparedActions(refreshed)
     } catch (err) {
@@ -47,6 +75,14 @@ export function PreparedActionConfirmSurface({ item }: { item: PreparedActionQue
           Human Confirmation Signal
         </p>
         <p className={`text-[10px] font-mono ${color}`}>Signal recorded: {label}</p>
+        {effectivePolicyOutcome && (
+          <p className={`text-[10px] font-mono mt-1 ${POLICY_OUTCOME_COLORS[effectivePolicyOutcome] ?? 'text-tx-muted'}`}>
+            {POLICY_OUTCOME_LABELS[effectivePolicyOutcome] ?? effectivePolicyOutcome}
+          </p>
+        )}
+        {policyError && (
+          <p className="text-[10px] font-mono text-warn mt-1">{policyError}</p>
+        )}
         <p className="text-[10px] font-mono text-tx-muted mt-1 leading-relaxed">
           Signal recorded. Execution remains closed pending full authority chain.
         </p>

@@ -8,7 +8,7 @@ import type {
   ExecutionStatus,
   ExecutionStatusSource,
 } from './types'
-import type { ConfirmPreparedActionResult } from '../types'
+import type { ConfirmPreparedActionResult, MSOPolicyReviewResult } from '../types'
 
 const EXECUTION_STATUSES: ExecutionStatus[] = ['real', 'stub', 'unavailable', 'partial']
 
@@ -157,6 +157,54 @@ export async function confirmPreparedAction(
       execution_allowed: false,
       can_execute_now: false,
       recorded_at: data.recorded_at,
+      note: data.note,
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      execution_allowed: false,
+      can_execute_now: false,
+      error: err instanceof Error ? err.message : 'Network error',
+    }
+  }
+}
+
+/**
+ * Request MSO capability policy review for a confirmed prepared action.
+ * Produces MSOPolicyDecisionDraft — first authority chain artifact after HumanConfirmationRecord.
+ * Does not grant execution authority. execution_allowed and can_execute_now remain false.
+ */
+export async function requestMSOPolicyReview(
+  entryId: string,
+  actionId: string,
+): Promise<MSOPolicyReviewResult> {
+  try {
+    const res = await fetch('/api/mso/prepared-actions/policy-review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entry_id: entryId, action_id: actionId }),
+    })
+    const data = await res.json()
+    if (!res.ok) {
+      return {
+        ok: false,
+        execution_allowed: false,
+        can_execute_now: false,
+        error: data.error ?? `Error ${res.status}`,
+      }
+    }
+    return {
+      ok: true,
+      entry_id: data.entry_id,
+      action_id: data.action_id,
+      policy_review_id: data.policy_review_id,
+      policy_outcome: data.policy_outcome,
+      capability_mode: data.capability_mode,
+      execution_allowed: false,
+      can_execute_now: false,
+      used_execution: false,
+      human_confirmation_satisfied: data.human_confirmation_satisfied,
+      created_at: data.created_at,
       note: data.note,
     }
   } catch (err) {
