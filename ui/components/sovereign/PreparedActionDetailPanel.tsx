@@ -1,12 +1,8 @@
 'use client'
 
-import { useState } from 'react'
 import type { PreparedActionQueueEntry } from '@/lib/types'
 import { AuthorityTimeline } from './AuthorityTimeline'
 import { PreparedActionInputTrace } from './PreparedActionInputTrace'
-import { confirmPreparedAction } from '@/lib/sovereign/api'
-import { getPreparedActionsPending } from '@/lib/api'
-import { usePreparedActionsStore } from '@/stores/prepared-actions-store'
 
 function Field({ label, value }: { label: string; value: string | null | undefined }) {
   const display = !value ? '—' : value
@@ -27,33 +23,6 @@ function SectionHeader({ title }: { title: string }) {
 }
 
 export function PreparedActionDetailPanel({ item }: { item: PreparedActionQueueEntry }) {
-  const [confirmStatus, setConfirmStatus] = useState<string | null>(null)
-  const [isConfirming, setIsConfirming] = useState(false)
-  const [confirmError, setConfirmError] = useState<string | null>(null)
-  const setPreparedActions = usePreparedActionsStore((s) => s.setPreparedActions)
-
-  async function handleConfirm(confirmed: boolean) {
-    setIsConfirming(true)
-    setConfirmError(null)
-    const result = await confirmPreparedAction(
-      item.queue_entry_id,
-      item.prepared_action_id,
-      confirmed,
-    )
-    setIsConfirming(false)
-    if (result.ok && result.human_confirmation_status) {
-      setConfirmStatus(result.human_confirmation_status)
-      try {
-        const fresh = await getPreparedActionsPending()
-        setPreparedActions(fresh)
-      } catch {
-        // poll will catch up; non-critical
-      }
-    } else {
-      setConfirmError(result.error ?? 'Confirmation failed')
-    }
-  }
-
   const nextSafeStep =
     item.human_confirmation_status === 'pending'
       ? 'Review the prepared action. Human confirmation is still pending.'
@@ -134,51 +103,6 @@ export function PreparedActionDetailPanel({ item }: { item: PreparedActionQueueE
         </p>
       </div>
 
-      {/* I. Human Review Action */}
-      <div className="mt-3 pt-2 border-t border-os-border/60">
-        <p className="text-[9px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-2">
-          Human Review Action
-        </p>
-
-        {confirmStatus !== null ? (
-          <p className={`text-[10px] font-mono ${
-            confirmStatus === 'human_confirmed' ? 'text-ok' : 'text-warn'
-          }`}>
-            {confirmStatus === 'human_confirmed' ? 'Review confirmed.' : 'Rejected.'}{' '}
-            Execution remains closed.
-          </p>
-        ) : item.human_confirmation_status !== 'pending' ? (
-          <p className="text-[10px] font-mono text-tx-muted">
-            Human review: {item.human_confirmation_status}
-          </p>
-        ) : (
-          <>
-            <p className="text-[10px] font-mono text-tx-muted mb-3 leading-relaxed">
-              Confirming review does not execute, grant tokens, or call PoliceGate.
-              Execution remains closed until the full authority chain is satisfied.
-            </p>
-            <div className="flex gap-2">
-              <button
-                onClick={() => handleConfirm(true)}
-                disabled={isConfirming}
-                className="px-3 py-1.5 text-[10px] font-mono bg-ok/10 text-ok border border-ok/30 rounded hover:bg-ok/20 disabled:opacity-50 cursor-default"
-              >
-                {isConfirming ? 'Recording…' : 'Confirm Review'}
-              </button>
-              <button
-                onClick={() => handleConfirm(false)}
-                disabled={isConfirming}
-                className="px-3 py-1.5 text-[10px] font-mono bg-warn/10 text-warn border border-warn/30 rounded hover:bg-warn/20 disabled:opacity-50 cursor-default"
-              >
-                Reject
-              </button>
-            </div>
-            {confirmError && (
-              <p className="text-[10px] font-mono text-warn mt-2">{confirmError}</p>
-            )}
-          </>
-        )}
-      </div>
     </div>
   )
 }
