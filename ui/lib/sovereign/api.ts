@@ -8,6 +8,7 @@ import type {
   ExecutionStatus,
   ExecutionStatusSource,
 } from './types'
+import type { ConfirmPreparedActionResult } from '../types'
 
 const EXECUTION_STATUSES: ExecutionStatus[] = ['real', 'stub', 'unavailable', 'partial']
 
@@ -113,6 +114,57 @@ export async function sendSovereignMessage(
       error: msg,
       execution_status: 'unavailable',
       execution_status_source: 'ui_fallback',
+    }
+  }
+}
+
+/**
+ * Record a human confirmation signal for a prepared action.
+ * Does not grant execution authority or satisfy any authority chain step.
+ * execution_allowed and can_execute_now remain false.
+ */
+export async function confirmPreparedAction(
+  entryId: string,
+  actionId: string,
+  confirmed: boolean,
+  operatorNote?: string,
+): Promise<ConfirmPreparedActionResult> {
+  try {
+    const res = await fetch('/api/mso/prepared-actions/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        entry_id: entryId,
+        action_id: actionId,
+        confirmed,
+        operator_note: operatorNote ?? '',
+      }),
+    })
+    const data = await res.json()
+    if (!res.ok) {
+      return {
+        ok: false,
+        execution_allowed: false,
+        can_execute_now: false,
+        error: data.error ?? `Error ${res.status}`,
+      }
+    }
+    return {
+      ok: true,
+      entry_id: data.entry_id,
+      action_id: data.action_id,
+      human_confirmation_status: data.human_confirmation_status,
+      execution_allowed: false,
+      can_execute_now: false,
+      recorded_at: data.recorded_at,
+      note: data.note,
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      execution_allowed: false,
+      can_execute_now: false,
+      error: err instanceof Error ? err.message : 'Network error',
     }
   }
 }

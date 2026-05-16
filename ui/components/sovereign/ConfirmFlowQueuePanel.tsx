@@ -7,6 +7,7 @@ import { usePreparedActionsStore } from '@/stores/prepared-actions-store'
 import type { PreparedActionQueueEntry } from '@/lib/types'
 import { AuthorityTimeline } from './AuthorityTimeline'
 import { PreparedActionDetailPanel } from './PreparedActionDetailPanel'
+import { PreparedActionConfirmSurface } from './PreparedActionConfirmSurface'
 
 function fmtDuration(seconds: number | null | undefined): string {
   if (seconds == null) return '—'
@@ -60,6 +61,7 @@ function PreparedActionItem({ item }: { item: PreparedActionQueueEntry }) {
         )}
       </div>
       <AuthorityTimeline item={item} />
+      <PreparedActionConfirmSurface item={item} />
       <details className="mt-3">
         <summary className="text-[10px] font-mono text-tx-muted cursor-default py-1 select-none">
           Inspect prepared action

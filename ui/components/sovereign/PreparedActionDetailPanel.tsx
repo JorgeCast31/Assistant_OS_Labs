@@ -102,6 +102,7 @@ export function PreparedActionDetailPanel({ item }: { item: PreparedActionQueueE
           Execution remains closed until PolicyDecision → CapabilityToken → OperationBinding → AuthorizedPlan → PoliceGate are satisfied.
         </p>
       </div>
+
     </div>
   )
 }
