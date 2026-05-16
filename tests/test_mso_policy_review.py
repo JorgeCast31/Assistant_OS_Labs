@@ -317,14 +317,14 @@ class TestMSOPolicyReviewStore:
         clear_mso_policy_review_store_for_tests()
         assert get_mso_policy_review(entry.queue_entry_id) is None
 
-    def test_second_evaluation_overwrites_previous(self):
+    def test_second_evaluation_returns_existing_review(self):
         entry = _make_queue_entry()
         confirmation = _make_confirmation(entry)
         draft1 = evaluate_mso_policy_for_prepared_action(entry, confirmation)
         draft2 = evaluate_mso_policy_for_prepared_action(entry, confirmation)
+        assert draft2.policy_review_id == draft1.policy_review_id
         retrieved = get_mso_policy_review(entry.queue_entry_id)
-        assert retrieved.policy_review_id == draft2.policy_review_id
-        assert retrieved.policy_review_id != draft1.policy_review_id
+        assert retrieved.policy_review_id == draft1.policy_review_id
 
 
 # ---------------------------------------------------------------------------
@@ -501,6 +501,20 @@ class TestMSOPolicyReviewEndpoint:
         }).encode()
         status, data = _process_mso_policy_review_request(body)
         assert data["policy_outcome"] in ("approved", "approved_confirm_only", "denied")
+
+    def test_duplicate_post_returns_same_policy_review_id(self):
+        from assistant_os.webhook_server import _process_mso_policy_review_request
+        import json
+        entry = _make_confirmed_entry()
+        body = json.dumps({
+            "entry_id": entry.queue_entry_id,
+            "action_id": entry.prepared_action_id,
+        }).encode()
+        status1, data1 = _process_mso_policy_review_request(body)
+        status2, data2 = _process_mso_policy_review_request(body)
+        assert status1 == 200
+        assert status2 == 200
+        assert data1["policy_review_id"] == data2["policy_review_id"]
 
     def test_invalid_json_returns_400(self):
         from assistant_os.webhook_server import _process_mso_policy_review_request

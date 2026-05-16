@@ -555,6 +555,98 @@ def _process_mso_policy_review_request(body_bytes: bytes) -> tuple[int, dict]:
     }
 
 
+def _process_mso_authority_binding_request(body_bytes: bytes) -> tuple[int, dict]:
+    """Parse, validate, and create an MSOAuthorityBindingDraft for an approved prepared action.
+
+    Returns (status_code, response_dict).
+
+    Does NOT: call token_issuer.issue_token(), create OperationBinding/AuthorizedPlan,
+    call PoliceGate enforcement.check(), invoke RunnerAPI.execute(), or change
+    execution_allowed. execution_allowed, can_execute_now, and used_execution remain False always.
+    """
+    import json as _json
+
+    try:
+        data = _json.loads(body_bytes) if body_bytes else {}
+    except Exception:  # noqa: BLE001
+        return 400, {"ok": False, "error": "Invalid JSON body"}
+
+    entry_id = (data.get("entry_id") or "").strip()
+    action_id = (data.get("action_id") or "").strip()
+
+    if not entry_id or not action_id:
+        return 400, {"ok": False, "error": "entry_id and action_id are required"}
+
+    from .mso.prepared_action_queue import get_confirmable_action_queue_entry
+    from .mso.policy_review import get_mso_policy_review
+    from .mso.authority_binding import create_mso_authority_binding
+
+    entry = get_confirmable_action_queue_entry(entry_id)
+    if entry is None:
+        return 404, {"ok": False, "error": f"Queue entry not found: {entry_id!r}"}
+
+    if entry.prepared_action_id != action_id:
+        return 400, {
+            "ok": False,
+            "error": (
+                f"action_id mismatch: entry has action_id={entry.prepared_action_id!r}, "
+                f"request has action_id={action_id!r}"
+            ),
+            "execution_allowed": False,
+            "can_execute_now": False,
+        }
+
+    policy_review = get_mso_policy_review(entry_id)
+    if policy_review is None:
+        return 422, {
+            "ok": False,
+            "error": "policy_review_required: no policy review recorded for this entry",
+            "execution_allowed": False,
+            "can_execute_now": False,
+        }
+
+    if policy_review.policy_outcome not in ("approved", "approved_confirm_only"):
+        return 422, {
+            "ok": False,
+            "error": (
+                f"policy_denied: policy_outcome={policy_review.policy_outcome!r} "
+                "does not permit authority binding"
+            ),
+            "execution_allowed": False,
+            "can_execute_now": False,
+            "policy_outcome": policy_review.policy_outcome,
+        }
+
+    try:
+        binding = create_mso_authority_binding(entry, policy_review)
+    except ValueError as exc:
+        return 422, {
+            "ok": False,
+            "error": str(exc),
+            "execution_allowed": False,
+            "can_execute_now": False,
+        }
+
+    return 200, {
+        "ok": True,
+        "entry_id": binding.entry_id,
+        "action_id": binding.action_id,
+        "policy_review_id": binding.policy_review_id,
+        "authority_binding_id": binding.authority_binding_id,
+        "binding_status": binding.binding_status,
+        "requires_authorized_plan": binding.requires_authorized_plan,
+        "requires_police_gate": binding.requires_police_gate,
+        "execution_allowed": False,
+        "can_execute_now": False,
+        "used_execution": False,
+        "created_at": binding.created_at.isoformat(),
+        "note": (
+            "Authority binding draft recorded. "
+            "AuthorizedPlan, PoliceGate, and execution still required."
+        ),
+    }
+
+
 def _wrap_work_result(dr: "DomainResult", context_id: str) -> dict:
     """
     Wrap a DomainResult into the current Response transport format for WORK domain.
@@ -1616,6 +1708,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # S-MSO-POLICY-01: evaluate MSO capability policy for a confirmed prepared action
         if path == "/mso/prepared-actions/policy-review":
             self._handle_mso_prepared_actions_policy_review_post()
+            return
+
+        # S-MSO-AUTHORITY-01: create MSOAuthorityBindingDraft for an approved policy review
+        if path == "/mso/prepared-actions/authority-binding":
+            self._handle_mso_prepared_actions_authority_binding_post()
             return
 
         # Route: /machine_operator/execute (execute a bounded browser capability)
@@ -4833,9 +4930,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
         try:
             from .mso.human_confirmation import merge_confirmation_into_dict
             from .mso.policy_review import merge_policy_review_into_dict
+            from .mso.authority_binding import merge_authority_binding_into_dict
             from .mso.prepared_action_queue import list_pending_confirmable_action_dicts
             items = [
-                merge_policy_review_into_dict(merge_confirmation_into_dict(i))
+                merge_authority_binding_into_dict(
+                    merge_policy_review_into_dict(merge_confirmation_into_dict(i))
+                )
                 for i in list_pending_confirmable_action_dicts()
             ]
             self._send_json_response(
@@ -4901,6 +5001,24 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         body = self._read_body()
         status, response = _process_mso_policy_review_request(body)
+        self._send_json_response(status, response)
+
+    def _handle_mso_prepared_actions_authority_binding_post(self) -> None:
+        """POST /mso/prepared-actions/authority-binding — create MSOAuthorityBindingDraft.
+
+        Second authority chain artifact after MSOPolicyDecisionDraft.
+        Requires policy_outcome in ("approved", "approved_confirm_only").
+        Does NOT call token_issuer, create OperationBinding/AuthorizedPlan,
+        call PoliceGate, or invoke runner. execution_allowed remains False.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        body = self._read_body()
+        status, response = _process_mso_authority_binding_request(body)
         self._send_json_response(status, response)
 
     def _handle_mso_seat_provider_get(self) -> None:
