@@ -1221,6 +1221,7 @@ def _handle_mso_mode_conversational(
     context_id: str,
     identity: Any,
     guard_result: Any,
+    session_id: str | None = None,
 ) -> dict | None:
     """Mode: conversational — skip plan_request text check, go straight to cognitive path.
 
@@ -1236,6 +1237,7 @@ def _handle_mso_mode_conversational(
     grounding_with_vault = {**grounding, "vault_context": vault_ctx, "session_history": session_hist}
 
     _start = _time.perf_counter()
+    _latency_ms: int | None = None
     _provider_err: str | None = None
     try:
         _hist_turns = (
@@ -1297,6 +1299,30 @@ def _handle_mso_mode_conversational(
                 cognitive_trace=cognitive_trace,
             )
             resp["perception_context"] = perception_context
+            try:
+                from .mso.cognitive_usage_ledger import CognitiveUsageRecord, record_cognitive_usage
+                record_cognitive_usage(CognitiveUsageRecord(
+                    trace_id=context_id,
+                    session_id=session_id,
+                    surface=surface,
+                    agent_seat=mso_ctx.agent_seat,
+                    effective_agent_seat="mso",
+                    interaction_mode=mso_ctx.interaction_mode,
+                    cognition_tier=mso_ctx.cognition_tier,
+                    effective_cognition_tier=mso_ctx.cognition_tier,
+                    provider_used=provider_resp.get("provider_name"),
+                    model_used=provider_resp.get("model_name"),
+                    response_source="llm_economic",
+                    usage_kind="provider_call",
+                    fallback_used=False,
+                    fallback_reason=None,
+                    zero_token_interaction=False,
+                    tokens_in=provider_metadata.get("tokens_in"),
+                    tokens_out=provider_metadata.get("tokens_out"),
+                    latency_ms=_latency_ms,
+                ))
+            except Exception:
+                pass
             return resp
         else:
             _provider_err = provider_resp.get("error") or provider_resp.get("reason") or "unusable provider response"
@@ -1326,9 +1352,29 @@ def _handle_mso_mode_conversational(
             fallback_used=True,
             fallback_reason=_provider_err,
             narrative_context=_ctx,
-            latency_ms=_latency_ms if "_latency_ms" in dir() else None,
+            latency_ms=_latency_ms,
         )
         resp["perception_context"] = perception_context
+        try:
+            from .mso.cognitive_usage_ledger import CognitiveUsageRecord, record_cognitive_usage
+            record_cognitive_usage(CognitiveUsageRecord(
+                trace_id=context_id,
+                session_id=session_id,
+                surface=surface,
+                agent_seat=mso_ctx.agent_seat,
+                effective_agent_seat="mso",
+                interaction_mode=mso_ctx.interaction_mode,
+                cognition_tier=mso_ctx.cognition_tier,
+                effective_cognition_tier=mso_ctx.cognition_tier,
+                response_source=_fallback_source,
+                usage_kind="provider_fallback",
+                fallback_used=True,
+                fallback_reason=_provider_err,
+                zero_token_interaction=False,
+                latency_ms=_latency_ms,
+            ))
+        except Exception:
+            pass
         return resp
     except Exception:
         return None
@@ -1344,6 +1390,7 @@ def _handle_mso_mode_planning(
     context_id: str,
     identity: Any,
     guard_result: Any,
+    session_id: str | None = None,
 ) -> dict:
     """Mode: planning — create governed plan entry regardless of text pattern.
 
@@ -1395,6 +1442,25 @@ def _handle_mso_mode_planning(
         "used_execution": False,
     }
     resp["perception_context"] = perception_context
+    try:
+        from .mso.cognitive_usage_ledger import CognitiveUsageRecord, record_cognitive_usage
+        record_cognitive_usage(CognitiveUsageRecord(
+            trace_id=context_id,
+            session_id=session_id,
+            surface=surface,
+            agent_seat=mso_ctx.agent_seat,
+            effective_agent_seat="mso",
+            interaction_mode=mso_ctx.interaction_mode,
+            cognition_tier=mso_ctx.cognition_tier,
+            effective_cognition_tier=mso_ctx.cognition_tier,
+            response_source="mso_mode_planning_prepared",
+            usage_kind="mode_interaction",
+            zero_token_interaction=True,
+            prepared_action_id=_pr_queued.get("prepared_action_id"),
+            queue_entry_id=_pr_queued_id,
+        ))
+    except Exception:
+        pass
     return resp
 
 
@@ -1406,6 +1472,7 @@ def _handle_mso_mode_validation(
     context_id: str,
     identity: Any,
     guard_result: Any,
+    session_id: str | None = None,
 ) -> dict:
     """Mode: validation — read current queue state. Strictly read-only.
 
@@ -1443,6 +1510,23 @@ def _handle_mso_mode_validation(
         "can_execute_now": False,
     }
     resp["perception_context"] = perception_context
+    try:
+        from .mso.cognitive_usage_ledger import CognitiveUsageRecord, record_cognitive_usage
+        record_cognitive_usage(CognitiveUsageRecord(
+            trace_id=context_id,
+            session_id=session_id,
+            surface=surface,
+            agent_seat=mso_ctx.agent_seat,
+            effective_agent_seat="mso",
+            interaction_mode=mso_ctx.interaction_mode,
+            cognition_tier=mso_ctx.cognition_tier,
+            effective_cognition_tier=mso_ctx.cognition_tier,
+            response_source="mso_mode_validation_read_only",
+            usage_kind="mode_interaction",
+            zero_token_interaction=True,
+        ))
+    except Exception:
+        pass
     return resp
 
 
@@ -1454,6 +1538,7 @@ def _handle_mso_mode_orchestration(
     context_id: str,
     identity: Any,
     guard_result: Any,
+    session_id: str | None = None,
 ) -> dict:
     """Mode: orchestration — governed-entry narrative. No runner, no token, no execution.
 
@@ -1498,6 +1583,23 @@ def _handle_mso_mode_orchestration(
         "can_execute_now": False,
     }
     resp["perception_context"] = perception_context
+    try:
+        from .mso.cognitive_usage_ledger import CognitiveUsageRecord, record_cognitive_usage
+        record_cognitive_usage(CognitiveUsageRecord(
+            trace_id=context_id,
+            session_id=session_id,
+            surface=surface,
+            agent_seat=mso_ctx.agent_seat,
+            effective_agent_seat="mso",
+            interaction_mode=mso_ctx.interaction_mode,
+            cognition_tier=mso_ctx.cognition_tier,
+            effective_cognition_tier=mso_ctx.cognition_tier,
+            response_source="mso_mode_orchestration_governed",
+            usage_kind="mode_interaction",
+            zero_token_interaction=True,
+        ))
+    except Exception:
+        pass
     return resp
 
 
@@ -1648,22 +1750,26 @@ def get_surface_behavior_response(
                     text=text, mso_ctx=_mso_ctx, perception=_perception,
                     surface=surface, context_id=context_id,
                     identity=identity, guard_result=guard_result,
+                    session_id=session_id,
                 )
             if _mso_ctx.interaction_mode == "planning":
                 return _handle_mso_mode_planning(
                     text=text, normalized=normalized, mso_ctx=_mso_ctx,
                     perception=_perception, surface=surface, context_id=context_id,
                     identity=identity, guard_result=guard_result,
+                    session_id=session_id,
                 )
             if _mso_ctx.interaction_mode == "validation":
                 return _handle_mso_mode_validation(
                     mso_ctx=_mso_ctx, perception=_perception, surface=surface,
                     context_id=context_id, identity=identity, guard_result=guard_result,
+                    session_id=session_id,
                 )
             if _mso_ctx.interaction_mode == "orchestration":
                 return _handle_mso_mode_orchestration(
                     mso_ctx=_mso_ctx, perception=_perception, surface=surface,
                     context_id=context_id, identity=identity, guard_result=guard_result,
+                    session_id=session_id,
                 )
             # _parse_mso_context always normalizes; this branch is unreachable.
 

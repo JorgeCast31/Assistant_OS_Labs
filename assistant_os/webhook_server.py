@@ -1880,6 +1880,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_mso_seat_provider_get()
             return
 
+        # SPRINT-ALPHA-05.6: read-only cognitive usage ledger
+        if path == "/mso/cognitive-usage/recent":
+            self._handle_mso_cognitive_usage_recent_get()
+            return
+
         # 405 for everything else
         status, error = _make_json_error(405, "Method not allowed. Use POST.", "MethodNotAllowed")
         self._send_json_response(status, error)
@@ -4913,6 +4918,55 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     "pending": [],
                     "error": str(exc),
                     "note": _NOTE_ENDPOINT,
+                },
+            )
+
+    def _handle_mso_cognitive_usage_recent_get(self) -> None:
+        """GET /mso/cognitive-usage/recent?limit=50 — read-only cognitive usage ledger.
+
+        Returns recent CognitiveUsageRecord entries, newest-first.
+        Observability only — no execution, no authority, no mutation.
+        Ephemeral: data is process-local and not persisted across restarts.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        params = self._parse_query_params()
+        _raw_limit = params.get("limit", "")
+        try:
+            limit = int(_raw_limit)
+        except (ValueError, TypeError):
+            limit = 50
+        limit = max(1, min(200, limit))
+
+        try:
+            from .mso.cognitive_usage_ledger import list_recent_cognitive_usage
+            usage = list_recent_cognitive_usage(limit=limit)
+            self._send_json_response(
+                200,
+                {
+                    "ok": True,
+                    "source": "mso_cognitive_usage",
+                    "usage": usage,
+                    "count": len(usage),
+                    "limit": limit,
+                    "ephemeral": True,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-soft
+            self._send_json_response(
+                200,
+                {
+                    "ok": False,
+                    "source": "mso_cognitive_usage",
+                    "usage": [],
+                    "count": 0,
+                    "limit": limit,
+                    "ephemeral": True,
+                    "error": str(exc),
                 },
             )
 
