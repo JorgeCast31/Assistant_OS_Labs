@@ -8,7 +8,7 @@ import type {
   ExecutionStatus,
   ExecutionStatusSource,
 } from './types'
-import type { ConfirmPreparedActionResult, MSOPolicyReviewResult } from '../types'
+import type { ConfirmPreparedActionResult, MSOPolicyReviewResult, MSOAuthorityBindingResult } from '../types'
 
 const EXECUTION_STATUSES: ExecutionStatus[] = ['real', 'stub', 'unavailable', 'partial']
 
@@ -204,6 +204,58 @@ export async function requestMSOPolicyReview(
       can_execute_now: false,
       used_execution: false,
       human_confirmation_satisfied: data.human_confirmation_satisfied,
+      created_at: data.created_at,
+      note: data.note,
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      execution_allowed: false,
+      can_execute_now: false,
+      error: err instanceof Error ? err.message : 'Network error',
+    }
+  }
+}
+
+/**
+ * Request MSO authority binding draft for an approved policy review.
+ * Produces MSOAuthorityBindingDraft — second authority chain artifact after MSOPolicyDecisionDraft.
+ * Requires policy_outcome to be "approved" or "approved_confirm_only".
+ * Does not call token_issuer, create AuthorizedPlan, call PoliceGate, or execute.
+ * execution_allowed and can_execute_now remain false.
+ */
+export async function requestMSOAuthorityBinding(
+  entryId: string,
+  actionId: string,
+): Promise<MSOAuthorityBindingResult> {
+  try {
+    const res = await fetch('/api/mso/prepared-actions/authority-binding', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ entry_id: entryId, action_id: actionId }),
+    })
+    const data = await res.json()
+    if (!res.ok) {
+      return {
+        ok: false,
+        execution_allowed: false,
+        can_execute_now: false,
+        error: data.error ?? `Error ${res.status}`,
+        policy_outcome: data.policy_outcome,
+      }
+    }
+    return {
+      ok: true,
+      entry_id: data.entry_id,
+      action_id: data.action_id,
+      policy_review_id: data.policy_review_id,
+      authority_binding_id: data.authority_binding_id,
+      binding_status: data.binding_status,
+      requires_authorized_plan: data.requires_authorized_plan,
+      requires_police_gate: data.requires_police_gate,
+      execution_allowed: false,
+      can_execute_now: false,
+      used_execution: false,
       created_at: data.created_at,
       note: data.note,
     }

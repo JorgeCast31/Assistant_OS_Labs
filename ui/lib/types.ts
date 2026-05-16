@@ -581,6 +581,12 @@ export interface PreparedActionQueueEntry {
   policy_outcome?: 'approved' | 'approved_confirm_only' | 'denied'
   capability_mode?: string
   policy_review_created_at?: string
+  // Authority binding overlay fields (merged at read time from MSOAuthorityBindingDraft)
+  authority_binding_id?: string
+  authority_binding_status?: string
+  authority_binding_created_at?: string
+  requires_authorized_plan?: boolean
+  requires_police_gate?: boolean
 }
 
 export interface PreparedActionsQueueResponse {
@@ -632,6 +638,26 @@ export interface MSOPolicyReviewResult {
   created_at?: string
   note?: string
   error?: string
+}
+
+// ── MSO authority binding (S-MSO-AUTHORITY-01) ───────────────────────────
+
+export interface MSOAuthorityBindingResult {
+  ok: boolean
+  entry_id?: string
+  action_id?: string
+  policy_review_id?: string
+  authority_binding_id?: string
+  binding_status?: string
+  requires_authorized_plan?: boolean
+  requires_police_gate?: boolean
+  execution_allowed: false
+  can_execute_now: false
+  used_execution?: false
+  created_at?: string
+  note?: string
+  error?: string
+  policy_outcome?: string
 }
 
 // ── Authority status matrix (S-AUTH-SURFACE-01C) ──────────────────────────
