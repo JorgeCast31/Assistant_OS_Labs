@@ -1,6 +1,5 @@
 'use client'
 
-import { useState } from 'react'
 import { useConfirmPendingPolling } from '@/hooks/use-confirm-pending-polling'
 import { useConfirmPendingStore } from '@/stores/confirm-pending-store'
 import { usePreparedActionsPolling } from '@/hooks/use-prepared-actions-polling'
@@ -8,8 +7,7 @@ import { usePreparedActionsStore } from '@/stores/prepared-actions-store'
 import type { PreparedActionQueueEntry } from '@/lib/types'
 import { AuthorityTimeline } from './AuthorityTimeline'
 import { PreparedActionDetailPanel } from './PreparedActionDetailPanel'
-import { confirmPreparedAction } from '@/lib/sovereign/api'
-import { getPreparedActionsPending } from '@/lib/api'
+import { PreparedActionConfirmSurface } from './PreparedActionConfirmSurface'
 
 function fmtDuration(seconds: number | null | undefined): string {
   if (seconds == null) return '—'
@@ -30,35 +28,6 @@ function shortenId(value: string | null | undefined): string {
 }
 
 function PreparedActionItem({ item }: { item: PreparedActionQueueEntry }) {
-  const [confirmStatus, setConfirmStatus] = useState<string | null>(null)
-  const [isConfirming, setIsConfirming] = useState(false)
-  const [confirmError, setConfirmError] = useState<string | null>(null)
-  const setPreparedActions = usePreparedActionsStore((s) => s.setPreparedActions)
-
-  async function handleConfirm(confirmed: boolean) {
-    setIsConfirming(true)
-    setConfirmError(null)
-    const result = await confirmPreparedAction(
-      item.queue_entry_id,
-      item.prepared_action_id,
-      confirmed,
-    )
-    setIsConfirming(false)
-    if (result.ok && result.human_confirmation_status) {
-      setConfirmStatus(result.human_confirmation_status)
-      try {
-        const fresh = await getPreparedActionsPending()
-        setPreparedActions(fresh)
-      } catch {
-        // poll will catch up on next cycle
-      }
-    } else {
-      setConfirmError(result.error ?? 'Confirmation failed')
-    }
-  }
-
-  const effectiveStatus = confirmStatus ?? item.human_confirmation_status
-
   return (
     <div className="px-4 py-3">
       <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
@@ -92,44 +61,7 @@ function PreparedActionItem({ item }: { item: PreparedActionQueueEntry }) {
         )}
       </div>
       <AuthorityTimeline item={item} />
-
-      {/* Human Review Action — operational surface, separate from inspection panel */}
-      <div className="mt-3 pt-2 border-t border-os-border/60">
-        <p className="text-[9px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-2">
-          Human Review Action
-        </p>
-        {effectiveStatus === 'human_confirmed' ? (
-          <p className="text-[10px] font-mono text-ok">Review confirmed. Execution remains closed.</p>
-        ) : effectiveStatus === 'human_rejected' ? (
-          <p className="text-[10px] font-mono text-warn">Rejected. Execution remains closed.</p>
-        ) : (
-          <>
-            <p className="text-[10px] font-mono text-tx-muted mb-2 leading-relaxed">
-              Does not execute, grant tokens, or call PoliceGate. Execution remains closed.
-            </p>
-            <div className="flex gap-2">
-              <button
-                onClick={() => handleConfirm(true)}
-                disabled={isConfirming}
-                className="px-3 py-1.5 text-[10px] font-mono bg-ok/10 text-ok border border-ok/30 rounded hover:bg-ok/20 disabled:opacity-50 cursor-default"
-              >
-                {isConfirming ? 'Recording…' : 'Confirm Review'}
-              </button>
-              <button
-                onClick={() => handleConfirm(false)}
-                disabled={isConfirming}
-                className="px-3 py-1.5 text-[10px] font-mono bg-warn/10 text-warn border border-warn/30 rounded hover:bg-warn/20 disabled:opacity-50 cursor-default"
-              >
-                Reject
-              </button>
-            </div>
-            {confirmError && (
-              <p className="text-[10px] font-mono text-warn mt-2">{confirmError}</p>
-            )}
-          </>
-        )}
-      </div>
-
+      <PreparedActionConfirmSurface item={item} />
       <details className="mt-3">
         <summary className="text-[10px] font-mono text-tx-muted cursor-default py-1 select-none">
           Inspect prepared action
