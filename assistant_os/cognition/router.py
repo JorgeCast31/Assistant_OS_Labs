@@ -118,6 +118,13 @@ _PLAN_REQUEST_RE = re.compile(
     r"|\bno ejecutes\b"
     r"|\bsolo plan\b"
     r"|\bmodo plan\b"
+    r"|\bpreparame un\b"
+    r"|\bhazme un plan\b"
+    r"|\bcrea un plan_request\b"
+    r"|\bprepara una accion\b"
+    r"|\bquiero diagnosticar\b"
+    r"|\bdiagnosticar el\b"
+    r"|\bdiagnostico del\b"
     r")"
 )
 
@@ -284,6 +291,18 @@ def _route_normalized_text(normalized: str) -> RouterResult:
             routing_reason="matched manual review queue status request",
         )
 
+    # plan_request checked BEFORE domain routes: explicit plan-only intent takes
+    # priority over code/fin/work/host routing (e.g. "preparame un plan para revisar el repo"
+    # is plan-only, not a code-review execution request).
+    if _PLAN_REQUEST_RE.search(normalized):
+        return _base_result(
+            intent_type="plan_request",
+            domain="ASSISTANT",
+            action="",
+            confidence=0.88,
+            routing_reason="matched plan-only / dry-run request",
+        )
+
     code_result = _route_code(normalized)
     if code_result is not None:
         return code_result
@@ -299,15 +318,6 @@ def _route_normalized_text(normalized: str) -> RouterResult:
     host_result = _route_host(normalized)
     if host_result is not None:
         return host_result
-
-    if _PLAN_REQUEST_RE.search(normalized):
-        return _base_result(
-            intent_type="plan_request",
-            domain="ASSISTANT",
-            action="",
-            confidence=0.88,
-            routing_reason="matched plan-only / dry-run request",
-        )
 
     return _unknown(routing_reason="no deterministic route matched", safety_flags=["unknown_intent"])
 
