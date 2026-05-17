@@ -14,8 +14,6 @@ Covers:
 """
 from __future__ import annotations
 
-import importlib
-import inspect
 import json
 
 import pytest
@@ -746,43 +744,52 @@ class TestForbiddenImports:
 
 
 # ---------------------------------------------------------------------------
-# 10. Forbidden calls assertion via mocking (if reachable)
+# 10. Forbidden calls — source inspection (no pytest-mock required)
 # ---------------------------------------------------------------------------
 
 class TestForbiddenCallsNotInvoked:
-    """Verify no productive authority calls are made during readiness evaluation."""
+    """Verify no productive authority calls are made during readiness evaluation.
 
-    def test_issue_token_not_called(self, mocker):
-        """token_issuer.issue_token must not be called during readiness evaluation."""
-        try:
-            mock = mocker.patch(
-                "assistant_os.authority.token_issuer.issue_token",
-                side_effect=AssertionError("issue_token must not be called"),
-            )
-        except (ImportError, ModuleNotFoundError, Exception):
-            pytest.skip("token_issuer not patchable in this environment")
+    Since police_readiness.py must not import assistant_os.police.*,
+    assistant_os.capabilities.*, or assistant_os.sandbox.*, patching those
+    import paths would force importing forbidden modules into the test process.
+    Instead we verify by AST inspection that forbidden call targets are absent
+    from actual code nodes (Name/Attribute), excluding comments and docstrings.
+    """
 
-        entry = _make_queue_entry()
-        confirmation = _confirm(entry, confirmed=True)
-        review = _policy_review(entry, confirmation)
-        _authority_binding(entry, review)
-        evaluate_police_readiness_for_prepared_action(
-            entry.queue_entry_id, entry.prepared_action_id
+    @staticmethod
+    def _code_tokens() -> set[str]:
+        """Collect all Name/Attribute identifiers from police_readiness.py code nodes."""
+        import ast
+        from pathlib import Path
+        src = (
+            Path(__file__).parent.parent
+            / "assistant_os" / "mso" / "police_readiness.py"
+        ).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        tokens: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                tokens.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                tokens.add(node.attr)
+        return tokens
+
+    def test_issue_token_not_called(self):
+        """issue_token must not appear as a code identifier in police_readiness.py."""
+        tokens = self._code_tokens()
+        assert "issue_token" not in tokens, (
+            "police_readiness.py must not reference issue_token() in code — "
+            "token issuance is forbidden in this diagnostic module"
         )
-        mock.assert_not_called()
 
-    def test_runner_execute_not_called(self, mocker):
-        """RunnerAPI.execute must not be called during readiness evaluation."""
-        try:
-            mock = mocker.patch(
-                "assistant_os.runner.RunnerAPI.execute",
-                side_effect=AssertionError("RunnerAPI.execute must not be called"),
-            )
-        except (ImportError, ModuleNotFoundError, AttributeError, Exception):
-            pytest.skip("RunnerAPI not patchable in this environment")
-
-        evaluate_police_readiness_for_prepared_action("no-entry", "no-action")
-        mock.assert_not_called()
+    def test_runner_execute_not_called(self):
+        """RunnerAPI must not appear as a code identifier in police_readiness.py."""
+        tokens = self._code_tokens()
+        assert "RunnerAPI" not in tokens, (
+            "police_readiness.py must not reference RunnerAPI in code — "
+            "runner invocation is forbidden in this diagnostic module"
+        )
 
 
 # ---------------------------------------------------------------------------
