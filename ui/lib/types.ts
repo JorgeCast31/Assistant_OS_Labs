@@ -587,6 +587,58 @@ export interface PreparedActionQueueEntry {
   authority_binding_created_at?: string
   requires_authorized_plan?: boolean
   requires_police_gate?: boolean
+  // Readiness overlay (MSO-06.2 — merged at read time from police readiness diagnostic)
+  police_readiness?: PoliceReadinessItem
+  // Operation trace overlay (MSO-06.3 — derived from police readiness report)
+  operation_trace_v0?: OperationTraceV0
+}
+
+export interface PoliceReadinessItem {
+  readiness_status: string
+  current_chain_stage: string
+  missing_requirements: string[]
+  blocking_reasons: string[]
+  next_safe_step: string
+  execution_allowed: false
+  can_execute_now: false
+  used_execution: false
+}
+
+export interface OperationTraceStep {
+  step: string
+  status: string
+  label: string
+  description: string
+  completed: boolean
+}
+
+export interface OperationTraceV0 {
+  trace_version: 'v0'
+  entry_id: string
+  action_id: string
+  steps: OperationTraceStep[]
+  missing_requirements: string[]
+  blocking_reasons: string[]
+  next_safe_step: string
+  execution_allowed: false
+  can_execute_now: false
+  used_execution: false
+}
+
+export interface ReadinessSummary {
+  total: number
+  awaiting_human_confirmation: number
+  awaiting_policy_review: number
+  awaiting_authority_binding: number
+  authority_chain_draft_complete: number
+  blocked_by_governance: number
+  policy_denied: number
+  missing_prepared_action: number
+  unknown: number
+  next_safe_operator_actions: string[]
+  execution_allowed: false
+  can_execute_now: false
+  used_execution: false
 }
 
 export interface PreparedActionsQueueResponse {
@@ -594,6 +646,7 @@ export interface PreparedActionsQueueResponse {
   source: 'prepared_action_queue'
   count: number
   items: PreparedActionQueueEntry[]
+  readiness_summary?: ReadinessSummary
   review_only: true
   execution_allowed: false
   can_execute_now: false
