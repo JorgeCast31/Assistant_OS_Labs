@@ -3,6 +3,7 @@
 import type { PreparedActionQueueEntry } from '@/lib/types'
 import { AuthorityTimeline } from './AuthorityTimeline'
 import { PreparedActionInputTrace } from './PreparedActionInputTrace'
+import { OperationTraceV0 } from './OperationTraceV0'
 
 function Field({ label, value }: { label: string; value: string | null | undefined }) {
   const display = !value ? '—' : value
@@ -24,9 +25,11 @@ function SectionHeader({ title }: { title: string }) {
 
 export function PreparedActionDetailPanel({ item }: { item: PreparedActionQueueEntry }) {
   const nextSafeStep =
-    item.human_confirmation_status === 'pending'
+    item.operation_trace_v0?.next_safe_step ||
+    item.police_readiness?.next_safe_step ||
+    (item.human_confirmation_status === 'pending'
       ? 'Review the prepared action. Human confirmation is still pending.'
-      : 'Awaiting human review.'
+      : 'Awaiting human review.')
 
   return (
     <div className="mt-2 space-y-0">
@@ -80,7 +83,10 @@ export function PreparedActionDetailPanel({ item }: { item: PreparedActionQueueE
       {/* F. Authority Timeline */}
       <AuthorityTimeline item={item} />
 
-      {/* G. Execution Boundary */}
+      {/* G. Operation Trace v0 */}
+      <OperationTraceV0 trace={item.operation_trace_v0} />
+
+      {/* H. Execution Boundary */}
       <div className="mt-3 pt-2 border-t border-os-border/60">
         <p className="text-[9px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-1">
           Execution Boundary
@@ -90,7 +96,7 @@ export function PreparedActionDetailPanel({ item }: { item: PreparedActionQueueE
         </p>
       </div>
 
-      {/* H. Next Safe Step */}
+      {/* I. Next Safe Step */}
       <div className="mt-3">
         <p className="text-[9px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-1">
           Next Safe Step

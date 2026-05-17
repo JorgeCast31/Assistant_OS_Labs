@@ -309,6 +309,218 @@ def build_readiness_summary(items: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Operation trace v0 — visual/read-model trace per prepared action
+# ---------------------------------------------------------------------------
+
+def _build_trace_steps_from_report(report: MSOPoliceReadinessReport) -> list[dict]:
+    """Derive 6-step operation trace from a readiness report. Read-only, no side effects."""
+    steps: list[dict] = []
+
+    # Step 1: prepared_action
+    if report.prepared_action_present:
+        steps.append({
+            "step": "prepared_action",
+            "status": "complete",
+            "label": "Prepared Action",
+            "description": f"{report.domain}: {report.requested_action}",
+            "completed": True,
+        })
+    else:
+        steps.append({
+            "step": "prepared_action",
+            "status": "missing",
+            "label": "Prepared Action",
+            "description": "No prepared action found in queue.",
+            "completed": False,
+        })
+
+    # Step 2: human_confirmation
+    if report.human_confirmation_satisfied:
+        steps.append({
+            "step": "human_confirmation",
+            "status": "complete",
+            "label": "Human Confirmation",
+            "description": "Operator confirmed.",
+            "completed": True,
+        })
+    elif report.human_confirmation_status == "human_rejected":
+        steps.append({
+            "step": "human_confirmation",
+            "status": "rejected",
+            "label": "Human Confirmation",
+            "description": "Operator rejected this action.",
+            "completed": False,
+        })
+    elif report.human_confirmation_status == "pending":
+        steps.append({
+            "step": "human_confirmation",
+            "status": "pending",
+            "label": "Human Confirmation",
+            "description": "Awaiting operator confirmation.",
+            "completed": False,
+        })
+    else:
+        steps.append({
+            "step": "human_confirmation",
+            "status": "missing",
+            "label": "Human Confirmation",
+            "description": "No confirmation record.",
+            "completed": False,
+        })
+
+    # Step 3: policy_review
+    if report.policy_review_present and report.policy_outcome in ("approved", "approved_confirm_only"):
+        steps.append({
+            "step": "policy_review",
+            "status": "complete",
+            "label": "Policy Review",
+            "description": f"Capability policy approved (outcome={report.policy_outcome}).",
+            "completed": True,
+        })
+    elif report.policy_outcome == "denied":
+        steps.append({
+            "step": "policy_review",
+            "status": "denied",
+            "label": "Policy Review",
+            "description": "Policy denied by capability registry.",
+            "completed": False,
+        })
+    elif report.human_confirmation_satisfied:
+        steps.append({
+            "step": "policy_review",
+            "status": "pending",
+            "label": "Policy Review",
+            "description": "Awaiting capability policy evaluation.",
+            "completed": False,
+        })
+    else:
+        steps.append({
+            "step": "policy_review",
+            "status": "missing",
+            "label": "Policy Review",
+            "description": "Not yet reached.",
+            "completed": False,
+        })
+
+    # Step 4: authority_binding
+    if report.authority_binding_draft_present:
+        steps.append({
+            "step": "authority_binding",
+            "status": "complete",
+            "label": "Authority Binding Draft",
+            "description": "MSOAuthorityBindingDraft created.",
+            "completed": True,
+        })
+    elif report.policy_review_present and report.policy_outcome not in ("denied", ""):
+        steps.append({
+            "step": "authority_binding",
+            "status": "pending",
+            "label": "Authority Binding Draft",
+            "description": "Awaiting authority binding draft creation.",
+            "completed": False,
+        })
+    else:
+        steps.append({
+            "step": "authority_binding",
+            "status": "missing",
+            "label": "Authority Binding Draft",
+            "description": "Not yet reached.",
+            "completed": False,
+        })
+
+    # Step 5: police_readiness
+    if report.readiness_status == "authority_chain_draft_complete":
+        steps.append({
+            "step": "police_readiness",
+            "status": "draft_complete",
+            "label": "Police Readiness",
+            "description": "MSO draft chain complete. Downstream artifacts not yet implemented.",
+            "completed": False,
+        })
+    elif report.readiness_status in ("blocked_by_governance", "policy_denied"):
+        steps.append({
+            "step": "police_readiness",
+            "status": "blocked",
+            "label": "Police Readiness",
+            "description": "; ".join(report.blocking_reasons) if report.blocking_reasons else "Blocked.",
+            "completed": False,
+        })
+    else:
+        steps.append({
+            "step": "police_readiness",
+            "status": "not_ready",
+            "label": "Police Readiness",
+            "description": "Authority chain prerequisites not yet met.",
+            "completed": False,
+        })
+
+    # Step 6: execution — always blocked by design
+    steps.append({
+        "step": "execution",
+        "status": "blocked_by_design",
+        "label": "Execution",
+        "description": (
+            "Execution is closed by design. "
+            "CapabilityToken → OperationBinding → AuthorizedPlan → PoliceGate → Runner "
+            "not yet implemented."
+        ),
+        "completed": False,
+    })
+
+    return steps
+
+
+def build_operation_trace_v0(entry_id: str, action_id: str) -> dict:
+    """Build an operation trace v0 dict for a prepared action.
+
+    Derives a 6-step visual trace from the police readiness report.
+    Fail-soft: returns a minimal trace with empty steps on any error.
+    Always returns execution_allowed=False, can_execute_now=False, used_execution=False.
+    """
+    if not entry_id or not action_id:
+        return {
+            "trace_version": "v0",
+            "entry_id": entry_id,
+            "action_id": action_id,
+            "steps": [],
+            "missing_requirements": [],
+            "blocking_reasons": [],
+            "next_safe_step": "",
+            "execution_allowed": False,
+            "can_execute_now": False,
+            "used_execution": False,
+        }
+    try:
+        report = evaluate_police_readiness_for_prepared_action(entry_id, action_id)
+        steps = _build_trace_steps_from_report(report)
+        return {
+            "trace_version": "v0",
+            "entry_id": entry_id,
+            "action_id": action_id,
+            "steps": steps,
+            "missing_requirements": list(report.missing_requirements),
+            "blocking_reasons": list(report.blocking_reasons),
+            "next_safe_step": report.next_safe_step,
+            "execution_allowed": False,
+            "can_execute_now": False,
+            "used_execution": False,
+        }
+    except Exception:  # noqa: BLE001 — fail-soft, trace must never break callers
+        return {
+            "trace_version": "v0",
+            "entry_id": entry_id,
+            "action_id": action_id,
+            "steps": [],
+            "missing_requirements": [],
+            "blocking_reasons": ["Trace evaluation failed."],
+            "next_safe_step": "",
+            "execution_allowed": False,
+            "can_execute_now": False,
+            "used_execution": False,
+        }
+
+
+# ---------------------------------------------------------------------------
 # Core diagnostic function
 # ---------------------------------------------------------------------------
 

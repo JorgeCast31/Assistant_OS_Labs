@@ -5057,7 +5057,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             from .mso.policy_review import merge_policy_review_into_dict
             from .mso.authority_binding import merge_authority_binding_into_dict
             from .mso.prepared_action_queue import list_pending_confirmable_action_dicts
-            from .mso.police_readiness import get_police_readiness_for_item, build_readiness_summary
+            from .mso.police_readiness import (
+                get_police_readiness_for_item,
+                build_readiness_summary,
+                build_operation_trace_v0,
+            )
             base_items = [
                 merge_authority_binding_into_dict(
                     merge_policy_review_into_dict(merge_confirmation_into_dict(i))
@@ -5068,6 +5072,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 {
                     **item,
                     "police_readiness": get_police_readiness_for_item(
+                        item.get("queue_entry_id", ""),
+                        item.get("prepared_action_id", ""),
+                    ),
+                    "operation_trace_v0": build_operation_trace_v0(
                         item.get("queue_entry_id", ""),
                         item.get("prepared_action_id", ""),
                     ),
