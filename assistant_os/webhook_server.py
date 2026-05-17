@@ -647,6 +647,41 @@ def _process_mso_authority_binding_request(body_bytes: bytes) -> tuple[int, dict
     }
 
 
+def _process_mso_police_readiness_request(body_bytes: bytes) -> tuple[int, dict]:
+    """Parse and evaluate MSO police readiness for a prepared action.
+
+    Returns (status_code, response_dict).
+
+    Read-only diagnostic — does NOT call Police, issue tokens, create
+    OperationBinding/AuthorizedPlan, invoke runner, or write to any authority store.
+    execution_allowed, can_execute_now, and used_execution are always False.
+    """
+    import json as _json
+
+    try:
+        data = _json.loads(body_bytes) if body_bytes else {}
+    except Exception:  # noqa: BLE001
+        return 400, {"ok": False, "error": "Invalid JSON body"}
+
+    entry_id = (data.get("entry_id") or "").strip()
+    action_id = (data.get("action_id") or "").strip()
+
+    if not entry_id or not action_id:
+        return 400, {"ok": False, "error": "entry_id and action_id are required"}
+
+    from .mso.police_readiness import evaluate_police_readiness_for_prepared_action
+
+    report = evaluate_police_readiness_for_prepared_action(entry_id, action_id)
+    return 200, {
+        "ok": True,
+        "source": "mso_police_readiness",
+        "report": report.to_dict(),
+        "execution_allowed": False,
+        "can_execute_now": False,
+        "used_execution": False,
+    }
+
+
 def _wrap_work_result(dr: "DomainResult", context_id: str) -> dict:
     """
     Wrap a DomainResult into the current Response transport format for WORK domain.
@@ -1713,6 +1748,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # S-MSO-AUTHORITY-01: create MSOAuthorityBindingDraft for an approved policy review
         if path == "/mso/prepared-actions/authority-binding":
             self._handle_mso_prepared_actions_authority_binding_post()
+            return
+
+        # SPRINT-MSO-06.1: MSO Police Readiness Diagnostic (read-only)
+        if path == "/mso/prepared-actions/police-readiness":
+            self._handle_mso_prepared_actions_police_readiness_post()
             return
 
         # Route: /machine_operator/execute (execute a bounded browser capability)
@@ -5104,6 +5144,26 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         body = self._read_body()
         status, response = _process_mso_authority_binding_request(body)
+        self._send_json_response(status, response)
+
+    def _handle_mso_prepared_actions_police_readiness_post(self) -> None:
+        """POST /mso/prepared-actions/police-readiness — MSO Police Readiness Diagnostic.
+
+        Read-only diagnostic: evaluates how far the MSO authority chain has progressed
+        for a prepared action and what artifacts are still missing.
+
+        Does NOT call Police, issue CapabilityToken, create OperationBinding/AuthorizedPlan,
+        invoke runner, or write to any authority store.
+        execution_allowed, can_execute_now, and used_execution remain False always.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        body = self._read_body()
+        status, response = _process_mso_police_readiness_request(body)
         self._send_json_response(status, response)
 
     def _handle_mso_seat_provider_get(self) -> None:
