@@ -227,6 +227,88 @@ def clear_police_readiness_reports_for_tests() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Read-model helpers — safe for embedding in surface/pending responses
+# ---------------------------------------------------------------------------
+
+_READINESS_SUB_FIELDS = (
+    "readiness_status",
+    "current_chain_stage",
+    "missing_requirements",
+    "blocking_reasons",
+    "next_safe_step",
+    "execution_allowed",
+    "can_execute_now",
+    "used_execution",
+)
+
+
+def get_police_readiness_for_item(entry_id: str, action_id: str) -> dict:
+    """Return a compact police-readiness sub-dict for embedding in read-model items.
+
+    Calls evaluate_police_readiness_for_prepared_action() and returns only the
+    fields needed for surface embedding. Fail-soft: returns an empty dict on any
+    error so callers are never broken by a diagnostic failure.
+
+    Always returns execution_allowed=False, can_execute_now=False, used_execution=False.
+    """
+    if not entry_id or not action_id:
+        return {}
+    try:
+        report = evaluate_police_readiness_for_prepared_action(entry_id, action_id)
+        rpt = report.to_dict()
+        return {k: rpt[k] for k in _READINESS_SUB_FIELDS if k in rpt}
+    except Exception:  # noqa: BLE001 — fail-soft, diagnostic must never break callers
+        return {}
+
+
+def build_readiness_summary(items: list[dict]) -> dict:
+    """Aggregate police-readiness status counts across a list of prepared-action item dicts.
+
+    Each dict must contain 'queue_entry_id' and 'prepared_action_id' keys.
+    Items missing those keys are skipped.
+
+    Returns a summary dict with status counts and a list of next safe operator
+    actions derived from the most urgent missing steps.
+
+    Read-only. Fail-soft: any per-item evaluation error is counted as 'unknown'.
+    execution_allowed, can_execute_now, used_execution are always False.
+    """
+    counts: dict[str, int] = {}
+    next_steps: list[str] = []
+
+    for item in items:
+        entry_id = item.get("queue_entry_id", "")
+        action_id = item.get("prepared_action_id", "")
+        if not entry_id or not action_id:
+            counts["unknown"] = counts.get("unknown", 0) + 1
+            continue
+        try:
+            report = evaluate_police_readiness_for_prepared_action(entry_id, action_id)
+            status = report.readiness_status
+            counts[status] = counts.get(status, 0) + 1
+            if report.next_safe_step and report.next_safe_step not in next_steps:
+                next_steps.append(report.next_safe_step)
+        except Exception:  # noqa: BLE001 — fail-soft
+            counts["unknown"] = counts.get("unknown", 0) + 1
+
+    return {
+        "total": len(items),
+        "awaiting_human_confirmation": counts.get("awaiting_human_confirmation", 0),
+        "awaiting_policy_review": counts.get("awaiting_policy_review", 0),
+        "awaiting_authority_binding": counts.get("awaiting_authority_binding", 0),
+        "authority_chain_draft_complete": counts.get("authority_chain_draft_complete", 0),
+        "blocked_by_governance": counts.get("blocked_by_governance", 0),
+        "policy_denied": counts.get("policy_denied", 0),
+        "missing_prepared_action": counts.get("missing_prepared_action", 0),
+        "unknown": counts.get("unknown", 0),
+        "next_safe_operator_actions": next_steps[:5],
+        "execution_allowed": False,
+        "can_execute_now": False,
+        "used_execution": False,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Core diagnostic function
 # ---------------------------------------------------------------------------
 

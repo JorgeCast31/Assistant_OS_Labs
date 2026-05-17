@@ -1483,6 +1483,22 @@ def _handle_mso_mode_validation(
     """
     perception_context = perception["perception_context"]
     msg, pending_items = _build_review_queue_status_data()
+    try:
+        from .mso.police_readiness import get_police_readiness_for_item, build_readiness_summary
+        enriched_items = [
+            {
+                **item,
+                "police_readiness": get_police_readiness_for_item(
+                    item.get("queue_entry_id", ""),
+                    item.get("prepared_action_id", ""),
+                ),
+            }
+            for item in pending_items
+        ]
+        readiness_summary = build_readiness_summary(pending_items)
+    except Exception:  # noqa: BLE001 — fail-soft, diagnostic must not break validation mode
+        enriched_items = pending_items
+        readiness_summary = {}
     resp = _build_surface_response(
         message=msg,
         domain="MSO",
@@ -1495,8 +1511,9 @@ def _handle_mso_mode_validation(
         response_source="mso_mode_validation_read_only",
         execution_status="stub",
     )
-    resp["pending_review_items"] = pending_items
-    resp["count"] = len(pending_items)
+    resp["pending_review_items"] = enriched_items
+    resp["count"] = len(enriched_items)
+    resp["readiness_summary"] = readiness_summary
     resp["execution_allowed"] = False
     resp["can_execute_now"] = False
     resp["operation_trace"] = {
@@ -1570,8 +1587,16 @@ def _handle_mso_mode_orchestration(
         response_source="mso_mode_orchestration_governed",
         execution_status="stub",
     )
+    try:
+        from .mso.prepared_action_queue import list_pending_confirmable_action_dicts
+        from .mso.police_readiness import build_readiness_summary
+        _orch_items = list_pending_confirmable_action_dicts()
+        orch_readiness_summary = build_readiness_summary(_orch_items)
+    except Exception:  # noqa: BLE001 — fail-soft
+        orch_readiness_summary = {}
     resp["execution_allowed"] = False
     resp["can_execute_now"] = False
+    resp["readiness_summary"] = orch_readiness_summary
     resp["operation_trace"] = {
         "interaction_mode": "orchestration",
         "mode_source": mso_ctx.mode_source,

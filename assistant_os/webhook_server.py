@@ -5057,11 +5057,22 @@ class WebhookHandler(BaseHTTPRequestHandler):
             from .mso.policy_review import merge_policy_review_into_dict
             from .mso.authority_binding import merge_authority_binding_into_dict
             from .mso.prepared_action_queue import list_pending_confirmable_action_dicts
-            items = [
+            from .mso.police_readiness import get_police_readiness_for_item, build_readiness_summary
+            base_items = [
                 merge_authority_binding_into_dict(
                     merge_policy_review_into_dict(merge_confirmation_into_dict(i))
                 )
                 for i in list_pending_confirmable_action_dicts()
+            ]
+            items = [
+                {
+                    **item,
+                    "police_readiness": get_police_readiness_for_item(
+                        item.get("queue_entry_id", ""),
+                        item.get("prepared_action_id", ""),
+                    ),
+                }
+                for item in base_items
             ]
             self._send_json_response(
                 200,
@@ -5070,6 +5081,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     "source": "prepared_action_queue",
                     "count": len(items),
                     "items": items,
+                    "readiness_summary": build_readiness_summary(base_items),
                     "review_only": True,
                     "execution_allowed": False,
                     "can_execute_now": False,
