@@ -1,4 +1,13 @@
 """
+Internal implementation body for the MSO sovereign runtime.
+
+External executable paths should enter through assistant_os.mso.kernel.
+
+This module remains responsible for routing and execution coordination,
+but it is not a separate sovereign authority. MSO owns the orchestrator.
+
+---
+
 Assistant Kernel — Orchestrator v1
 
 Single coordination point for the canonical request pipeline:
