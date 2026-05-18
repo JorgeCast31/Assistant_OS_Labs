@@ -3246,8 +3246,8 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # req is a fully-stamped CanonicalRequest (guard_decision, action_type,
         # principal_id, context_id, metadata with action/confirm_plan_id).
         # No classification, no routing, no domain logic runs here.
-        from .core.orchestrator import handle_request
-        domain_result = handle_request(req)
+        from assistant_os.mso.kernel import handle_sovereign_request
+        domain_result = handle_sovereign_request(req, source="webhook_server.chat_process")
         request_metadata = req.get("metadata") or {}
         request_surface = ""
         if isinstance(request_metadata, dict):
