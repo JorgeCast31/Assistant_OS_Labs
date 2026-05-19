@@ -450,6 +450,7 @@ class TestConfirmEdgeCases:
         If stored plan has no domain_payload, the HOST pipeline must reject it
         cleanly (InvalidHostPayload) — not an orchestrator crash.
         """
+        from unittest.mock import patch as _patch
         activate_agent(HOST_AGENT_ID)
         # Store a plan manually without domain_payload
         from assistant_os.context_store import store_pending_plan
@@ -468,7 +469,9 @@ class TestConfirmEdgeCases:
             raw_text="",
         )
 
-        result = handle_request(_req_confirm(plan["plan_id"]))
+        with _patch("assistant_os.police.enforcement.check") as mock_police:
+            mock_police.return_value.permitted = True
+            result = handle_request(_req_confirm(plan["plan_id"]))
         assert result["ok"] is False
         assert result["error"]["type"] == "InvalidHostPayload"
 

@@ -64,6 +64,209 @@ _log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Police authority helpers — S-POLICE-MAIN-PATH-INTEGRATION-01A
+# ---------------------------------------------------------------------------
+
+def _resolve_police_capability_name(capability: str | None) -> str:
+    """Return a non-empty capability name for Police. Read-only actions use 'read_only'."""
+    return capability or "read_only"
+
+
+def _make_binding_ref(binding: "OperationBinding") -> str:  # type: ignore[name-defined]
+    """Create a deterministic string reference for an OperationBinding."""
+    return f"binding:{binding.operation_key}:{binding.action_type}"
+
+
+def _enforce_police_gate_before_dispatch(
+    *,
+    plan: dict,
+    context_id: str,
+    token_ref: str,
+    binding_ref: str,
+    authorized_plan_ref: str,
+    capability_name: str,
+    governance_ref: str,
+    policy_decision_ref: str,
+    trace_id: str,
+    delegated_seat_ref: str | None = None,
+) -> "DomainResult | None":
+    """
+    Build a PoliceGateRequest and call police.enforcement.check().
+
+    Returns None when Police permits (proceed with dispatch).
+    Returns a denied DomainResult when Police denies (caller must return immediately).
+
+    This is the authority gate that enforces the invariant:
+    No executable dispatch may leave the MSO runtime unless Police permits.
+    """
+    from ..police.enforcement import check as _police_check
+    from ..police.gate_models import PoliceGateRequest
+
+    gate_req = PoliceGateRequest(
+        execution_id=context_id,
+        operation_key=context_id,
+        token_ref=token_ref,
+        binding_ref=binding_ref,
+        authorized_plan_ref=authorized_plan_ref,
+        capability_name=capability_name,
+        governance_ref=governance_ref,
+        policy_decision_ref=policy_decision_ref,
+        trace_id=trace_id or context_id,
+        delegated_seat_ref=delegated_seat_ref,
+    )
+    decision = _police_check(gate_req)
+    if decision.permitted:
+        return None
+
+    _log.warning(
+        "_enforce_police_gate: denied outcome=%s reason=%s detail=%s",
+        decision.outcome.value,
+        decision.reason.value,
+        decision.detail,
+    )
+    return make_domain_result(
+        ok=False,
+        result_type="denied",
+        domain=plan.get("domain", "*"),
+        message=f"Police gate denied: {decision.detail}",
+        error={
+            "type": "PoliceGateDenied",
+            "message": decision.detail,
+            "reason": decision.reason.value,
+        },
+    )
+
+
+def _register_and_enforce_police_gate(
+    *,
+    plan: dict,
+    context_id: str,
+    cap_token: "CapabilityToken",  # type: ignore[name-defined]
+    binding_ref: str,
+    capability_name: str,
+    governance_trace: dict | None,
+) -> "DomainResult | None":
+    """
+    Register the authorized_plan_ref in the Police registry and call the Police gate.
+
+    Used at all AUTO dispatch points where cap_token is still alive in scope.
+    Returns None if PERMITTED, or a denied DomainResult if DENIED.
+    """
+    from ..police.authorized_plan_registry import register_authorized_plan_ref as _rpr
+
+    plan_id = plan.get("plan_id", "") or context_id
+    trace_id = plan.get("trace_id", "") or context_id
+    authorized_plan_ref = f"plan:{plan_id}"
+    governance_ref = (
+        (governance_trace or {}).get("governance_ref", "")
+        or f"gov:{plan_id}"
+    )
+    policy_decision_ref = f"decision:{plan_id}"
+
+    _rpr(
+        authorized_plan_ref,
+        execution_id=context_id,
+        token_ref=cap_token.token_id,
+        binding_ref=binding_ref,
+        status="active",
+        capability_scope=(capability_name,),
+        delegated_seat_ref=cap_token.delegated_seat_ref or None,
+    )
+
+    return _enforce_police_gate_before_dispatch(
+        plan=plan,
+        context_id=context_id,
+        token_ref=cap_token.token_id,
+        binding_ref=binding_ref,
+        authorized_plan_ref=authorized_plan_ref,
+        capability_name=capability_name,
+        governance_ref=governance_ref,
+        policy_decision_ref=policy_decision_ref,
+        trace_id=trace_id,
+        delegated_seat_ref=cap_token.delegated_seat_ref or None,
+    )
+
+
+def _prepare_confirm_authority(
+    *,
+    plan: dict,
+    cap_token: "CapabilityToken",  # type: ignore[name-defined]
+    binding_ref: str,
+    capability_name: str,
+    context_id: str,
+) -> dict:
+    """
+    Extend plan['_authority_context'] with Police fields and register in Police registries.
+
+    Called before _store_pending_plan on CONFIRM/CLARIFY paths so that confirm
+    execution can reconstruct a PoliceGateRequest from the stored plan.
+
+    Returns the updated plan dict (caller should replace plan_for_exec with it).
+    """
+    from ..police.authorized_plan_registry import register_authorized_plan_ref as _rpr
+
+    plan_id = plan.get("plan_id", "") or context_id
+    trace_id = plan.get("trace_id", "") or context_id
+    authorized_plan_ref = f"plan:{plan_id}"
+
+    authority = dict(plan.get("_authority_context") or {})
+    governance_ref = authority.get("governance_ref", "") or f"gov:{plan_id}"
+    policy_decision_ref = authority.get("policy_decision_ref", "") or f"decision:{plan_id}"
+
+    _rpr(
+        authorized_plan_ref,
+        execution_id=context_id,
+        token_ref=cap_token.token_id,
+        binding_ref=binding_ref,
+        status="active",
+        capability_scope=(capability_name,),
+        delegated_seat_ref=cap_token.delegated_seat_ref or None,
+    )
+
+    authority.update({
+        "token_ref": cap_token.token_id,
+        "binding_ref": binding_ref,
+        "authorized_plan_ref": authorized_plan_ref,
+        "capability_name": capability_name,
+        "governance_ref": governance_ref,
+        "policy_decision_ref": policy_decision_ref,
+        "execution_id": context_id,
+        "trace_id": trace_id,
+    })
+
+    updated_plan = dict(plan)
+    updated_plan["_authority_context"] = authority
+    return updated_plan
+
+
+def _enforce_police_gate_from_authority_context(
+    plan: dict,
+    context_id: str,
+) -> "DomainResult | None":
+    """
+    Reconstruct a PoliceGateRequest from plan['_authority_context'] and call Police.
+
+    Used by _execute_confirmed_plan where the original cap_token is no longer in scope.
+    The stored execution_id (original context) is used so it matches the registered
+    authorized_plan_ref.
+    """
+    authority = plan.get("_authority_context") or {}
+    original_context_id = authority.get("execution_id", "") or context_id
+    return _enforce_police_gate_before_dispatch(
+        plan=plan,
+        context_id=original_context_id,
+        token_ref=authority.get("token_ref", ""),
+        binding_ref=authority.get("binding_ref", ""),
+        authorized_plan_ref=authority.get("authorized_plan_ref", ""),
+        capability_name=authority.get("capability_name", ""),
+        governance_ref=authority.get("governance_ref", ""),
+        policy_decision_ref=authority.get("policy_decision_ref", ""),
+        trace_id=authority.get("trace_id", "") or context_id,
+        delegated_seat_ref=authority.get("delegated_seat_ref") or None,
+    )
+
+
+# ---------------------------------------------------------------------------
 # S12: Capability token gate helper
 # ---------------------------------------------------------------------------
 
@@ -710,6 +913,21 @@ def handle_request(
     _cap_token = _issue_token(_tok_binding)
 
     # ---------------------------------------------------------------------------
+    # Police bridge: register capability token in Police registry.
+    # Police is authority-isolated from capabilities — bridge lives here.
+    # Computed once; used at every dispatch point for this request.
+    # ---------------------------------------------------------------------------
+    from ..police.token_registry import register_token as _police_register_token
+    _police_binding_ref = _make_binding_ref(_tok_binding)
+    _police_register_token(
+        token_ref=_cap_token.token_id,
+        binding_ref=_police_binding_ref,
+    )
+    _police_capability_name = _resolve_police_capability_name(
+        _cap_tok.value if _cap_tok is not None else None
+    )
+
+    # ---------------------------------------------------------------------------
     # Confirm path (Phase 3C): execute a previously stored plan.
     # Checked FIRST so confirm_plan_id takes priority over action/NL paths.
     # ---------------------------------------------------------------------------
@@ -785,6 +1003,17 @@ def handle_request(
             if _gate is not None:
                 return _gate
             if _is_cognitive_execution(structured_plan):
+                # Police gate — A1: structured AUTO cognitive dispatch.
+                _police_gate = _register_and_enforce_police_gate(
+                    plan=plan_for_exec,
+                    context_id=context_id,
+                    cap_token=_cap_token,
+                    binding_ref=_police_binding_ref,
+                    capability_name=_police_capability_name,
+                    governance_trace=governance_trace,
+                )
+                if _police_gate is not None:
+                    return _police_gate
                 result = _dispatch_cognitive_execution(plan_for_exec, context_id)
                 return _publish_mso_observation(
                     req=req,
@@ -800,6 +1029,17 @@ def handle_request(
                 )
             pipeline = get_pipeline(derived_domain)
             if pipeline:
+                # Police gate — A2: structured AUTO domain pipeline dispatch.
+                _police_gate = _register_and_enforce_police_gate(
+                    plan=plan_for_exec,
+                    context_id=context_id,
+                    cap_token=_cap_token,
+                    binding_ref=_police_binding_ref,
+                    capability_name=_police_capability_name,
+                    governance_trace=governance_trace,
+                )
+                if _police_gate is not None:
+                    return _police_gate
                 result = pipeline(plan_for_exec, context_id)
                 return _publish_mso_observation(
                     req=req,
@@ -820,6 +1060,13 @@ def handle_request(
                 plan_for_exec,
                 policy_execution_mode=policy_execution_mode,
                 governance_trace=governance_trace,
+            )
+            plan_for_exec = _prepare_confirm_authority(
+                plan=plan_for_exec,
+                cap_token=_cap_token,
+                binding_ref=_police_binding_ref,
+                capability_name=_police_capability_name,
+                context_id=context_id,
             )
             _store_pending_plan(plan_for_exec, structured_action, text)
             plan_id = structured_plan.get("plan_id", "")
@@ -940,6 +1187,17 @@ def handle_request(
         if _gate is not None:
             return _gate
         if _is_cognitive_execution(plan):
+            # Police gate — B1: NL AUTO cognitive dispatch.
+            _police_gate = _register_and_enforce_police_gate(
+                plan=plan_for_exec,
+                context_id=context_id,
+                cap_token=_cap_token,
+                binding_ref=_police_binding_ref,
+                capability_name=_police_capability_name,
+                governance_trace=governance_trace,
+            )
+            if _police_gate is not None:
+                return _police_gate
             result = _dispatch_cognitive_execution(plan_for_exec, context_id)
             return _publish_mso_observation(
                 req=req,
@@ -955,6 +1213,17 @@ def handle_request(
             )
         pipeline = get_pipeline(action_domain(action))
         if pipeline:
+            # Police gate — B2: NL AUTO domain pipeline dispatch.
+            _police_gate = _register_and_enforce_police_gate(
+                plan=plan_for_exec,
+                context_id=context_id,
+                cap_token=_cap_token,
+                binding_ref=_police_binding_ref,
+                capability_name=_police_capability_name,
+                governance_trace=governance_trace,
+            )
+            if _police_gate is not None:
+                return _police_gate
             result = pipeline(plan_for_exec, context_id)
             return _publish_mso_observation(
                 req=req,
@@ -979,6 +1248,13 @@ def handle_request(
             plan_for_exec,
             policy_execution_mode=policy_execution_mode,
             governance_trace=governance_trace,
+        )
+        plan_for_exec = _prepare_confirm_authority(
+            plan=plan_for_exec,
+            cap_token=_cap_token,
+            binding_ref=_police_binding_ref,
+            capability_name=_police_capability_name,
+            context_id=context_id,
         )
         _store_pending_plan(plan_for_exec, action, text)
         plan_id = plan.get("plan_id", "")
@@ -1235,6 +1511,12 @@ def _execute_confirmed_plan(plan_id: str, context_id: str) -> DomainResult:
 
     # Single-use: remove before executing to prevent replay on pipeline error.
     remove_pending_plan(plan_id)
+
+    # Police gate — C: confirm execution pipeline dispatch.
+    # Reconstructs authority from stored plan['_authority_context'].
+    _police_gate = _enforce_police_gate_from_authority_context(plan, context_id)
+    if _police_gate is not None:
+        return _police_gate
 
     pipeline_fn = pipeline
 
