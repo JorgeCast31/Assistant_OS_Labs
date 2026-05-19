@@ -376,7 +376,9 @@ class TestConfirmReplayGovernanceCheck(unittest.TestCase):
         plan_id = plan["plan_id"]
         store_pending_plan(plan_id, plan, "WORK_QUERY")
 
-        with patch("assistant_os.pipelines.work_pipeline._work_query_execute") as mock_exec:
+        with patch("assistant_os.pipelines.work_pipeline._work_query_execute") as mock_exec, \
+             patch("assistant_os.police.enforcement.check") as mock_police:
+            mock_police.return_value.permitted = True
             mock_exec.return_value = make_domain_result(
                 ok=True, result_type=RESULT_TYPE_WORK_QUERY,
                 domain="WORK", message="ok", data={},

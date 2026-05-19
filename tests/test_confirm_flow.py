@@ -181,8 +181,11 @@ class TestConfirmPlanRemoval(ConfirmFlowTestBase):
 class TestConfirmWorkUpdateRouting(ConfirmFlowTestBase):
     @patch("assistant_os.webhook_server._log_webhook_event")
     @patch("assistant_os.pipelines.work_pipeline._work_update_bulk_execute")
-    def test_bulk_action_constant_calls_execute_work_update_bulk(self, mock_bulk_exec, _mock_log):
+    @patch("assistant_os.police.enforcement.check")
+    def test_bulk_action_constant_calls_execute_work_update_bulk(self, mock_police, mock_bulk_exec, _mock_log):
         """ACTION_WORK_UPDATE_BULK routes through domain registry → work_pipeline._work_update_bulk_execute."""
+        mock_police.return_value.permitted = True
+
         from assistant_os.contracts import make_domain_result, RESULT_TYPE_WORK_UPDATE_BULK
         plan = make_plan(domain="WORK", action=ACTION_WORK_UPDATE_BULK, target="Multiple tasks")
         plan["matches"] = []
@@ -208,8 +211,11 @@ class TestConfirmWorkUpdateRouting(ConfirmFlowTestBase):
 
     @patch("assistant_os.webhook_server._log_webhook_event")
     @patch("assistant_os.pipelines.work_pipeline._work_update_preview_execute")
-    def test_work_update_action_calls_singular_executor(self, mock_preview_exec, _mock_log):
+    @patch("assistant_os.police.enforcement.check")
+    def test_work_update_action_calls_singular_executor(self, mock_police, mock_preview_exec, _mock_log):
         """ACTION_WORK_UPDATE (no notion_page_id) routes through domain registry → _work_update_preview_execute."""
+        mock_police.return_value.permitted = True
+
         from assistant_os.contracts import make_domain_result, RESULT_TYPE_WORK_UPDATE_PREVIEW
         plan = make_plan(domain="WORK", action=ACTION_WORK_UPDATE, target="Single task")
         # no notion_page_id in filters → preview path
