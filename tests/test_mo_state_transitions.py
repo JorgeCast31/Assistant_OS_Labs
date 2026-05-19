@@ -445,20 +445,22 @@ class TestRunnerServiceDistinctPreflightFailures:
         assert result.error is not None
         assert "absolute" in result.error.lower()
 
-    def test_windows_absolute_change_path_rejected(self, tmp_path):
+    def test_windows_absolute_change_path_rejected(self, tmp_path, monkeypatch):
         """Windows drive-letter absolute paths must also be rejected (cross-platform fix)."""
-        from assistant_os.runners.runner_service import RunnerService
-        # On Linux this path is NOT absolute (starts with 'C:'), but Path.is_absolute()
-        # on Windows returns True.  Use Path().is_absolute() to verify the fix.
-        # We test the validator directly since the platform determines what is absolute.
-        from assistant_os.runners.errors import PreflightError
         import sys
+        from assistant_os.authority import AUTHORITY_ARTIFACT_SECRET_ENV_VAR
+        from assistant_os.runners.runner_models import RunnerExecutionRequest
+        from assistant_os.runners.runner_service import RunnerService
+        from tests.runners.conftest import make_authorized_plan
+        monkeypatch.setenv(AUTHORITY_ARTIFACT_SECRET_ENV_VAR, "mo-state-test-secret")
         if sys.platform == "win32":
             # On Windows, C:\foo is absolute — should be rejected.
             changes = [{"op": "file_replace", "path": "C:\\foo\\bar.py", "content": "x"}]
-            req = self._make_request(
-                execution_id="exec-win-abs", repo_path=str(tmp_path),
+            req = RunnerExecutionRequest(
+                execution_id="exec-win-abs",
+                repo_path=str(tmp_path),
                 changes=changes,
+                authorized_plan=make_authorized_plan("exec-win-abs"),
             )
             result = RunnerService().run(req)
             assert result.status.value == "FAILED"
@@ -467,9 +469,11 @@ class TestRunnerServiceDistinctPreflightFailures:
             # On Linux: verify that Path(path).is_absolute() is used in the validator
             # by checking a POSIX absolute path is still rejected.
             changes = [{"op": "file_replace", "path": "/absolute/path.py", "content": "x"}]
-            req = self._make_request(
-                execution_id="exec-posix-abs", repo_path=str(tmp_path),
+            req = RunnerExecutionRequest(
+                execution_id="exec-posix-abs",
+                repo_path=str(tmp_path),
                 changes=changes,
+                authorized_plan=make_authorized_plan("exec-posix-abs"),
             )
             result = RunnerService().run(req)
             assert result.status.value == "FAILED"
