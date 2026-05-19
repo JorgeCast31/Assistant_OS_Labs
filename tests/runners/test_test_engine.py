@@ -15,6 +15,7 @@ from assistant_os.runners.runner_models import (
 )
 from assistant_os.runners.runner_service import RunnerService
 from assistant_os.runners.test_engine import TestEngine
+from tests.runners.conftest import make_authorized_plan
 
 # Use the running interpreter to avoid PATH ambiguity across environments.
 _PYTHON = sys.executable
@@ -232,6 +233,7 @@ def test_runner_service_with_passing_tests(sample_repo):
         execution_id="s3-pass-001",
         repo_path=str(sample_repo),
         test_spec={"command": [_PYTHON, "-m", "pytest", "-q"], "timeout_sec": 30},
+        authorized_plan=make_authorized_plan("s3-pass-001"),
     )
     result = RunnerService().run(request)
 
@@ -246,6 +248,7 @@ def test_runner_service_with_failing_tests(sample_repo):
         execution_id="s3-fail-001",
         repo_path=str(sample_repo),
         test_spec={"command": [_PYTHON, "-m", "pytest", "-q"], "timeout_sec": 30},
+        authorized_plan=make_authorized_plan("s3-fail-001"),
     )
     result = RunnerService().run(request)
 
@@ -259,6 +262,7 @@ def test_runner_service_no_test_spec_stays_workspace_ready(sample_repo):
         execution_id="s3-noop-001",
         repo_path=str(sample_repo),
         test_spec=None,
+        authorized_plan=make_authorized_plan("s3-noop-001"),
     )
     result = RunnerService().run(request)
 
@@ -285,6 +289,7 @@ def test_runner_service_test_result_in_metadata(sample_repo):
         execution_id="s3-meta-001",
         repo_path=str(sample_repo),
         test_spec={"command": [_PYTHON, "-m", "pytest", "-q"], "timeout_sec": 30},
+        authorized_plan=make_authorized_plan("s3-meta-001"),
     )
     result = RunnerService().run(request)
 
@@ -306,6 +311,7 @@ def test_runner_service_apply_then_test(sample_repo):
             }
         ],
         test_spec={"command": [_PYTHON, "-m", "pytest", "-q"], "timeout_sec": 30},
+        authorized_plan=make_authorized_plan("s3-apply-test-001"),
     )
     result = RunnerService().run(request)
 

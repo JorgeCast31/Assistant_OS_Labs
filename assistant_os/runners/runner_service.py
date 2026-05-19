@@ -454,28 +454,32 @@ class RunnerService:
                 f"execution_id contains invalid characters (path separators or '..' not allowed): "
                 f"{request.execution_id!r}"
             )
-        if (
-            request.authorized_plan is not None
-            and request.authorized_plan.authority_artifact is not None
-        ):
-            try:
-                request.authorized_plan.validate()
-            except ValueError as exc:
-                raise PolicyViolationError(
-                    f"Authority artifact verification failed: {exc}"
-                ) from exc
-            signature = self._resolve_authority_artifact_signature(
-                request.authorized_plan.authority_artifact
+        if request.authorized_plan is None:
+            raise PolicyViolationError(
+                "Execution denied: authorized_plan is required but missing."
             )
-            if not signature:
-                raise PolicyViolationError(
-                    "Authority artifact verification failed: missing signature."
-                )
-            if self._authority_consumption_registry.is_consumed(signature):
-                raise PolicyViolationError(
-                    "Authority artifact replay detected: signature already consumed."
-                )
-            self._authority_consumption_registry.mark_consumed(signature)
+        if request.authorized_plan.authority_artifact is None:
+            raise PolicyViolationError(
+                "Execution denied: authority_artifact is required but missing."
+            )
+        try:
+            request.authorized_plan.validate()
+        except ValueError as exc:
+            raise PolicyViolationError(
+                f"Authority artifact verification failed: {exc}"
+            ) from exc
+        signature = self._resolve_authority_artifact_signature(
+            request.authorized_plan.authority_artifact
+        )
+        if not signature:
+            raise PolicyViolationError(
+                "Authority artifact verification failed: missing signature."
+            )
+        if self._authority_consumption_registry.is_consumed(signature):
+            raise PolicyViolationError(
+                "Authority artifact replay detected: signature already consumed."
+            )
+        self._authority_consumption_registry.mark_consumed(signature)
         if not request.repo_path or not request.repo_path.strip():
             raise PreflightError("repo_path must not be empty.")
         # M2D — fast-fail: validate changes before workspace creation.

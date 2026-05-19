@@ -15,8 +15,9 @@ from assistant_os.sandbox.execution_run import ExecutionRun
 
 
 def _artifact_payload(**overrides):
+    from assistant_os.authority import AUTHORITY_ARTIFACT_VERSION_V2
     payload = {
-        "artifact_version": "1",
+        "artifact_version": AUTHORITY_ARTIFACT_VERSION_V2,
         "execution_id": "exec-seat-context",
         "plan_id": "plan-seat-context",
         "authorized_plan_hash": "hash-seat-context",
@@ -27,6 +28,8 @@ def _artifact_payload(**overrides):
         "execution_mode": EXECUTION_MODE_CONFIRM,
         "capability_scope": ["code_fix"],
         "runtime_profile": "python3.11",
+        "authority_source": "mso",
+        "authority_class": "sovereign",
     }
     payload.update(overrides)
     return payload

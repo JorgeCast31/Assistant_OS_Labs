@@ -28,6 +28,7 @@ from assistant_os.runners.apply_engine import (
 from assistant_os.runners.errors import ApplyError, PreflightError
 from assistant_os.runners.runner_models import RunnerExecutionRequest
 from assistant_os.runners.runner_service import RunnerService
+from tests.runners.conftest import make_authorized_plan
 
 
 # ---------------------------------------------------------------------------
@@ -397,6 +398,7 @@ class TestPreflightValidation:
             execution_id="m2d-preflight-005",
             repo_path=str(sample_repo),
             changes=[{"op": "file_replace", "path": "out.py", "content": "x = 1\n"}],
+            authorized_plan=make_authorized_plan("m2d-preflight-005"),
         )
         result = service.run(request)
         # Workspace should have been created (workspace_path is set)
@@ -418,6 +420,7 @@ class TestChangesDetailInResult:
             execution_id="m2d-detail-001",
             repo_path=str(sample_repo),
             changes=[{"op": "file_replace", "path": "main.py", "content": "x = 99\n"}],
+            authorized_plan=make_authorized_plan("m2d-detail-001"),
         )
         result = service.run(request)
 
@@ -448,6 +451,7 @@ class TestChangesDetailInResult:
             execution_id="m2d-detail-003",
             repo_path=str(sample_repo),
             changes=[{"op": "patch", "path": "main.py", "patch": patch_text}],
+            authorized_plan=make_authorized_plan("m2d-detail-003"),
         )
         result = service.run(request)
 

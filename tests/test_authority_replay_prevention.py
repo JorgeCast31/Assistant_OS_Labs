@@ -4,7 +4,7 @@ import pytest
 
 from assistant_os.authority import (
     AUTHORITY_ARTIFACT_SECRET_ENV_VAR,
-    AUTHORITY_ARTIFACT_VERSION_V1,
+    AUTHORITY_ARTIFACT_VERSION_V2,
     sign_authority_artifact,
 )
 from assistant_os.runners.runner_models import RunnerExecutionRequest
@@ -30,7 +30,7 @@ def sample_repo(tmp_path):
 
 def _artifact_payload(execution_id: str, **overrides):
     payload = {
-        "artifact_version": AUTHORITY_ARTIFACT_VERSION_V1,
+        "artifact_version": AUTHORITY_ARTIFACT_VERSION_V2,
         "execution_id": execution_id,
         "plan_id": execution_id,
         "authorized_plan_hash": "plan-hash-001",
@@ -41,6 +41,8 @@ def _artifact_payload(execution_id: str, **overrides):
         "execution_mode": "confirm",
         "capability_scope": ["code_fix"],
         "runtime_profile": "python3.11",
+        "authority_source": "mso",
+        "authority_class": "sovereign",
     }
     payload.update(overrides)
     return payload

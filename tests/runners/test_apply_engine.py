@@ -9,6 +9,7 @@ from assistant_os.runners.apply_engine import ApplyEngine
 from assistant_os.runners.errors import ApplyError
 from assistant_os.runners.runner_models import RunnerExecutionRequest, RunnerExecutionStatus
 from assistant_os.runners.runner_service import RunnerService
+from tests.runners.conftest import make_authorized_plan
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +209,7 @@ def test_runner_service_applies_changes(sample_repo):
         changes=[
             {"op": "file_replace", "path": "generated.py", "content": "result = 42\n"},
         ],
+        authorized_plan=make_authorized_plan("s2-apply-001"),
     )
     result = service.run(request)
 
@@ -223,6 +225,7 @@ def test_runner_service_no_changes_stays_workspace_ready(sample_repo):
         execution_id="s2-noop-001",
         repo_path=str(sample_repo),
         changes=None,
+        authorized_plan=make_authorized_plan("s2-noop-001"),
     )
     result = service.run(request)
 
@@ -251,6 +254,7 @@ def test_runner_service_modified_files_in_metadata(sample_repo):
         execution_id="s2-meta-001",
         repo_path=str(sample_repo),
         changes=[{"op": "file_replace", "path": "out.py", "content": "x = 1\n"}],
+        authorized_plan=make_authorized_plan("s2-meta-001"),
     )
     result = service.run(request)
 
@@ -265,6 +269,7 @@ def test_runner_service_apply_phases_logged(sample_repo):
         execution_id="s2-log-001",
         repo_path=str(sample_repo),
         changes=[{"op": "file_replace", "path": "t.py", "content": ""}],
+        authorized_plan=make_authorized_plan("s2-log-001"),
     )
     result = service.run(request)
 

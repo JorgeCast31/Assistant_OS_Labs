@@ -425,13 +425,20 @@ class TestRunnerServiceDistinctPreflightFailures:
         assert result.status.value == "FAILED"
         assert result.error is not None
 
-    def test_absolute_change_path_rejected_as_invalid_request(self, tmp_path):
+    def test_absolute_change_path_rejected_as_invalid_request(self, tmp_path, monkeypatch):
         """Absolute paths in changes[].path are invalid_request, not execution_failed."""
+        import os
+        from assistant_os.authority import AUTHORITY_ARTIFACT_SECRET_ENV_VAR
+        from assistant_os.runners.runner_models import RunnerExecutionRequest
         from assistant_os.runners.runner_service import RunnerService
+        monkeypatch.setenv(AUTHORITY_ARTIFACT_SECRET_ENV_VAR, "mo-state-test-secret")
+        from tests.runners.conftest import make_authorized_plan
         changes = [{"op": "file_replace", "path": "/etc/passwd", "content": "x"}]
-        req = self._make_request(
-            execution_id="exec-abs-path", repo_path=str(tmp_path),
+        req = RunnerExecutionRequest(
+            execution_id="exec-abs-path",
+            repo_path=str(tmp_path),
             changes=changes,
+            authorized_plan=make_authorized_plan("exec-abs-path"),
         )
         result = RunnerService().run(req)
         assert result.status.value == "FAILED"

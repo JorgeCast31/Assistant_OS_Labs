@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from assistant_os.authority import (
-    AUTHORITY_ARTIFACT_VERSION_V1,
+    AUTHORITY_ARTIFACT_VERSION_V2,
     canonicalize_authority_artifact,
     sign_authority_artifact,
     verify_authority_artifact,
@@ -12,7 +12,7 @@ from assistant_os.authority import (
 
 def _artifact(**overrides):
     artifact = {
-        "artifact_version": AUTHORITY_ARTIFACT_VERSION_V1,
+        "artifact_version": AUTHORITY_ARTIFACT_VERSION_V2,
         "execution_id": "exec-001",
         "plan_id": "plan-001",
         "authorized_plan_hash": "hash-001",
@@ -23,6 +23,8 @@ def _artifact(**overrides):
         "execution_mode": "confirm",
         "capability_scope": ["code_fix", "code_create"],
         "runtime_profile": "python3.11",
+        "authority_source": "mso",
+        "authority_class": "sovereign",
     }
     artifact.update(overrides)
     return artifact
