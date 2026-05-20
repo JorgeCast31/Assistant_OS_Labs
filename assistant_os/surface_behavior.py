@@ -218,6 +218,48 @@ _ASSISTANT_CHAT_STATUS: frozenset[str] = frozenset({
     "que esta activo",
 })
 
+_MSO_STATUS_QUERY_SET: frozenset[str] = frozenset({
+    "estado del mso",
+    "mso status",
+    "cual es tu estado",
+    "que modos tienes",
+    "cuales son tus modos",
+    "que modelo tienes sentado",
+    "esta integrado police",
+    "es runner fail-closed",
+    "can mso execute directly",
+    "show mso status",
+    "muestra estado mso",
+    "que seats tienes disponibles",
+    "que seat tienes",
+    "cual es el seat mas barato",
+    "cual es el mas barato",
+    "cual tiene mejor calidad precio",
+    "cual conviene por calidad precio",
+    "cual es el seat mas fuerte",
+    "muestra estado del seat",
+    "seat status",
+    "que seats hay",
+})
+
+_MSO_SEAT_CHANGE_SET: frozenset[str] = frozenset({
+    "cambia el seat del mso a claude",
+    "cambia el seat del mso a anthropic",
+    "cambia el seat del mso a llama",
+    "cambia el seat del mso a openai",
+    "cambia el seat del mso a gemma",
+    "cambia seat a claude",
+    "cambia seat a anthropic",
+    "cambia seat a llama",
+    "cambia seat a openai",
+    "cambia seat a gemma",
+    "change seat to claude",
+    "change seat to anthropic",
+    "change seat to llama",
+    "change seat to openai",
+    "change seat to gemma",
+})
+
 _GITHUB_URL_RE = re.compile(r"https?://github\.com/[^/\s]+/[^/\s]+", re.IGNORECASE)
 _NUMERIC_AMOUNT_RE = re.compile(r"\b\d+(?:[.,]\d+)?\b")
 
@@ -566,6 +608,127 @@ def _mso_conversational_message(normalized: str) -> str:
         )
 
     return "MSO registrado. Las solicitudes ejecutivas pasan por gobernanza antes de ejecutarse."
+
+
+def _safe_build_mso_entity_status() -> dict:
+    try:
+        from .mso.entity_status import build_mso_entity_status
+        return build_mso_entity_status()
+    except Exception:
+        return {
+            "entity": "MSO",
+            "status": "unknown",
+            "authority_chain": {
+                "police_gate": True,
+                "runner_fail_closed": True,
+                "authority_artifact_version": "2",
+            },
+            "surfaces": {
+                "mso_direct": {"can_execute": False, "used_execution": False},
+            },
+            "interaction_modes": ["conversational", "planning", "validation", "orchestration", "status"],
+            "model_seat": {"availability": "unknown"},
+        }
+
+
+def _safe_build_mso_seat_status() -> dict:
+    try:
+        from .mso.seat_status import build_mso_seat_status
+        return build_mso_seat_status()
+    except Exception:
+        return {
+            "active_seat": {"provider": None, "availability": "unknown", "can_execute": False},
+            "available_seats": [],
+            "selection": {"current_provider": None, "can_change_runtime": True, "change_method": "runtime_store"},
+            "used_execution": False,
+            "cognitive_only": True,
+        }
+
+
+def _mso_seat_change_message(normalized: str) -> str:
+    """Return a deterministic response for seat-change requests."""
+    # Detect which provider the user wants
+    provider_map = {
+        "claude": "anthropic", "anthropic": "anthropic",
+        "llama": "llama", "openai": "openai", "gemma": "gemma",
+    }
+    requested = None
+    for keyword, pname in provider_map.items():
+        if keyword in normalized:
+            requested = pname
+            break
+
+    if requested is None:
+        return (
+            "Para cambiar el seat cognitivo del MSO, especifica el proveedor:\n"
+            "  cambia seat a anthropic | llama | openai | gemma\n\n"
+            "El cambio es runtime-only (en memoria). "
+            "Para persistir: configura MSO_SEAT_PROVIDER en el entorno."
+        )
+
+    try:
+        from .mso.seat_status import set_runtime_seat_provider
+        result = set_runtime_seat_provider(requested)
+        if result.get("ok"):
+            return (
+                f"Seat cognitivo cambiado a: {requested}\n"
+                f"Nota: cambio runtime-only. {result.get('note', '')}\n"
+                "El seat NO ejecuta directamente. Cognitivo únicamente."
+            )
+        else:
+            err = result.get("error", "Error desconocido")
+            return (
+                f"No se pudo cambiar el seat a {requested!r}.\n"
+                f"Razón: {err}\n"
+                "Para persistir: configura MSO_SEAT_PROVIDER en el entorno."
+            )
+    except Exception as exc:
+        return (
+            f"No se pudo cambiar el seat: {exc}\n"
+            "Configura MSO_SEAT_PROVIDER en el entorno para seleccionar proveedor."
+        )
+
+
+def _mso_entity_status_message(status: dict) -> str:
+    chain = status.get("authority_chain", {})
+    seat = status.get("model_seat", {})
+    modes = status.get("interaction_modes", [])
+    surfaces = status.get("surfaces", {})
+    mso_direct = surfaces.get("mso_direct", {})
+    next_actions = status.get("next_safe_actions", [])
+
+    provider = seat.get("provider") or "none"
+    model = seat.get("model") or "not configured"
+    availability = seat.get("availability", "unknown")
+    police = "active" if chain.get("police_gate") else "not active"
+    runner = "fail-closed" if chain.get("runner_fail_closed") else "not enforced"
+    artifact_v = chain.get("authority_artifact_version", "unknown")
+    mso_direct_exec = "no" if not mso_direct.get("can_execute") else "yes"
+    modes_str = ", ".join(modes) if modes else "unknown"
+    next_str = "\n".join(f"  - {a}" for a in next_actions) if next_actions else "  - None"
+
+    return (
+        f"MSO Entity Status\n"
+        f"-----------------\n"
+        f"I am the MSO runtime boundary. I own the orchestrator.\n\n"
+        f"Runtime:\n"
+        f"  Kernel: assistant_os.mso.kernel.handle_sovereign_request\n"
+        f"  Orchestrator owned: yes\n\n"
+        f"Authority chain:\n"
+        f"  Police gate: {police}\n"
+        f"  Runner: {runner}\n"
+        f"  AuthorityArtifact version: {artifact_v}\n\n"
+        f"Surfaces:\n"
+        f"  assistant_chat: can execute (through Police → Runner)\n"
+        f"  mso_direct: cannot execute directly ({mso_direct_exec})\n"
+        f"  code_api: external_local, not MSO-governed\n\n"
+        f"Interaction modes: {modes_str}\n\n"
+        f"Cognitive seat:\n"
+        f"  Provider: {provider}\n"
+        f"  Model: {model}\n"
+        f"  Availability: {availability}\n\n"
+        f"Next safe actions:\n{next_str}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1803,6 +1966,43 @@ def get_surface_behavior_response(
         # ── mso_context absent: existing text-driven path (backward compat) ──────
         if _is_executive(normalized):
             return None
+        if normalized in _MSO_STATUS_QUERY_SET:
+            _entity_status = _safe_build_mso_entity_status()
+            _status_resp = _build_surface_response(
+                message=_mso_entity_status_message(_entity_status),
+                domain="MSO",
+                surface=surface,
+                context_id=context_id,
+                identity=identity,
+                guard_result=guard_result,
+                result_type="status_response",
+                intent="mso_entity_status",
+                execution_status="not_executed",
+                response_source="mso_entity_status_read_model",
+            )
+            _status_resp["entity_status"] = _entity_status
+            _status_resp["used_execution"] = False
+            _status_resp["can_execute_now"] = False
+            return _status_resp
+        if normalized in _MSO_SEAT_CHANGE_SET:
+            _change_msg = _mso_seat_change_message(normalized)
+            _change_resp = _build_surface_response(
+                message=_change_msg,
+                domain="MSO",
+                surface=surface,
+                context_id=context_id,
+                identity=identity,
+                guard_result=guard_result,
+                result_type="status_response",
+                intent="mso_seat_change",
+                execution_status="not_executed",
+                response_source="mso_seat_change_read_model",
+            )
+            _change_resp["used_execution"] = False
+            _change_resp["can_execute_now"] = False
+            _seat_status = _safe_build_mso_seat_status()
+            _change_resp["seat_status"] = _seat_status
+            return _change_resp
         if normalized in _MSO_DIRECT_CONVERSATIONAL:
             return _build_surface_response(
                 message=_mso_conversational_message(normalized),
