@@ -121,6 +121,7 @@ Thumbs.db
 .claude/worktrees/
 assistant_os/.claude/
 .codex
+.worktrees/
 
 # Claude / artifacts
 CHAT.md
