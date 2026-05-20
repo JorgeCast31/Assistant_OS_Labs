@@ -3,6 +3,11 @@
 from .artifact import (
     AUTHORITY_ARTIFACT_SECRET_ENV_VAR,
     AUTHORITY_ARTIFACT_VERSION_V1,
+    AUTHORITY_ARTIFACT_VERSION_V2,
+    AUTHORITY_CLASS_EXTERNAL_LOCAL,
+    AUTHORITY_CLASS_SOVEREIGN,
+    AUTHORITY_SOURCE_CODE_API,
+    AUTHORITY_SOURCE_MSO,
     AuthorityArtifact,
     canonicalize_authority_artifact,
     resolve_authority_artifact_secret,
@@ -13,6 +18,11 @@ from .artifact import (
 __all__ = [
     "AUTHORITY_ARTIFACT_SECRET_ENV_VAR",
     "AUTHORITY_ARTIFACT_VERSION_V1",
+    "AUTHORITY_ARTIFACT_VERSION_V2",
+    "AUTHORITY_CLASS_EXTERNAL_LOCAL",
+    "AUTHORITY_CLASS_SOVEREIGN",
+    "AUTHORITY_SOURCE_CODE_API",
+    "AUTHORITY_SOURCE_MSO",
     "AuthorityArtifact",
     "canonicalize_authority_artifact",
     "resolve_authority_artifact_secret",

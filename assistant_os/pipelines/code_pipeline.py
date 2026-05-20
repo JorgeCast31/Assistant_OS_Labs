@@ -1084,7 +1084,12 @@ def _build_authorized_plan_from_kernel(plan: dict) -> "AuthorizedPlan":
     authorized_plan_hash = SHA-256 of the canonicalized plan identity so every
                            execution is traceable back to the kernel plan content.
     """
-    from ..authority import AUTHORITY_ARTIFACT_VERSION_V1, sign_authority_artifact
+    from ..authority import (
+        AUTHORITY_ARTIFACT_VERSION_V2,
+        AUTHORITY_CLASS_SOVEREIGN,
+        AUTHORITY_SOURCE_MSO,
+        sign_authority_artifact,
+    )
     from ..sandbox.authorized_plan import AuthorizedPlan
 
     plan_id = plan.get("plan_id")
@@ -1109,7 +1114,7 @@ def _build_authorized_plan_from_kernel(plan: dict) -> "AuthorizedPlan":
     if authority_context is not None:
         delegated_seat_ref = authority_context.get("delegated_seat_ref", "")
         artifact_payload = {
-            "artifact_version": AUTHORITY_ARTIFACT_VERSION_V1,
+            "artifact_version": AUTHORITY_ARTIFACT_VERSION_V2,
             "execution_id": plan_id,
             "plan_id": plan_id,
             "authorized_plan_hash": authorized_plan_hash,
@@ -1120,6 +1125,8 @@ def _build_authorized_plan_from_kernel(plan: dict) -> "AuthorizedPlan":
             "execution_mode": authority_context["execution_mode"],
             "capability_scope": capability_scope,
             "runtime_profile": runtime_profile,
+            "authority_source": AUTHORITY_SOURCE_MSO,
+            "authority_class": AUTHORITY_CLASS_SOVEREIGN,
         }
         if delegated_seat_ref:
             artifact_payload["delegated_seat_ref"] = delegated_seat_ref

@@ -24,6 +24,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..authority import (
+    AUTHORITY_ARTIFACT_VERSION_V2,
+    AUTHORITY_CLASS_EXTERNAL_LOCAL,
+    AUTHORITY_SOURCE_CODE_API,
+    sign_authority_artifact,
+)
 from ..runners.metadata_utils import EXECUTIONS_ROOT, patch_execution_metadata
 from ..runners.runner_models import RunnerExecutionRequest
 from ..sandbox.authorized_plan import AuthorizedPlan, KNOWN_POLICY_IDS
@@ -164,12 +170,37 @@ def _build_authorized_plan(
         json.dumps(plan_content, sort_keys=True, ensure_ascii=False).encode("utf-8")
     ).hexdigest()
 
+    runtime_profile = str(body.get("runtime_profile") or "python3.11").strip() or "python3.11"
+
+    # Build a signed external_local AuthorityArtifact — code_api is an explicit
+    # external/local authority class, not MSO/Police authority. The governance
+    # fields carry traceable external_local refs keyed by execution_id so the
+    # artifact can be audited without falsely implying a governance chain.
+    artifact_payload = {
+        "artifact_version": AUTHORITY_ARTIFACT_VERSION_V2,
+        "execution_id": execution_id,
+        "plan_id": plan_id,
+        "authorized_plan_hash": authorized_plan_hash,
+        "policy_id": policy_id,
+        "policy_decision_ref": f"external_local:code_api:{execution_id}",
+        "governance_ref": f"external_local:code_api:{execution_id}",
+        "approval_id": f"external_local:code_api:{execution_id}",
+        "execution_mode": "external_local",
+        "capability_scope": capability_scope,
+        "runtime_profile": runtime_profile,
+        "authority_source": AUTHORITY_SOURCE_CODE_API,
+        "authority_class": AUTHORITY_CLASS_EXTERNAL_LOCAL,
+    }
+    authority_artifact = sign_authority_artifact(artifact_payload)
+
     return AuthorizedPlan(
         execution_id=execution_id,
         plan_id=plan_id,
         authorized_plan_hash=authorized_plan_hash,
         policy_id=policy_id,
         capability_scope=capability_scope,
+        runtime_profile=runtime_profile,
+        authority_artifact=authority_artifact,
     )
 
 

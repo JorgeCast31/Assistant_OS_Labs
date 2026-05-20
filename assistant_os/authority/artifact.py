@@ -11,8 +11,29 @@ import os
 from typing import Any
 
 AUTHORITY_ARTIFACT_VERSION_V1 = "1"
+AUTHORITY_ARTIFACT_VERSION_V2 = "2"
 AUTHORITY_ARTIFACT_SECRET_ENV_VAR = "ASSISTANT_OS_AUTHORITY_ARTIFACT_SECRET"
 _DEFAULT_AUTHORITY_ARTIFACT_SECRET = "assistant_os.authority_artifact.dev_secret.v1"
+
+# Valid authority source/class identifiers (V2).
+AUTHORITY_SOURCE_MSO = "mso"
+AUTHORITY_SOURCE_CODE_API = "code_api"
+AUTHORITY_CLASS_SOVEREIGN = "sovereign"
+AUTHORITY_CLASS_EXTERNAL_LOCAL = "external_local"
+
+# Only these (source, class) combinations are valid.
+_VALID_AUTHORITY_COMBOS: frozenset[tuple[str, str]] = frozenset({
+    (AUTHORITY_SOURCE_MSO, AUTHORITY_CLASS_SOVEREIGN),
+    (AUTHORITY_SOURCE_CODE_API, AUTHORITY_CLASS_EXTERNAL_LOCAL),
+})
+
+# Fields that must not start with the external_local sentinel for sovereign artifacts.
+_SOVEREIGN_GOVERNANCE_FIELDS: tuple[str, ...] = (
+    "policy_decision_ref",
+    "governance_ref",
+    "approval_id",
+    "execution_mode",
+)
 
 _STRING_FIELDS: tuple[str, ...] = (
     "artifact_version",
@@ -25,6 +46,8 @@ _STRING_FIELDS: tuple[str, ...] = (
     "approval_id",
     "execution_mode",
     "runtime_profile",
+    "authority_source",
+    "authority_class",
 )
 _OPTIONAL_STRING_FIELDS: tuple[str, ...] = ("delegated_seat_ref",)
 _REQUIRED_FIELDS: tuple[str, ...] = _STRING_FIELDS + ("capability_scope",)
@@ -32,7 +55,7 @@ _REQUIRED_FIELDS: tuple[str, ...] = _STRING_FIELDS + ("capability_scope",)
 
 @dataclass(frozen=True)
 class AuthorityArtifact:
-    """Canonical signed authority artifact."""
+    """Canonical signed authority artifact (V2)."""
 
     artifact_version: str
     execution_id: str
@@ -45,6 +68,8 @@ class AuthorityArtifact:
     execution_mode: str
     capability_scope: list[str]
     runtime_profile: str
+    authority_source: str
+    authority_class: str
     delegated_seat_ref: str = ""
     signature: str = ""
 
@@ -61,6 +86,8 @@ class AuthorityArtifact:
             "execution_mode": self.execution_mode,
             "capability_scope": list(self.capability_scope),
             "runtime_profile": self.runtime_profile,
+            "authority_source": self.authority_source,
+            "authority_class": self.authority_class,
             "delegated_seat_ref": self.delegated_seat_ref,
             "signature": self.signature,
         }
@@ -124,10 +151,29 @@ def _normalized_unsigned_payload(artifact: AuthorityArtifact | Mapping[str, Any]
         if not normalized[field_name]:
             raise ValueError(f"Authority artifact field {field_name!r} must be non-empty.")
 
-    if normalized["artifact_version"] != AUTHORITY_ARTIFACT_VERSION_V1:
+    if normalized["artifact_version"] != AUTHORITY_ARTIFACT_VERSION_V2:
         raise ValueError(
-            f"Unsupported authority artifact version {normalized['artifact_version']!r}."
+            f"Unsupported authority artifact version {normalized['artifact_version']!r}. "
+            f"Expected V2 ({AUTHORITY_ARTIFACT_VERSION_V2!r})."
         )
+
+    source = normalized["authority_source"]
+    cls = normalized["authority_class"]
+    if (source, cls) not in _VALID_AUTHORITY_COMBOS:
+        raise ValueError(
+            f"Invalid authority combination: authority_source={source!r}, "
+            f"authority_class={cls!r}. "
+            f"Valid combinations: {sorted(_VALID_AUTHORITY_COMBOS)}."
+        )
+
+    if cls == AUTHORITY_CLASS_SOVEREIGN:
+        for gov_field in _SOVEREIGN_GOVERNANCE_FIELDS:
+            val = normalized.get(gov_field, "")
+            if val.startswith("external_local"):
+                raise ValueError(
+                    f"Sovereign artifact field {gov_field!r} must not use the "
+                    f"external_local sentinel. Got: {val!r}."
+                )
 
     for field_name in _OPTIONAL_STRING_FIELDS:
         value = payload.get(field_name, "")

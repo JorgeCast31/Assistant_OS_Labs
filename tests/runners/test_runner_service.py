@@ -8,6 +8,7 @@ import pytest
 
 from assistant_os.runners.runner_models import RunnerExecutionRequest, RunnerExecutionStatus
 from assistant_os.runners.runner_service import RunnerService
+from tests.runners.conftest import make_authorized_plan
 
 _PYTHON = sys.executable
 
@@ -29,6 +30,7 @@ def test_run_happy_path(service, sample_repo):
     request = RunnerExecutionRequest(
         execution_id="svc-test-001",
         repo_path=str(sample_repo),
+        authorized_plan=make_authorized_plan("svc-test-001"),
     )
     result = service.run(request)
 
@@ -44,6 +46,7 @@ def test_run_creates_workspace_files(service, sample_repo):
     request = RunnerExecutionRequest(
         execution_id="svc-test-002",
         repo_path=str(sample_repo),
+        authorized_plan=make_authorized_plan("svc-test-002"),
     )
     result = service.run(request)
 
@@ -57,6 +60,7 @@ def test_run_writes_final_metadata(service, sample_repo):
     request = RunnerExecutionRequest(
         execution_id="svc-test-003",
         repo_path=str(sample_repo),
+        authorized_plan=make_authorized_plan("svc-test-003"),
     )
     result = service.run(request)
 
@@ -200,6 +204,7 @@ def test_successful_run_does_not_write_preflight_log(service, sample_repo, monke
     request = RunnerExecutionRequest(
         execution_id="svc-pf-003",
         repo_path=str(sample_repo),
+        authorized_plan=make_authorized_plan("svc-pf-003"),
     )
     service.run(request)
 
@@ -217,6 +222,7 @@ def test_test_start_logged_exactly_once(sample_repo):
         execution_id="svc-log-001",
         repo_path=str(sample_repo),
         test_spec={"command": [_PYTHON, "-m", "pytest", "-q"], "timeout_sec": 30},
+        authorized_plan=make_authorized_plan("svc-log-001"),
     )
     result = RunnerService().run(request)
 
@@ -239,6 +245,7 @@ def test_full_loop_changes_and_tests_passing_yields_success(sample_repo):
             {"op": "file_replace", "path": "test_gen.py", "content": "def test_ok():\n    assert True\n"},
         ],
         test_spec={"command": [_PYTHON, "-m", "pytest", "-q"], "timeout_sec": 30},
+        authorized_plan=make_authorized_plan("s4-full-001"),
     )
     result = RunnerService().run(request)
 
@@ -259,6 +266,7 @@ def test_full_loop_failing_tests_yields_failed(sample_repo):
             {"op": "file_replace", "path": "test_bad.py", "content": "def test_fail():\n    assert False\n"},
         ],
         test_spec={"command": [_PYTHON, "-m", "pytest", "-q"], "timeout_sec": 30},
+        authorized_plan=make_authorized_plan("s4-fail-001"),
     )
     result = RunnerService().run(request)
 
@@ -277,6 +285,7 @@ def test_full_loop_needs_review_when_allow_review(sample_repo):
         ],
         test_spec=None,
         validation_spec={"require_tests": True, "allow_needs_review": True},
+        authorized_plan=make_authorized_plan("s4-review-001"),
     )
     result = RunnerService().run(request)
 
@@ -289,6 +298,7 @@ def test_full_loop_report_json_has_required_fields(sample_repo):
     request = RunnerExecutionRequest(
         execution_id="s4-rpt-001",
         repo_path=str(sample_repo),
+        authorized_plan=make_authorized_plan("s4-rpt-001"),
     )
     result = RunnerService().run(request)
 
@@ -303,6 +313,7 @@ def test_full_loop_done_json_has_required_fields(sample_repo):
     request = RunnerExecutionRequest(
         execution_id="s4-ntf-001",
         repo_path=str(sample_repo),
+        authorized_plan=make_authorized_plan("s4-ntf-001"),
     )
     result = RunnerService().run(request)
 
@@ -318,6 +329,7 @@ def test_full_loop_phases_logged(sample_repo):
     request = RunnerExecutionRequest(
         execution_id="s4-log-001",
         repo_path=str(sample_repo),
+        authorized_plan=make_authorized_plan("s4-log-001"),
     )
     result = RunnerService().run(request)
 
@@ -333,6 +345,7 @@ def test_full_loop_apply_error_still_produces_report(sample_repo):
         execution_id="s4-apperr-001",
         repo_path=str(sample_repo),
         changes=[{"op": "file_replace", "path": "../../escape.py", "content": "evil"}],
+        authorized_plan=make_authorized_plan("s4-apperr-001"),
     )
     result = RunnerService().run(request)
 
@@ -346,6 +359,7 @@ def test_full_loop_metadata_includes_final_status(sample_repo):
     request = RunnerExecutionRequest(
         execution_id="s4-meta-001",
         repo_path=str(sample_repo),
+        authorized_plan=make_authorized_plan("s4-meta-001"),
     )
     result = RunnerService().run(request)
 
