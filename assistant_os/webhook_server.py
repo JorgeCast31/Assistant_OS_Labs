@@ -1920,6 +1920,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_mso_seat_provider_get()
             return
 
+        # S-MSO-OPERABLE-ENTITY-01: MSO entity status read model
+        if path == "/mso/entity/status":
+            self._handle_mso_entity_status_get()
+            return
+
         # SPRINT-ALPHA-05.6: read-only cognitive usage ledger
         if path == "/mso/cognitive-usage/recent":
             self._handle_mso_cognitive_usage_recent_get()
@@ -5268,6 +5273,44 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     "can_execute_now": False,
                     "note": _NOTE,
                     "error": str(exc),
+                },
+            )
+
+    def _handle_mso_entity_status_get(self) -> None:
+        """GET /mso/entity/status — read-only MSO entity status read model.
+
+        Returns a stable, deterministic snapshot of MSO as a bounded operable entity:
+        runtime boundary, authority chain, surfaces, interaction modes, model seat.
+
+        Read-only: no execution, no network calls, no token issuance, no mutation.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from .mso.entity_status import build_mso_entity_status
+            entity_status = build_mso_entity_status()
+            self._send_json_response(
+                200,
+                {
+                    "ok": True,
+                    "source": "mso_entity_status",
+                    **entity_status,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-soft read-only surface
+            self._send_json_response(
+                200,
+                {
+                    "ok": False,
+                    "source": "mso_entity_status",
+                    "entity": "MSO",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "execution_allowed": False,
+                    "used_execution": False,
                 },
             )
 
