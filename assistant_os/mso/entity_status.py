@@ -1,5 +1,5 @@
 """
-MSO Entity Status — S-MSO-OPERABLE-ENTITY-01.
+MSO Entity Status — S-MSO-OPERABLE-ENTITY-01 / S-MSO-SEAT-METADATA-OBSERVABILITY-01.
 
 Exposes the operational status of the MSO (Master Sovereign Operator) runtime boundary,
 including authority chain validation, surface enablement, interaction modes, and seated
@@ -69,6 +69,30 @@ def build_mso_entity_status() -> dict[str, Any]:
             "supports_plan_only": False,
         }
 
+    # Resolve full seat status with fail-safe fallback.
+    mso_seat: dict[str, Any] = {}
+    try:
+        from .seat_status import build_mso_seat_status
+        mso_seat = build_mso_seat_status()
+    except Exception:
+        mso_seat = {
+            "active_seat": {"provider": None, "availability": "unknown", "can_execute": False},
+            "available_seats": [],
+            "selection": {"current_provider": None, "can_change_runtime": True},
+            "used_execution": False,
+            "cognitive_only": True,
+        }
+
+    # Observability metadata (static for now).
+    observability = {
+        "seat_observable": True,
+        "provider_liveness_checked": False,
+        "last_provider_call": None,
+        "last_provider_status": None,
+        "cost_tracking_enabled": False,
+        "token_usage_available": False,
+    }
+
     return {
         "entity": "MSO",
         "status": "operational",
@@ -107,6 +131,8 @@ def build_mso_entity_status() -> dict[str, Any]:
             "status",
         ],
         "model_seat": model_seat,
+        "mso_seat": mso_seat,
+        "observability": observability,
         "next_safe_actions": [
             "Use mso_direct status for inspection",
             "Use planning mode to prepare confirmable actions",

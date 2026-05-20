@@ -1755,6 +1755,11 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_mso_prepared_actions_police_readiness_post()
             return
 
+        # S-MSO-SEAT-METADATA-OBSERVABILITY-01: runtime-only MSO seat provider setter
+        if path == "/mso/seat/provider":
+            self._handle_mso_seat_provider_post()
+            return
+
         # Route: /machine_operator/execute (execute a bounded browser capability)
         if path == "/machine_operator/execute":
             self._handle_machine_operator_execute(remote)
@@ -1918,6 +1923,16 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # S-MSO-SEAT-PROVIDER-01: read-only MSO Seat provider metadata
         if path == "/mso/seat/provider":
             self._handle_mso_seat_provider_get()
+            return
+
+        # S-MSO-SEAT-METADATA-OBSERVABILITY-01: MSO seat status read model
+        if path == "/mso/seat/status":
+            self._handle_mso_seat_status_get()
+            return
+
+        # S-MSO-SEAT-METADATA-OBSERVABILITY-01: MSO seat providers list
+        if path == "/mso/seat/providers":
+            self._handle_mso_seat_providers_get()
             return
 
         # S-MSO-OPERABLE-ENTITY-01: MSO entity status read model
@@ -5311,6 +5326,119 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     "error": f"{type(exc).__name__}: {exc}",
                     "execution_allowed": False,
                     "used_execution": False,
+                },
+            )
+
+    def _handle_mso_seat_status_get(self) -> None:
+        """GET /mso/seat/status — read-only MSO cognitive seat status.
+
+        Returns active seat, available seats, selection metadata, and observability info.
+        Read-only: no execution, no network calls, no token issuance.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from .mso.seat_status import build_mso_seat_status
+            seat_status = build_mso_seat_status()
+            self._send_json_response(
+                200,
+                {
+                    "ok": True,
+                    "source": "mso_seat_status",
+                    **seat_status,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-soft read-only surface
+            self._send_json_response(
+                200,
+                {
+                    "ok": False,
+                    "source": "mso_seat_status",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "used_execution": False,
+                    "cognitive_only": True,
+                },
+            )
+
+    def _handle_mso_seat_providers_get(self) -> None:
+        """GET /mso/seat/providers — list all known MSO seat providers with metadata.
+
+        Returns all known providers with availability and static operator metadata.
+        Read-only: no execution, no network calls.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from .mso.seat_status import build_mso_seat_status
+            seat_status = build_mso_seat_status()
+            self._send_json_response(
+                200,
+                {
+                    "ok": True,
+                    "source": "mso_seat_providers",
+                    "providers": seat_status.get("available_seats", []),
+                    "selection": seat_status.get("selection", {}),
+                    "used_execution": False,
+                    "cognitive_only": True,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-soft read-only surface
+            self._send_json_response(
+                200,
+                {
+                    "ok": False,
+                    "source": "mso_seat_providers",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "providers": [],
+                    "used_execution": False,
+                },
+            )
+
+    def _handle_mso_seat_provider_post(self) -> None:
+        """POST /mso/seat/provider — runtime-only MSO seat provider setter.
+
+        Validates provider name and sets the in-memory provider override.
+        - Does NOT persist to env or disk
+        - Does NOT call provider, issue tokens, call Police, or execute anything
+        - Rejects unknown or not_implemented providers
+        - runtime_only=True always
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        try:
+            body_bytes = self.body()
+            import json as _json
+            body = _json.loads(body_bytes or b"{}")
+            provider_name = body.get("provider", "")
+        except Exception:
+            status_code, error = _make_json_error(400, "Invalid JSON body.", "BadRequest")
+            self._send_json_response(status_code, error)
+            return
+
+        try:
+            from .mso.seat_status import set_runtime_seat_provider
+            result = set_runtime_seat_provider(str(provider_name))
+            self._send_json_response(200 if result.get("ok") else 400, result)
+        except Exception as exc:  # noqa: BLE001
+            self._send_json_response(
+                200,
+                {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "used_execution": False,
+                    "cognitive_only": True,
                 },
             )
 
