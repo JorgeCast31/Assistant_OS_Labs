@@ -77,6 +77,18 @@ def _make_binding_ref(binding: "OperationBinding") -> str:  # type: ignore[name-
     return f"binding:{binding.operation_key}:{binding.action_type}"
 
 
+def _police_decision_metadata(decision: "PoliceDecision") -> dict:  # type: ignore[name-defined]
+    """Extract observational metadata from a PoliceDecision without altering enforcement."""
+    return {
+        "decision_ref": decision.decision_id,
+        "permitted": decision.permitted,
+        "outcome": decision.outcome.value,
+        "reason": decision.reason.value,
+        "detail": decision.detail,
+        "visibility": "runtime_trace",
+    }
+
+
 def _enforce_police_gate_before_dispatch(
     *,
     plan: dict,
@@ -89,12 +101,13 @@ def _enforce_police_gate_before_dispatch(
     policy_decision_ref: str,
     trace_id: str,
     delegated_seat_ref: str | None = None,
-) -> "DomainResult | None":
+) -> "tuple[DomainResult | None, dict]":
     """
     Build a PoliceGateRequest and call police.enforcement.check().
 
-    Returns None when Police permits (proceed with dispatch).
-    Returns a denied DomainResult when Police denies (caller must return immediately).
+    Returns (None, police_meta) when Police permits (proceed with dispatch).
+    Returns (denied_result, police_meta) when Police denies (caller must return immediately).
+    police_meta is always populated from the real PoliceDecision — never fabricated.
 
     This is the authority gate that enforces the invariant:
     No executable dispatch may leave the MSO runtime unless Police permits.
@@ -115,8 +128,9 @@ def _enforce_police_gate_before_dispatch(
         delegated_seat_ref=delegated_seat_ref,
     )
     decision = _police_check(gate_req)
+    police_meta = _police_decision_metadata(decision)
     if decision.permitted:
-        return None
+        return None, police_meta
 
     _log.warning(
         "_enforce_police_gate: denied outcome=%s reason=%s detail=%s",
@@ -124,7 +138,7 @@ def _enforce_police_gate_before_dispatch(
         decision.reason.value,
         decision.detail,
     )
-    return make_domain_result(
+    denied = make_domain_result(
         ok=False,
         result_type="denied",
         domain=plan.get("domain", "*"),
@@ -135,6 +149,7 @@ def _enforce_police_gate_before_dispatch(
             "reason": decision.reason.value,
         },
     )
+    return denied, police_meta
 
 
 def _register_and_enforce_police_gate(
@@ -145,12 +160,12 @@ def _register_and_enforce_police_gate(
     binding_ref: str,
     capability_name: str,
     governance_trace: dict | None,
-) -> "DomainResult | None":
+) -> "tuple[DomainResult | None, dict]":
     """
     Register the authorized_plan_ref in the Police registry and call the Police gate.
 
     Used at all AUTO dispatch points where cap_token is still alive in scope.
-    Returns None if PERMITTED, or a denied DomainResult if DENIED.
+    Returns (None, police_meta) if PERMITTED, or (denied_result, police_meta) if DENIED.
     """
     from ..police.authorized_plan_registry import register_authorized_plan_ref as _rpr
 
@@ -242,13 +257,14 @@ def _prepare_confirm_authority(
 def _enforce_police_gate_from_authority_context(
     plan: dict,
     context_id: str,
-) -> "DomainResult | None":
+) -> "tuple[DomainResult | None, dict]":
     """
     Reconstruct a PoliceGateRequest from plan['_authority_context'] and call Police.
 
     Used by _execute_confirmed_plan where the original cap_token is no longer in scope.
     The stored execution_id (original context) is used so it matches the registered
     authorized_plan_ref.
+    Returns (None, police_meta) if permitted, (denied_result, police_meta) if denied.
     """
     authority = plan.get("_authority_context") or {}
     original_context_id = authority.get("execution_id", "") or context_id
@@ -1004,7 +1020,7 @@ def handle_request(
                 return _gate
             if _is_cognitive_execution(structured_plan):
                 # Police gate — A1: structured AUTO cognitive dispatch.
-                _police_gate = _register_and_enforce_police_gate(
+                _police_gate, _police_meta = _register_and_enforce_police_gate(
                     plan=plan_for_exec,
                     context_id=context_id,
                     cap_token=_cap_token,
@@ -1013,8 +1029,10 @@ def handle_request(
                     governance_trace=governance_trace,
                 )
                 if _police_gate is not None:
+                    _police_gate["police_decision_metadata"] = _police_meta
                     return _police_gate
                 result = _dispatch_cognitive_execution(plan_for_exec, context_id)
+                result["police_decision_metadata"] = _police_meta
                 return _publish_mso_observation(
                     req=req,
                     intent=structured_intent,
@@ -1030,7 +1048,7 @@ def handle_request(
             pipeline = get_pipeline(derived_domain)
             if pipeline:
                 # Police gate — A2: structured AUTO domain pipeline dispatch.
-                _police_gate = _register_and_enforce_police_gate(
+                _police_gate, _police_meta = _register_and_enforce_police_gate(
                     plan=plan_for_exec,
                     context_id=context_id,
                     cap_token=_cap_token,
@@ -1039,8 +1057,10 @@ def handle_request(
                     governance_trace=governance_trace,
                 )
                 if _police_gate is not None:
+                    _police_gate["police_decision_metadata"] = _police_meta
                     return _police_gate
                 result = pipeline(plan_for_exec, context_id)
+                result["police_decision_metadata"] = _police_meta
                 return _publish_mso_observation(
                     req=req,
                     intent=structured_intent,
@@ -1188,7 +1208,7 @@ def handle_request(
             return _gate
         if _is_cognitive_execution(plan):
             # Police gate — B1: NL AUTO cognitive dispatch.
-            _police_gate = _register_and_enforce_police_gate(
+            _police_gate, _police_meta = _register_and_enforce_police_gate(
                 plan=plan_for_exec,
                 context_id=context_id,
                 cap_token=_cap_token,
@@ -1197,8 +1217,10 @@ def handle_request(
                 governance_trace=governance_trace,
             )
             if _police_gate is not None:
+                _police_gate["police_decision_metadata"] = _police_meta
                 return _police_gate
             result = _dispatch_cognitive_execution(plan_for_exec, context_id)
+            result["police_decision_metadata"] = _police_meta
             return _publish_mso_observation(
                 req=req,
                 intent=intent,
@@ -1214,7 +1236,7 @@ def handle_request(
         pipeline = get_pipeline(action_domain(action))
         if pipeline:
             # Police gate — B2: NL AUTO domain pipeline dispatch.
-            _police_gate = _register_and_enforce_police_gate(
+            _police_gate, _police_meta = _register_and_enforce_police_gate(
                 plan=plan_for_exec,
                 context_id=context_id,
                 cap_token=_cap_token,
@@ -1223,8 +1245,10 @@ def handle_request(
                 governance_trace=governance_trace,
             )
             if _police_gate is not None:
+                _police_gate["police_decision_metadata"] = _police_meta
                 return _police_gate
             result = pipeline(plan_for_exec, context_id)
+            result["police_decision_metadata"] = _police_meta
             return _publish_mso_observation(
                 req=req,
                 intent=intent,
@@ -1514,14 +1538,16 @@ def _execute_confirmed_plan(plan_id: str, context_id: str) -> DomainResult:
 
     # Police gate — C: confirm execution pipeline dispatch.
     # Reconstructs authority from stored plan['_authority_context'].
-    _police_gate = _enforce_police_gate_from_authority_context(plan, context_id)
+    _police_gate, _police_meta = _enforce_police_gate_from_authority_context(plan, context_id)
     if _police_gate is not None:
+        _police_gate["police_decision_metadata"] = _police_meta
         return _police_gate
 
     pipeline_fn = pipeline
 
     def _pipeline_with_confirm_observation(plan_obj: dict, context_obj: str) -> DomainResult:
         result = pipeline_fn(plan_obj, context_obj)
+        result["police_decision_metadata"] = _police_meta
         _publish_confirm_observation(plan_id=plan_id, result=result)
         return result
 

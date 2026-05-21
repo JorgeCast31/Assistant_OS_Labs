@@ -137,6 +137,12 @@ def build_mso_entity_status() -> dict[str, Any]:
         "observability": observability,
         "intent_contract": build_intent_contract_descriptor(),
         "authority_trace": build_authority_trace_descriptor(),
+        "police_decision_observability": {
+            "supported": True,
+            "visibility": "runtime_trace",
+            "decision_ref_in_result": True,
+            "fields": ["decision_ref", "permitted", "outcome", "reason", "detail", "visibility"],
+        },
         "next_safe_actions": [
             "Use mso_direct status for inspection",
             "Use planning mode to prepare confirmable actions",

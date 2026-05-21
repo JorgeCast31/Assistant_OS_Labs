@@ -136,15 +136,28 @@ def build_authority_trace_snapshot(
 
     # -- Stage: police --------------------------------------------------------
     # Police is wired into the authority chain (gate_integrated=True).
-    # Individual decision_ref is NOT persisted to a stable store — reported honestly.
-    police_stage: dict[str, Any] = {
-        "available": True,
-        "gate_integrated": True,
-        "permitted": None,
-        "reason": None,
-        "decision_ref": None,
-        "decision_visibility": "not_persisted_yet",
-    }
+    # When police_decision_metadata is present in context, it comes from a real
+    # PoliceDecision captured at dispatch time (visibility="runtime_trace").
+    # When absent, the decision was not captured — reported honestly.
+    police_meta: dict[str, Any] = ctx.get("police_decision_metadata") or {}
+    if police_meta:
+        police_stage: dict[str, Any] = {
+            "available": True,
+            "gate_integrated": True,
+            "permitted": police_meta.get("permitted"),
+            "reason": police_meta.get("reason"),
+            "decision_ref": police_meta.get("decision_ref"),
+            "decision_visibility": police_meta.get("visibility", "runtime_trace"),
+        }
+    else:
+        police_stage = {
+            "available": True,
+            "gate_integrated": True,
+            "permitted": None,
+            "reason": None,
+            "decision_ref": None,
+            "decision_visibility": "not_persisted_yet",
+        }
 
     # -- Stage: artifact ------------------------------------------------------
     artifact_stage: dict[str, Any] = {
