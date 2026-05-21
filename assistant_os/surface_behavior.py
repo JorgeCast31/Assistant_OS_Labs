@@ -27,6 +27,7 @@ from .mso.intent_contract import (
     mso_context_interaction_mode_to_intent_mode,
     INTENT_MODE_STATUS,
 )
+from .mso.authority_trace import build_authority_trace_snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -2016,6 +2017,7 @@ def get_surface_behavior_response(
             _status_resp["intent_metadata"] = normalize_mso_intent_metadata(
                 {"intent_mode": INTENT_MODE_STATUS, "execution_intent": False}
             )
+            _status_resp["authority_trace_summary"] = build_authority_trace_snapshot(_status_resp)
             return _status_resp
         if normalized in _MSO_SEAT_CHANGE_SET:
             _change_msg = _mso_seat_change_message(normalized)
