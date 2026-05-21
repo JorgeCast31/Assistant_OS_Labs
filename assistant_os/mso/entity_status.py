@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from .seat_model_provider_registry import get_seated_provider
+from .intent_contract import build_intent_contract_descriptor
 
 
 def build_mso_entity_status() -> dict[str, Any]:
@@ -133,6 +134,7 @@ def build_mso_entity_status() -> dict[str, Any]:
         "model_seat": model_seat,
         "mso_seat": mso_seat,
         "observability": observability,
+        "intent_contract": build_intent_contract_descriptor(),
         "next_safe_actions": [
             "Use mso_direct status for inspection",
             "Use planning mode to prepare confirmable actions",
