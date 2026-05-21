@@ -22,6 +22,11 @@ from .cognition.context_resolver import (
 )
 from .cognition.router import RouterResult, route_text
 from .contracts import now_iso
+from .mso.intent_contract import (
+    normalize_mso_intent_metadata,
+    mso_context_interaction_mode_to_intent_mode,
+    INTENT_MODE_STATUS,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1462,6 +1467,11 @@ def _handle_mso_mode_conversational(
                 cognitive_trace=cognitive_trace,
             )
             resp["perception_context"] = perception_context
+            resp["intent_metadata"] = normalize_mso_intent_metadata({
+                "intent_mode": mso_context_interaction_mode_to_intent_mode(mso_ctx.interaction_mode),
+                "cognition_level": mso_ctx.cognition_tier if mso_ctx.cognition_tier in ("default", "cheap", "advanced") else "default",
+                "execution_intent": False,
+            })
             try:
                 from .mso.cognitive_usage_ledger import record_provider_call
                 record_provider_call(
@@ -1517,6 +1527,11 @@ def _handle_mso_mode_conversational(
             latency_ms=_latency_ms,
         )
         resp["perception_context"] = perception_context
+        resp["intent_metadata"] = normalize_mso_intent_metadata({
+            "intent_mode": mso_context_interaction_mode_to_intent_mode(mso_ctx.interaction_mode),
+            "cognition_level": mso_ctx.cognition_tier if mso_ctx.cognition_tier in ("default", "cheap", "advanced") else "default",
+            "execution_intent": False,
+        })
         try:
             from .mso.cognitive_usage_ledger import record_provider_fallback
             record_provider_fallback(
@@ -1604,6 +1619,11 @@ def _handle_mso_mode_planning(
         "used_execution": False,
     }
     resp["perception_context"] = perception_context
+    resp["intent_metadata"] = normalize_mso_intent_metadata({
+        "intent_mode": mso_context_interaction_mode_to_intent_mode(mso_ctx.interaction_mode),
+        "cognition_level": mso_ctx.cognition_tier if mso_ctx.cognition_tier in ("default", "cheap", "advanced") else "default",
+        "execution_intent": False,
+    })
     try:
         from .mso.cognitive_usage_ledger import record_mode_interaction
         record_mode_interaction(
@@ -1690,6 +1710,11 @@ def _handle_mso_mode_validation(
         "can_execute_now": False,
     }
     resp["perception_context"] = perception_context
+    resp["intent_metadata"] = normalize_mso_intent_metadata({
+        "intent_mode": mso_context_interaction_mode_to_intent_mode(mso_ctx.interaction_mode),
+        "cognition_level": mso_ctx.cognition_tier if mso_ctx.cognition_tier in ("default", "cheap", "advanced") else "default",
+        "execution_intent": False,
+    })
     try:
         from .mso.cognitive_usage_ledger import record_mode_interaction
         record_mode_interaction(
@@ -1772,6 +1797,11 @@ def _handle_mso_mode_orchestration(
         "can_execute_now": False,
     }
     resp["perception_context"] = perception_context
+    resp["intent_metadata"] = normalize_mso_intent_metadata({
+        "intent_mode": mso_context_interaction_mode_to_intent_mode(mso_ctx.interaction_mode),
+        "cognition_level": mso_ctx.cognition_tier if mso_ctx.cognition_tier in ("default", "cheap", "advanced") else "default",
+        "execution_intent": False,
+    })
     try:
         from .mso.cognitive_usage_ledger import record_mode_interaction
         record_mode_interaction(
@@ -1983,6 +2013,9 @@ def get_surface_behavior_response(
             _status_resp["entity_status"] = _entity_status
             _status_resp["used_execution"] = False
             _status_resp["can_execute_now"] = False
+            _status_resp["intent_metadata"] = normalize_mso_intent_metadata(
+                {"intent_mode": INTENT_MODE_STATUS, "execution_intent": False}
+            )
             return _status_resp
         if normalized in _MSO_SEAT_CHANGE_SET:
             _change_msg = _mso_seat_change_message(normalized)
