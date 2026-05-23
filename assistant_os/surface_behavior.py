@@ -26,8 +26,13 @@ from .mso.intent_contract import (
     normalize_mso_intent_metadata,
     mso_context_interaction_mode_to_intent_mode,
     INTENT_MODE_STATUS,
+    INTENT_MODE_PLANNING,
 )
 from .mso.authority_trace import build_authority_trace_snapshot
+from .mso.governed_confirmation_bridge import (
+    is_governed_preparation_prompt,
+    build_governed_confirmation_bridge,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -2049,6 +2054,63 @@ def get_surface_behavior_response(
                 response_source="deterministic_conversational",
                 execution_status="stub",
             )
+        # SPRINT-BRIDGE-01: Governed confirmation bridge — intercept BEFORE plan_request.
+        # Phrases like "turn this into a confirmable action" / "prepara esto para ejecución"
+        # route here and receive the full structured bridge response with authority chain,
+        # intent metadata, and optional prepared action (if creation is supported).
+        # Fail-safe: any exception falls through to the plan_request / narrative path.
+        if is_governed_preparation_prompt(normalized):
+            try:
+                _br_auth_data = _build_plan_request_authority_data(normalized)
+                _br_queued = _br_auth_data.get("queued_prepared_action") or {}
+                _br_intent_meta = normalize_mso_intent_metadata(
+                    {"intent_mode": INTENT_MODE_PLANNING, "execution_intent": False}
+                )
+                _br_bridge = build_governed_confirmation_bridge(
+                    text=text,
+                    intent_metadata=_br_intent_meta,
+                    mso_context=None,
+                    prepared_action_data=_br_auth_data,
+                )
+                _br_resp = _build_surface_response(
+                    message=(
+                        "Governed preparation bridge activated. "
+                        "A proposal has been structured for governed review. "
+                        "No execution has occurred. "
+                        "Review the authority chain and confirm through the governed flow."
+                    ),
+                    domain="MSO",
+                    surface=surface,
+                    context_id=context_id,
+                    identity=identity,
+                    guard_result=guard_result,
+                    result_type="surface_response",
+                    intent="mso_governed_confirmation_bridge",
+                    execution_status="not_executed",
+                    response_source="mso_governed_confirmation_bridge",
+                )
+                _br_resp["used_execution"] = False
+                _br_resp["can_execute_now"] = False
+                _br_resp["execution_allowed"] = False
+                _br_resp["intent_metadata"] = _br_intent_meta
+                _br_resp["governed_confirmation_bridge"] = _br_bridge
+                _br_resp["authority_trace_summary"] = build_authority_trace_snapshot(_br_resp)
+                _br_resp["queued_prepared_action"] = _br_queued
+                _br_resp["authority_preparation"] = _br_auth_data.get("authority_preparation")
+                _br_resp["confirmable_action"] = _br_auth_data.get("confirmable_action")
+                _br_resp["operation_trace"] = {
+                    "bridge_activated": True,
+                    "prepared_action_id": _br_queued.get("queue_entry_id"),
+                    "confirmation_required": True,
+                    "source_surface": "mso_direct",
+                    "execution_allowed": False,
+                    "can_execute_now": False,
+                    "used_execution": False,
+                }
+                return _br_resp
+            except Exception:
+                pass  # fall through to existing plan_request / narrative path
+
         # SPRINT-ALPHA-05.1: Intercept plan_request BEFORE narrative_runtime so
         # "Prepárame un plan" is governed as plan_request, not LLM freeform.
         # Fail-safe: if route_text or the builder raises, capture the reason and
