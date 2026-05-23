@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import re
 from threading import RLock
@@ -13,25 +14,52 @@ from typing import Any
 from ..config import MEMORY_DIR
 from ..contracts import now_iso
 
+# Production default. Never changes at runtime.
 MSO_STORE_ROOT: Path = MEMORY_DIR / "mso_store"
-_lock = RLock()
-_ENTITY_DIRS = {
-    "cycles": MSO_STORE_ROOT / "cycles",
-    "translator_rejections": MSO_STORE_ROOT / "translator_rejections",
-    "intents": MSO_STORE_ROOT / "intents",
-    "delegations": MSO_STORE_ROOT / "delegations",
-    "capabilities": MSO_STORE_ROOT / "capabilities",
-    "reports": MSO_STORE_ROOT / "reports",
-    "escalations": MSO_STORE_ROOT / "escalations",
-    "worker_security_events": MSO_STORE_ROOT / "worker_security_events",
-    "security_responses": MSO_STORE_ROOT / "security_responses",
-    "restrictions": MSO_STORE_ROOT / "restrictions",
-    "operator_actions": MSO_STORE_ROOT / "operator_actions",
-    "operator_tokens": MSO_STORE_ROOT / "operator_tokens",
-    "control_plane_bootstrap": MSO_STORE_ROOT / "control_plane_bootstrap",
-    "control_plane_maintenance": MSO_STORE_ROOT / "control_plane_maintenance",
-    "control_plane_signals": MSO_STORE_ROOT / "control_plane_signals",
+
+_MSO_STORE_ROOT_ENV = "ASSISTANT_OS_MSO_STORE_ROOT"
+
+# Subdirectory names for each entity kind (relative to the store root).
+_ENTITY_KIND_SUBDIRS: dict[str, str] = {
+    "cycles": "cycles",
+    "translator_rejections": "translator_rejections",
+    "intents": "intents",
+    "delegations": "delegations",
+    "capabilities": "capabilities",
+    "reports": "reports",
+    "escalations": "escalations",
+    "worker_security_events": "worker_security_events",
+    "security_responses": "security_responses",
+    "restrictions": "restrictions",
+    "operator_actions": "operator_actions",
+    "operator_tokens": "operator_tokens",
+    "control_plane_bootstrap": "control_plane_bootstrap",
+    "control_plane_maintenance": "control_plane_maintenance",
+    "control_plane_signals": "control_plane_signals",
 }
+
+_lock = RLock()
+
+
+def get_mso_store_root() -> Path:
+    """Return the active mso_store root.
+
+    Reads ASSISTANT_OS_MSO_STORE_ROOT from the environment if set; otherwise
+    returns the production default (MSO_STORE_ROOT). No caching — safe to call
+    after os.environ is patched in tests.
+    """
+    env_val = os.environ.get(_MSO_STORE_ROOT_ENV, "").strip()
+    if env_val:
+        return Path(env_val)
+    return MSO_STORE_ROOT
+
+
+def _get_entity_dirs() -> dict[str, Path]:
+    """Return entity-kind → directory mapping for the current store root."""
+    root = get_mso_store_root()
+    return {kind: root / subdir for kind, subdir in _ENTITY_KIND_SUBDIRS.items()}
+
+
 _RETENTION_DAYS = {
     "cycles": 30,
     "translator_rejections": 30,
@@ -53,7 +81,7 @@ _last_cleanup_at = ""
 
 
 def _ensure_dirs() -> None:
-    for path in _ENTITY_DIRS.values():
+    for path in _get_entity_dirs().values():
         path.mkdir(parents=True, exist_ok=True)
 
 
@@ -156,7 +184,7 @@ def _record_envelope(kind: str, data: dict[str, Any]) -> dict[str, Any]:
 def _write_record(kind: str, record_id: str, obj: Any) -> str:
     _ensure_dirs()
     safe_record_id = re.sub(r'[^A-Za-z0-9._-]+', "_", record_id).strip("._") or "record"
-    path = _ENTITY_DIRS[kind] / f"{safe_record_id}.json"
+    path = _get_entity_dirs()[kind] / f"{safe_record_id}.json"
     envelope = _record_envelope(kind, _payload(obj))
     with _lock:
         path.write_text(json.dumps(envelope, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -164,7 +192,7 @@ def _write_record(kind: str, record_id: str, obj: Any) -> str:
 
 
 def _iter_records(kind: str) -> list[dict[str, Any]]:
-    root = _ENTITY_DIRS[kind]
+    root = _get_entity_dirs()[kind]
     if not root.exists():
         return []
     items: list[dict[str, Any]] = []
@@ -342,9 +370,10 @@ def cleanup_expired_records(*, now_ts: str = "") -> dict[str, int]:
     global _last_cleanup_at
 
     now_dt = _parse_iso(now_ts) or _now_dt()
-    deleted_counts = {kind: 0 for kind in _ENTITY_DIRS}
+    entity_dirs = _get_entity_dirs()
+    deleted_counts = {kind: 0 for kind in entity_dirs}
     with _lock:
-        for kind, root in _ENTITY_DIRS.items():
+        for kind, root in entity_dirs.items():
             if not root.exists():
                 continue
             for path in root.glob("*.json"):
@@ -370,7 +399,7 @@ def get_store_status() -> dict[str, Any]:
     now_dt = _now_dt()
     oldest = ""
     newest = ""
-    for kind in _ENTITY_DIRS:
+    for kind in _get_entity_dirs():
         records = _iter_records(kind)
         counts[kind] = len(records)
         for record in records:
@@ -384,7 +413,7 @@ def get_store_status() -> dict[str, Any]:
             if retention_until is not None and retention_until <= now_dt:
                 expired_count += 1
     return {
-        "root": str(MSO_STORE_ROOT),
+        "root": str(get_mso_store_root()),
         "counts": counts,
         "total_records": sum(counts.values()),
         "retention_days": dict(_RETENTION_DAYS),
@@ -397,10 +426,10 @@ def get_store_status() -> dict[str, Any]:
 
 def clear_mso_store() -> None:
     global _last_cleanup_at
-    if not MSO_STORE_ROOT.exists():
+    if not get_mso_store_root().exists():
         return
     with _lock:
-        for root in _ENTITY_DIRS.values():
+        for root in _get_entity_dirs().values():
             if not root.exists():
                 continue
             for path in root.glob("*"):
