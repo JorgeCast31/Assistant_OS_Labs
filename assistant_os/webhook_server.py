@@ -2622,10 +2622,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         Returns a Response compatible with prefix-based routing.
         """
-        from .core.orchestrator import handle_request
+        from assistant_os.mso.kernel import handle_sovereign_request as handle_request
 
         req = normalize_request(text=text)
-        result = handle_request(req, forced_operation=forced_operation)
+        result = handle_request(req, source="webhook_server._route_text_by_classification", forced_operation=forced_operation)
         response = _adapt_result_to_response(result, req["context_id"])
 
         # M30: Lift cognitive_trace from DomainResult data to the top-level
@@ -2724,7 +2724,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # orchestrator can track it independently.  The original context_id is
         # passed as confirm_plan_id so the orchestrator's _execute_confirmed_plan
         # can look up and remove the stored plan.
-        from .core.orchestrator import handle_request as _handle_request
+        from assistant_os.mso.kernel import handle_sovereign_request as _handle_request
         from .contracts import normalize_request as _normalize_request, new_context_id as _new_ctx_id
 
         execution_req = _normalize_request(
@@ -2732,7 +2732,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             context_id=_new_ctx_id(),
             metadata={"confirm_plan_id": context_id},
         )
-        domain_result = _handle_request(execution_req)
+        domain_result = _handle_request(execution_req, source="webhook_server._execute_confirmed_plan")
         result = _adapt_result_to_response(domain_result, execution_req["context_id"])
 
         # Orchestrator already removed the plan; this is a no-op safety net.
@@ -3410,7 +3410,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         session_context = data.get("session_context", {})
 
         from .contracts import normalize_request, ACTION_FIN_PLAN, RISK_LOW
-        from .core.orchestrator import handle_request as _handle_request
+        from assistant_os.mso.kernel import handle_sovereign_request as _handle_request
 
         req = normalize_request(
             text=text,
@@ -3422,7 +3422,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "requires_confirmation": False,
             },
         )
-        dr = _handle_request(req)
+        dr = _handle_request(req, source="webhook_server._handle_fin_plan")
 
         _log_fin_expense_event(
             remote=remote,
@@ -3497,7 +3497,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 return
 
             from .contracts import normalize_request, ACTION_FIN_COMMIT, RISK_MEDIUM
-            from .core.orchestrator import handle_request as _handle_request
+            from assistant_os.mso.kernel import handle_sovereign_request as _handle_request
 
             req = normalize_request(
                 text="",
@@ -3509,7 +3509,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     "requires_confirmation": False,
                 },
             )
-            dr = _handle_request(req)
+            dr = _handle_request(req, source="webhook_server._handle_fin_commit")
 
             commit_data = dr.get("data", {})
             if dr["ok"]:
@@ -3743,7 +3743,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         # ── Canonical entry (parse + auto-store) ────────────────────────
         from .contracts import normalize_request, ACTION_FIN_EXPENSE, RISK_MEDIUM
-        from .core.orchestrator import handle_request as _handle_request
+        from assistant_os.mso.kernel import handle_sovereign_request as _handle_request
 
         req = normalize_request(
             text=text,
@@ -3756,7 +3756,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "target": "expense parse",
             },
         )
-        dr = _handle_request(req)
+        dr = _handle_request(req, source="webhook_server._handle_fin_expense")
         execution_id = dr.get("plan_id")
         # ── End canonical entry ──────────────────────────────────────────
 
@@ -3970,7 +3970,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             return
 
         from .contracts import normalize_request, ACTION_FIN_CHAPERON, ACTION_WORK_QUERY, RISK_LOW
-        from .core.orchestrator import handle_request as _handle_request
+        from assistant_os.mso.kernel import handle_sovereign_request as _handle_request
 
         if domain == "WORK":
             # Route WORK queries through the canonical WORK_QUERY path
@@ -3991,7 +3991,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     "target": "work db query",
                 },
             )
-            dr = _handle_request(req)
+            dr = _handle_request(req, source="webhook_server._handle_fin_chaperon")
             work_data = dr.get("data", {})
             self._send_json_response(200, {
                 "ok": dr["ok"],
@@ -4021,7 +4021,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "requires_confirmation": False,
             },
         )
-        dr = _handle_request(req)
+        dr = _handle_request(req, source="webhook_server._handle_fin_chaperon")
         chap_data = dr.get("data", {})
         action_plan = chap_data.get("action_plan", {})
 
@@ -4087,7 +4087,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             return
 
         from .contracts import normalize_request, ACTION_FIN_BATCH, RISK_MEDIUM
-        from .core.orchestrator import handle_request as _handle_request
+        from assistant_os.mso.kernel import handle_sovereign_request as _handle_request
 
         req = normalize_request(
             text="",
@@ -4099,7 +4099,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "requires_confirmation": False,
             },
         )
-        dr = _handle_request(req)
+        dr = _handle_request(req, source="webhook_server._handle_fin_expense_batch")
         batch_data = dr.get("data", {})
 
         self._send_json_response(200, {
@@ -4160,7 +4160,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         session_id = data.get("session_id", "")
 
         from .contracts import normalize_request, ACTION_FIN_CONFIRM, RISK_MEDIUM
-        from .core.orchestrator import handle_request as _handle_request
+        from assistant_os.mso.kernel import handle_sovereign_request as _handle_request
 
         req = normalize_request(
             text="",
@@ -4184,7 +4184,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "requires_confirmation": False,
             },
         )
-        dr = _handle_request(req)
+        dr = _handle_request(req, source="webhook_server._handle_fin_expense_confirm")
         confirm_data = dr.get("data", {})
 
         _log_fin_expense_event(
@@ -5962,7 +5962,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         # --- Build CanonicalRequest and call orchestrator ---
         from .contracts import normalize_request
-        from .core.orchestrator import handle_request as _handle_request
+        from assistant_os.mso.kernel import handle_sovereign_request as _handle_request
 
         req = normalize_request(
             text="",
@@ -5974,7 +5974,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "domain_payload":       payload,
             },
         )
-        dr = _handle_request(req)
+        dr = _handle_request(req, source="webhook_server._handle_host_action")
 
         # --- Adapt DomainResult → canonical HOST response shape ---
         self._send_json_response(_host_http_status(dr), _host_dr_to_response(dr))
@@ -6063,12 +6063,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         # --- Build CanonicalRequest and call orchestrator confirm path ---
         from .contracts import normalize_request
-        from .core.orchestrator import handle_request as _handle_request
+        from assistant_os.mso.kernel import handle_sovereign_request as _handle_request
 
         dr = _handle_request(normalize_request(
             text="",
             metadata={"confirm_plan_id": plan_id},
-        ))
+        ), source="webhook_server._handle_host_confirm")
 
         # --- Adapt DomainResult → canonical HOST response shape ---
         self._send_json_response(_host_http_status(dr), _host_dr_to_response(dr))
@@ -6206,7 +6206,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         }
 
         from .contracts import normalize_request, ACTION_MACHINE_OPERATOR_EXECUTE, RISK_LOW
-        from .core.orchestrator import handle_request as _handle_request
+        from assistant_os.mso.kernel import handle_sovereign_request as _handle_request
 
         req = normalize_request(
             text="",
@@ -6220,7 +6220,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 },
             },
         )
-        dr = _handle_request(req)
+        dr = _handle_request(req, source="webhook_server._handle_machine_operator_execute")
         self._send_json_response(200, dict(dr))
 
 
