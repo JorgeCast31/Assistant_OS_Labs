@@ -13,6 +13,7 @@ from typing import Any
 AUTHORITY_ARTIFACT_VERSION_V1 = "1"
 AUTHORITY_ARTIFACT_VERSION_V2 = "2"
 AUTHORITY_ARTIFACT_SECRET_ENV_VAR = "ASSISTANT_OS_AUTHORITY_ARTIFACT_SECRET"
+_AUTHORITY_ARTIFACT_DEV_MODE_ENV_VAR = "ASSISTANT_OS_DEV_MODE"
 _DEFAULT_AUTHORITY_ARTIFACT_SECRET = "assistant_os.authority_artifact.dev_secret.v1"
 
 # Valid authority source/class identifiers (V2).
@@ -94,13 +95,38 @@ class AuthorityArtifact:
 
 
 def resolve_authority_artifact_secret(secret: str | None = None) -> str:
-    """Resolve the authority artifact signing secret."""
+    """Resolve the authority artifact signing secret.
+
+    Resolution order:
+      1. Explicit ``secret`` argument (if non-empty string).
+      2. ``ASSISTANT_OS_AUTHORITY_ARTIFACT_SECRET`` environment variable.
+      3. Development default — only if ``ASSISTANT_OS_DEV_MODE=1`` is set.
+      4. Otherwise: raise RuntimeError.  No silent fallback in production.
+
+    Raises:
+        RuntimeError: When no secret is configured and
+            ``ASSISTANT_OS_DEV_MODE`` is not exactly ``"1"``.
+    """
     if isinstance(secret, str) and secret.strip():
         return secret
     env_value = os.environ.get(AUTHORITY_ARTIFACT_SECRET_ENV_VAR, "").strip()
     if env_value:
         return env_value
-    return _DEFAULT_AUTHORITY_ARTIFACT_SECRET
+    if os.environ.get(_AUTHORITY_ARTIFACT_DEV_MODE_ENV_VAR, "").strip() == "1":
+        import warnings
+        warnings.warn(
+            f"[AUTHORITY] Using development artifact secret. "
+            f"Set {AUTHORITY_ARTIFACT_SECRET_ENV_VAR} for production deployments.",
+            stacklevel=3,
+        )
+        return _DEFAULT_AUTHORITY_ARTIFACT_SECRET
+    raise RuntimeError(
+        f"Authority artifact secret is not configured and "
+        f"{_AUTHORITY_ARTIFACT_DEV_MODE_ENV_VAR} is not set to '1'. "
+        f"Set the {AUTHORITY_ARTIFACT_SECRET_ENV_VAR} environment variable "
+        f"before signing or verifying authority artifacts. "
+        f"For local development only, set {_AUTHORITY_ARTIFACT_DEV_MODE_ENV_VAR}=1."
+    )
 
 
 def _coerce_artifact_payload(artifact: AuthorityArtifact | Mapping[str, Any]) -> dict[str, Any]:

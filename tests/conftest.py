@@ -15,8 +15,22 @@ The autouse fixture below:
 Tests that need specific lifecycle states (expired, spent) or binding
 constraints that differ from the defaults call register_token() themselves
 within the test body, overriding the pre-seeded entries.
+
+Authority artifact dev mode
+---------------------------
+ASSISTANT_OS_DEV_MODE=1 is set for the entire test session so that tests
+that sign/verify authority artifacts do not require a real production secret.
+Tests that need to verify hardened production behaviour (i.e. that the
+RuntimeError IS raised) use monkeypatch.delenv() to clear this flag for the
+duration of that individual test.
 """
+import os
+
 import pytest
+
+# Allow the dev-default signing secret for all tests.  Individual tests that
+# exercise the production-hardened path use monkeypatch.delenv() to override.
+os.environ.setdefault("ASSISTANT_OS_DEV_MODE", "1")
 
 from assistant_os.police.token_registry import (
     _reset_for_testing,
