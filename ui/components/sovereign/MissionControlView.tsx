@@ -195,7 +195,7 @@ function PlannerSpace() {
       </div>
 
       <div className="rounded-lg border border-os-border bg-os-surface p-4 space-y-3">
-        <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Next Safe Action</p>
+        <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Next Safe Step</p>
         <button
           onClick={handleEscalate}
           disabled={!canEscalate || plan.state === 'mso_review'}
@@ -272,7 +272,6 @@ function MSOEscalationSpace() {
 
   const nextStage: MissionLifecycleState = (() => {
     if (currentStage === 'planning')              return 'mso_review'
-    if (currentStage === 'mso_review')            return 'prepared'
     if (currentStage === 'prepared')              return 'awaiting_confirmation'
     if (currentStage === 'awaiting_confirmation') return 'running'
     return 'completed'
@@ -340,9 +339,9 @@ function MSOEscalationSpace() {
         )}
       </section>
 
-      {/* Cognitive Seat */}
+      {/* MSO Seat — cognitive provider seat */}
       <section>
-        <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-2">Cognitive Seat</p>
+        <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-2">MSO Seat</p>
         {loading ? (
           <PostureRow label="Seat Status" value="Loading…" tone="muted" />
         ) : seatStatus === null ? (
@@ -411,6 +410,12 @@ function MSOEscalationSpace() {
             note="Full chain required: PolicyDecision → CapabilityToken → OperationBinding → AuthorizedPlan → PoliceGate."
           />
           <PostureRow
+            label="Governed Execution"
+            value="Closed"
+            tone="muted"
+            note="Execution is closed. No action from this panel executes, approves, or issues tokens."
+          />
+          <PostureRow
             label="Prepared Actions Pending"
             value={preparedActions === null ? '…' : String(preparedCount)}
             tone={preparedCount > 0 ? 'warn' : 'ok'}
@@ -449,6 +454,9 @@ function ArmsAvailabilitySpace() {
           No action from this panel executes, approves, or issues tokens.
         </p>
       </div>
+
+      {/* Agents / Destinations sub-header */}
+      <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest">Agents / Destinations</p>
 
       <div className="flex items-center gap-3">
         <span className="text-[10px] font-mono text-tx-muted">Registry source:</span>
@@ -568,9 +576,9 @@ function OrchestrationViewSpace() {
         </p>
       </div>
 
-      {/* Mission state tiles */}
+      {/* Runtime Snapshot */}
       <section>
-        <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-2">Current Mission State</p>
+        <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-2">Runtime Snapshot</p>
         <div className="grid grid-cols-3 gap-3">
           <SituationTile
             label="Operational Mode"
@@ -579,26 +587,66 @@ function OrchestrationViewSpace() {
             warn={operationalMode !== 'NORMAL' && operationalMode !== 'UNKNOWN'}
           />
           <SituationTile
+            label="API"
+            value={`${apiStatus} / ${webhookStatus}`}
+            accent={apiStatus === 'ok' && webhookStatus === 'ok'}
+          />
+          <SituationTile
             label="Active Threads"
             value={preparedActions === null ? '…' : String(preparedCount)}
             warn={preparedCount > 0}
             accent={preparedActions !== null && preparedCount === 0}
           />
+        </div>
+      </section>
+
+      {/* Queue Snapshot */}
+      <section>
+        <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-2">Queue Snapshot</p>
+        <div className="grid grid-cols-2 gap-3 mb-2">
           <SituationTile
-            label="Confirm Queue"
+            label="Prepared Actions"
+            value={preparedActions === null ? '…' : String(preparedCount)}
+            warn={preparedCount > 0}
+            accent={preparedActions !== null && preparedCount === 0}
+          />
+          <SituationTile
+            label="Confirm Pending"
             value={confirmPending === null ? '…' : String(confirmCount)}
             warn={confirmCount > 0}
             accent={confirmPending !== null && confirmCount === 0}
           />
         </div>
+        {preparedCount > 0 ? (
+          <div className="rounded-lg border border-warn/30 bg-warn/5 p-3">
+            <p className="text-[10px] font-mono text-warn">
+              {preparedCount} prepared action{preparedCount !== 1 ? 's' : ''} waiting for manual review.
+              Each action includes a read-only authority timeline showing all 11 stages.
+              Open Confirm Queue to inspect prepared action details.
+              Execution remains closed.
+            </p>
+          </div>
+        ) : (
+          <PostureRow label="Queue Status" value="Clear" tone="ok" note="No prepared actions pending." />
+        )}
       </section>
 
-      {/* System status */}
+      {/* Authority Posture */}
       <section>
-        <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-2">System Status</p>
-        <div className="grid grid-cols-2 gap-2">
-          <PostureRow label="API" value={apiStatus} tone={apiStatus === 'ok' ? 'ok' : 'warn'} />
-          <PostureRow label="Webhook" value={webhookStatus} tone={webhookStatus === 'ok' ? 'ok' : 'warn'} />
+        <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-2">Authority Posture</p>
+        <div className="space-y-2">
+          <PostureRow
+            label="Police Gate"
+            value="Fail-closed"
+            tone="ok"
+            note="8-step enforcement: token present, registered, not expired, not consumed, binding match, authorized plan, delegated seat valid, capability in scope."
+          />
+          <PostureRow
+            label="Governed Execution"
+            value="Closed"
+            tone="muted"
+            note="Full chain required: PolicyDecision → CapabilityToken → OperationBinding → AuthorizedPlan → PoliceGate."
+          />
         </div>
       </section>
 
@@ -881,7 +929,7 @@ export function MissionControlView() {
           </div>
           {mcEntity && (
             <p className="text-[9px] font-mono text-tx-muted mt-1 tracking-wider">
-              entity:{mcEntity.id} · {mcEntity.execution_policy} · read-only
+              entity:{mcEntity.id} · {mcEntity.execution_policy} · Read-only
             </p>
           )}
         </div>
