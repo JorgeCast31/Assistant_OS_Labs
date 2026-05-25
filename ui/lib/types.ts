@@ -823,3 +823,70 @@ export interface MSOSeatProviderResponse {
   note: string
   error?: string
 }
+
+// ---------------------------------------------------------------------------
+// Mission Control Orchestration Spaces — S-MISSION-CONTROL-ORCHESTRATION-SPACES-ALPHA-01
+// ---------------------------------------------------------------------------
+
+export type MissionLifecycleState =
+  | 'draft'
+  | 'planning'
+  | 'mso_review'
+  | 'prepared'
+  | 'awaiting_confirmation'
+  | 'running'
+  | 'blocked'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+export interface MissionControlPlan {
+  id?: string
+  title: string
+  body: string
+  state: MissionLifecycleState
+  createdAt?: string
+  updatedAt?: string
+}
+
+export interface OrchestrationThread {
+  id: string
+  label: string
+  status: MissionLifecycleState
+  assignedArm?: string
+  lastEvent?: string
+  executionStatus?: 'real' | 'stub' | 'unavailable' | 'partial'
+}
+
+// MSO entity status — read-only boundary description
+export interface MSOEntityStatusResponse {
+  ok: boolean
+  source: string
+  entity?: string
+  boundary?: string
+  authority_chain?: string[]
+  surfaces?: string[]
+  interaction_modes?: string[]
+  execution_allowed: boolean
+  used_execution: boolean
+  error?: string
+}
+
+// MSO seat status — read-only cognitive seat snapshot
+export interface MSOSeatAvailableSeat {
+  name: string
+  available: boolean
+  provider?: string
+  model?: string
+}
+
+export interface MSOSeatStatusResponse {
+  ok: boolean
+  source: string
+  active_seat?: string
+  available_seats?: MSOSeatAvailableSeat[]
+  selection?: Record<string, unknown>
+  used_execution: boolean
+  cognitive_only: boolean
+  error?: string
+}
