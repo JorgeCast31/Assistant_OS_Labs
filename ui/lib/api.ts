@@ -19,6 +19,8 @@ import type {
   AuthorityStatusResponse,
   OutcomeStatusQuery,
   OutcomeStatusResponse,
+  MSOEntityStatusResponse,
+  MSOSeatStatusResponse,
 } from './types'
 
 export const API_BASE_URL =
@@ -961,5 +963,60 @@ export async function getMSOSeatProvider(): Promise<MSOSeatProviderResponse> {
     return json.ok !== undefined ? json : MSO_SEAT_PROVIDER_UNAVAILABLE
   } catch {
     return MSO_SEAT_PROVIDER_UNAVAILABLE
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MSO Entity Status — S-MISSION-CONTROL-ORCHESTRATION-SPACES-ALPHA-01
+// Read-only boundary description. Never executes.
+// ---------------------------------------------------------------------------
+
+const MSO_ENTITY_STATUS_UNAVAILABLE: MSOEntityStatusResponse = {
+  ok: false,
+  source: 'mso_entity_status',
+  entity: 'MSO',
+  execution_allowed: false,
+  used_execution: false,
+  error: 'MSO entity status unavailable',
+}
+
+export async function getMSOEntityStatus(): Promise<MSOEntityStatusResponse> {
+  try {
+    const res = await fetch('/api/mso/entity/status', {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) return MSO_ENTITY_STATUS_UNAVAILABLE
+    const json = await res.json() as MSOEntityStatusResponse
+    return json.ok !== undefined ? json : MSO_ENTITY_STATUS_UNAVAILABLE
+  } catch {
+    return MSO_ENTITY_STATUS_UNAVAILABLE
+  }
+}
+
+// ---------------------------------------------------------------------------
+// MSO Seat Status — S-MISSION-CONTROL-ORCHESTRATION-SPACES-ALPHA-01
+// Read-only cognitive seat snapshot. Never executes.
+// ---------------------------------------------------------------------------
+
+const MSO_SEAT_STATUS_UNAVAILABLE: MSOSeatStatusResponse = {
+  ok: false,
+  source: 'mso_seat_status',
+  used_execution: false,
+  cognitive_only: true,
+  error: 'MSO seat status unavailable',
+}
+
+export async function getMSOSeatStatus(): Promise<MSOSeatStatusResponse> {
+  try {
+    const res = await fetch('/api/mso/seat/status', {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) return MSO_SEAT_STATUS_UNAVAILABLE
+    const json = await res.json() as MSOSeatStatusResponse
+    return json.ok !== undefined ? json : MSO_SEAT_STATUS_UNAVAILABLE
+  } catch {
+    return MSO_SEAT_STATUS_UNAVAILABLE
   }
 }
