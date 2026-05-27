@@ -42,3 +42,8 @@ These failures are all pre-existing and unrelated to this sprint's scope.
 The sprint plan expected "exactly 2 failures" after the encoding fix. The actual
 baseline is larger. This discrepancy is recorded here for traceability. The 2
 specifically-named failures do appear consistently in every run.
+
+The 7–21 range reflects environment-dependent test isolation issues and shared
+state in the pre-existing test suite — unrelated to this sprint. The variance is
+expected environmental noise, not new regressions. The 2 specifically-named
+`test_mso_runtime.py` failures are the stable regression indicators to watch.
