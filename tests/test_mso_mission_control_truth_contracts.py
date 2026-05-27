@@ -337,6 +337,139 @@ class TestBuildOrchestrationSnapshot:
                     f"intent for action {action.get('id')!r} exceeds 60 chars"
                 )
 
+    # ---- confirm_pending tests ----
+
+    def test_confirm_pending_is_list(self):
+        result = _snapshot()
+        assert isinstance(result["confirm_pending"], list)
+
+    def test_confirm_pending_empty_by_default(self):
+        """Queue is empty by default → confirm_pending must be []."""
+        result = _snapshot()
+        assert result["confirm_pending"] == []
+
+    def test_confirm_pending_populated_when_queue_has_entry(self):
+        """When an action is enqueued, confirm_pending must reflect it."""
+        from assistant_os.mso.confirmable_prepared_action import ConfirmablePreparedAction
+        from assistant_os.mso.prepared_action_queue import enqueue_confirmable_prepared_action
+        action = ConfirmablePreparedAction(
+            preparation_id="prep-test-cp-1",
+            proposal_id="prop-test-cp-1",
+            user_intent="test confirm pending intent",
+            domain="CODE",
+            requested_action="write_test",
+            capability_name="code_execution",
+        )
+        enqueue_confirmable_prepared_action(action)
+        result = _snapshot()
+        assert len(result["confirm_pending"]) == 1
+
+    def test_confirm_pending_status_is_awaiting_confirmation(self):
+        """Confirm pending items must carry status='awaiting_confirmation'."""
+        from assistant_os.mso.confirmable_prepared_action import ConfirmablePreparedAction
+        from assistant_os.mso.prepared_action_queue import enqueue_confirmable_prepared_action
+        action = ConfirmablePreparedAction(
+            preparation_id="prep-test-cp-2",
+            proposal_id="prop-test-cp-2",
+            user_intent="status check intent",
+            domain="CODE",
+            requested_action="check_status",
+            capability_name="code_execution",
+        )
+        enqueue_confirmable_prepared_action(action)
+        result = _snapshot()
+        for item in result["confirm_pending"]:
+            assert item["status"] == "awaiting_confirmation", (
+                f"confirm_pending item has unexpected status={item.get('status')!r}"
+            )
+
+    def test_confirm_pending_execution_allowed_is_false(self):
+        """Invariant: confirm_pending items must always have execution_allowed=False."""
+        from assistant_os.mso.confirmable_prepared_action import ConfirmablePreparedAction
+        from assistant_os.mso.prepared_action_queue import enqueue_confirmable_prepared_action
+        action = ConfirmablePreparedAction(
+            preparation_id="prep-test-cp-3",
+            proposal_id="prop-test-cp-3",
+            user_intent="exec check intent",
+            domain="CODE",
+            requested_action="exec_check",
+            capability_name="code_execution",
+        )
+        enqueue_confirmable_prepared_action(action)
+        result = _snapshot()
+        for item in result["confirm_pending"]:
+            assert item["execution_allowed"] is False
+
+    def test_confirm_pending_can_execute_now_is_false(self):
+        """Invariant: confirm_pending items must always have can_execute_now=False."""
+        from assistant_os.mso.confirmable_prepared_action import ConfirmablePreparedAction
+        from assistant_os.mso.prepared_action_queue import enqueue_confirmable_prepared_action
+        action = ConfirmablePreparedAction(
+            preparation_id="prep-test-cp-4",
+            proposal_id="prop-test-cp-4",
+            user_intent="can exec check",
+            domain="CODE",
+            requested_action="can_exec_check",
+            capability_name="code_execution",
+        )
+        enqueue_confirmable_prepared_action(action)
+        result = _snapshot()
+        for item in result["confirm_pending"]:
+            assert item["can_execute_now"] is False
+
+    def test_confirm_pending_does_not_imply_execution(self):
+        """Confirm pending != running. No item may have status='running'."""
+        from assistant_os.mso.confirmable_prepared_action import ConfirmablePreparedAction
+        from assistant_os.mso.prepared_action_queue import enqueue_confirmable_prepared_action
+        action = ConfirmablePreparedAction(
+            preparation_id="prep-test-cp-5",
+            proposal_id="prop-test-cp-5",
+            user_intent="no running check",
+            domain="CODE",
+            requested_action="no_running",
+            capability_name="code_execution",
+        )
+        enqueue_confirmable_prepared_action(action)
+        result = _snapshot()
+        for item in result["confirm_pending"]:
+            assert item.get("status") != "running"
+
+    def test_confirm_pending_has_required_keys(self):
+        """Each confirm_pending item must have id, status, domain, intent, requested_action."""
+        from assistant_os.mso.confirmable_prepared_action import ConfirmablePreparedAction
+        from assistant_os.mso.prepared_action_queue import enqueue_confirmable_prepared_action
+        action = ConfirmablePreparedAction(
+            preparation_id="prep-test-cp-6",
+            proposal_id="prop-test-cp-6",
+            user_intent="keys check intent",
+            domain="CODE",
+            requested_action="write_keys_check",
+            capability_name="code_execution",
+        )
+        enqueue_confirmable_prepared_action(action)
+        result = _snapshot()
+        for item in result["confirm_pending"]:
+            for key in ("id", "status", "domain", "intent", "requested_action",
+                        "execution_allowed", "can_execute_now"):
+                assert key in item, f"confirm_pending item missing required key {key!r}"
+
+    def test_confirm_pending_count_matches_prepared_actions_count(self):
+        """When queue has N entries, both prepared_actions and confirm_pending have N items."""
+        from assistant_os.mso.confirmable_prepared_action import ConfirmablePreparedAction
+        from assistant_os.mso.prepared_action_queue import enqueue_confirmable_prepared_action
+        for i in range(2):
+            action = ConfirmablePreparedAction(
+                preparation_id=f"prep-cp-count-{i}",
+                proposal_id=f"prop-cp-count-{i}",
+                user_intent=f"count check intent {i}",
+                domain="CODE",
+                requested_action=f"count_check_{i}",
+                capability_name="code_execution",
+            )
+            enqueue_confirmable_prepared_action(action)
+        result = _snapshot()
+        assert len(result["prepared_actions"]) == len(result["confirm_pending"]) == 2
+
 
 class TestMissionControlRouteHandlers:
     """Verify the four new webhook_server handler methods exist and are callable.

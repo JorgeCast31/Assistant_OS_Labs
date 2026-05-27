@@ -215,6 +215,7 @@ def build_orchestration_snapshot() -> dict[str, Any]:
 
     - runs and threads are always [] — there is no live execution
     - prepared_actions is derived from the queue (honest read-model)
+    - confirm_pending reflects the same queue entries viewed as awaiting human confirmation
     - A run must NEVER have status: "running" — if nothing is running, return empty
 
     Returns
@@ -223,6 +224,7 @@ def build_orchestration_snapshot() -> dict[str, Any]:
         Truth-contract dict. Never raises.
     """
     prepared_actions: list[dict[str, Any]] = []
+    confirm_pending_items: list[dict[str, Any]] = []
 
     try:
         from .prepared_action_queue import list_pending_confirmable_action_dicts
@@ -248,8 +250,24 @@ def build_orchestration_snapshot() -> dict[str, Any]:
                     "intent": intent,
                 }
             )
+
+            # Confirm pending: same entry viewed as awaiting human confirmation.
+            # human_confirmation_status is always "pending" for queue entries.
+            # execution_allowed and can_execute_now are always False (dataclass invariants).
+            confirm_pending_items.append(
+                {
+                    "id": entry_id,
+                    "status": "awaiting_confirmation",
+                    "domain": entry.get("domain") or None,
+                    "intent": intent,
+                    "requested_action": entry.get("requested_action") or None,
+                    "execution_allowed": False,   # ALWAYS False
+                    "can_execute_now": False,      # ALWAYS False
+                }
+            )
     except Exception:
         prepared_actions = []
+        confirm_pending_items = []
 
     return {
         "ok": True,
@@ -257,10 +275,10 @@ def build_orchestration_snapshot() -> dict[str, Any]:
         "execution_allowed": False,
         "used_execution": False,
         "runner_reachable_from_ui": False,
-        "runs": [],       # no live runs — honest empty
-        "threads": [],    # no live threads — honest empty
+        "runs": [],        # no live runs — honest empty
+        "threads": [],     # no live threads — honest empty
         "prepared_actions": prepared_actions,
-        "confirm_pending": [],  # no separate confirm queue at this layer yet
+        "confirm_pending": confirm_pending_items,
         "live_execution": False,
         "event_stream_connected": False,
     }
