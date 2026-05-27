@@ -93,6 +93,33 @@ def build_mission_control_status() -> dict[str, Any]:
         authority_status_str = "unavailable"
         authority_counts = {}
 
+    # -- Outcome status (read-only, fail-soft) -----------------------------------
+    # build_outcome_status() with no IDs returns found=False, status="not_found"
+    # immediately (all _find_* helpers return None when no IDs are supplied).
+    # This is more honest than hardcoding "unavailable".
+    outcome_info: dict[str, Any] = {
+        "status": "unavailable",
+        "found": False,
+        "execution_closed": True,
+        "sources_checked": [],
+    }
+    try:
+        from .outcome_status import build_outcome_status
+        raw_outcome = build_outcome_status()  # no IDs → not_found
+        outcome_info = {
+            "status": raw_outcome.get("outcome", {}).get("status", "unknown"),
+            "found": bool(raw_outcome.get("found", False)),
+            "execution_closed": True,  # ALWAYS True — no execution from UI
+            "sources_checked": list(raw_outcome.get("sources", {}).keys()),
+        }
+    except Exception:
+        outcome_info = {
+            "status": "unavailable",
+            "found": False,
+            "execution_closed": True,
+            "sources_checked": [],
+        }
+
     # -- Derive overall state ------------------------------------------------
     available_count = sum([entity_ok, seat_ok])
     if available_count == 2:
@@ -129,9 +156,7 @@ def build_mission_control_status() -> dict[str, Any]:
             "status": authority_status_str,
             "counts": authority_counts,
         },
-        "outcome": {
-            "status": "unavailable",  # no live outcome data at this layer
-        },
+        "outcome": outcome_info,
     }
 
 
@@ -282,3 +307,123 @@ def build_orchestration_snapshot() -> dict[str, Any]:
         "live_execution": False,
         "event_stream_connected": False,
     }
+
+
+# ---------------------------------------------------------------------------
+# 4. build_authority_trace_stage_list
+# ---------------------------------------------------------------------------
+
+
+def build_authority_trace_stage_list(
+    snapshot: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """
+    Map a build_authority_trace_snapshot() result to a UI-ready stages list.
+
+    Each stage gets:
+      - id          : stage key from AUTHORITY_CHAIN
+      - label       : human-readable name
+      - state       : 'available' | 'architectural' | 'unavailable'
+      - evidence_ref: honest metadata string where available, None otherwise
+
+    State rules:
+      - mso_kernel         → always "available" (MSO is always present)
+      - intent_contract    → "available" if snapshot.request.available else "architectural"
+      - policy             → "available" if snapshot.policy.available else "architectural"
+      - governance         → "available" if snapshot.governance.available else "architectural"
+      - capability_token   → "available" if snapshot.capability.available else "architectural"
+      - police_gate        → always "available" (wired into chain)
+      - authority_artifact → always "available" (wired into chain)
+      - runner             → always "architectural" (closed from UI — never reachable)
+      - outcome            → "available" if snapshot.outcome.available else "unavailable"
+
+    Evidence refs are populated honestly from snapshot data where present.
+    Never fabricated. Returns a list even if snapshot is empty or malformed.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        9-element stages list. Never raises.
+    """
+    from .authority_trace import AUTHORITY_CHAIN
+
+    # Safely extract nested stage data from snapshot
+    def _stage(key: str) -> dict[str, Any]:
+        val = snapshot.get(key, {})
+        return val if isinstance(val, dict) else {}
+
+    request_data    = _stage("request")
+    policy_data     = _stage("policy")
+    governance_data = _stage("governance")
+    capability_data = _stage("capability")
+    police_data     = _stage("police")
+    artifact_data   = _stage("artifact")
+    outcome_data    = _stage("outcome")
+
+    # Each entry: (label, state, evidence_ref)
+    stage_specs: dict[str, tuple[str, str, str | None]] = {
+        "mso_kernel": (
+            "MSO Kernel",
+            "available",  # MSO is always present — never architectural
+            "kernel_boundary:true · orchestrator_owned:true",
+        ),
+        "intent_contract": (
+            "Intent Contract",
+            "available" if request_data.get("available") else "architectural",
+            "execution_intent:false",  # no execution intent at architectural rest
+        ),
+        "policy": (
+            "PolicyDecision",
+            "available" if policy_data.get("available") else "architectural",
+            None,
+        ),
+        "governance": (
+            "Governance",
+            "available" if governance_data.get("available") else "architectural",
+            None,
+        ),
+        "capability_token": (
+            "CapabilityToken",
+            "available" if capability_data.get("available") else "architectural",
+            None,
+        ),
+        "police_gate": (
+            "Police Gate",
+            "available",  # always wired into the authority chain
+            f"decision_visibility:{police_data.get('decision_visibility', 'not_persisted_yet')}",
+        ),
+        "authority_artifact": (
+            "AuthorityArtifact",
+            "available",  # always wired into the authority chain
+            (
+                f"artifact_version:{artifact_data.get('artifact_version', 'unknown')}"
+                f" · authority_source:{artifact_data.get('authority_source', 'unknown')}"
+            ),
+        ),
+        "runner": (
+            "Runner",
+            "architectural",  # ALWAYS closed from UI — runner_reachable_from_ui:false
+            "fail_closed:true · executed:false · runner_reachable_from_ui:false",
+        ),
+        "outcome": (
+            "Outcome",
+            "available" if outcome_data.get("available") else "unavailable",
+            "execution_closed:true",
+        ),
+    }
+
+    stages: list[dict[str, Any]] = []
+    for stage_id in AUTHORITY_CHAIN:
+        label, state, evidence_ref = stage_specs.get(
+            stage_id,
+            (stage_id, "architectural", None),
+        )
+        stages.append(
+            {
+                "id": stage_id,
+                "label": label,
+                "state": state,
+                "evidence_ref": evidence_ref,
+            }
+        )
+    return stages

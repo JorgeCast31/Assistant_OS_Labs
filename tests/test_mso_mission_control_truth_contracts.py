@@ -162,6 +162,39 @@ class TestBuildMissionControlStatus:
         result = _status()
         assert isinstance(result["authority"]["counts"], dict)
 
+    # ---- outcome section tests ----
+
+    def test_outcome_found_is_false_with_no_query(self):
+        """No query IDs → outcome.found must be False (honest: nothing found)."""
+        result = _status()
+        assert result["outcome"].get("found") is False
+
+    def test_outcome_execution_closed_is_true(self):
+        """Invariant: outcome.execution_closed must always be True."""
+        result = _status()
+        assert result["outcome"].get("execution_closed") is True
+
+    def test_outcome_status_is_valid_state_word(self):
+        """outcome.status must be a known honest state, not a fabricated success."""
+        result = _status()
+        valid_states = (
+            "unavailable", "not_found", "unknown",
+            "pending", "completed", "failed", "blocked",
+        )
+        assert result["outcome"]["status"] in valid_states, (
+            f"outcome.status={result['outcome']['status']!r} is not a known honest state"
+        )
+
+    def test_outcome_status_is_not_running(self):
+        """outcome.status must NEVER be 'running' — nothing is executing."""
+        result = _status()
+        assert result["outcome"]["status"] != "running"
+
+    def test_outcome_sources_checked_is_list(self):
+        """outcome.sources_checked must be present and be a list."""
+        result = _status()
+        assert isinstance(result["outcome"].get("sources_checked"), list)
+
 
 # ===========================================================================
 # build_mission_control_readiness
@@ -469,6 +502,107 @@ class TestBuildOrchestrationSnapshot:
             enqueue_confirmable_prepared_action(action)
         result = _snapshot()
         assert len(result["prepared_actions"]) == len(result["confirm_pending"]) == 2
+
+
+# ===========================================================================
+# build_authority_trace_stage_list
+# ===========================================================================
+
+
+def _stage_list(snapshot=None):
+    from assistant_os.mso.mission_control_status import build_authority_trace_stage_list
+    if snapshot is None:
+        from assistant_os.mso.authority_trace import build_authority_trace_snapshot
+        snapshot = build_authority_trace_snapshot()
+    return build_authority_trace_stage_list(snapshot)
+
+
+class TestBuildAuthorityTraceStageList:
+
+    def test_returns_list(self):
+        stages = _stage_list()
+        assert isinstance(stages, list)
+
+    def test_returns_nine_stages(self):
+        stages = _stage_list()
+        assert len(stages) == 9
+
+    def test_all_stages_have_required_keys(self):
+        stages = _stage_list()
+        for stage in stages:
+            for key in ("id", "label", "state", "evidence_ref"):
+                assert key in stage, f"Stage {stage.get('id')!r} missing key {key!r}"
+
+    def test_stage_ids_match_authority_chain(self):
+        from assistant_os.mso.authority_trace import AUTHORITY_CHAIN
+        stages = _stage_list()
+        stage_ids = [s["id"] for s in stages]
+        assert stage_ids == list(AUTHORITY_CHAIN)
+
+    def test_mso_kernel_is_always_available(self):
+        """MSO kernel is always present — must show 'available'."""
+        stages = _stage_list()
+        mso = next(s for s in stages if s["id"] == "mso_kernel")
+        assert mso["state"] == "available"
+
+    def test_runner_is_not_available(self):
+        """Runner is architecturally closed from UI — must NOT be 'available'."""
+        stages = _stage_list()
+        runner = next(s for s in stages if s["id"] == "runner")
+        assert runner["state"] != "available"
+        assert runner["state"] in ("architectural", "blocked", "unavailable", "pending")
+
+    def test_runner_evidence_ref_contains_fail_closed(self):
+        stages = _stage_list()
+        runner = next(s for s in stages if s["id"] == "runner")
+        assert runner.get("evidence_ref") is not None
+        assert "fail_closed:true" in runner["evidence_ref"]
+
+    def test_runner_evidence_ref_contains_runner_reachable_false(self):
+        stages = _stage_list()
+        runner = next(s for s in stages if s["id"] == "runner")
+        assert "runner_reachable_from_ui:false" in runner["evidence_ref"]
+
+    def test_police_gate_evidence_ref_contains_decision_visibility(self):
+        stages = _stage_list()
+        police = next(s for s in stages if s["id"] == "police_gate")
+        assert police.get("evidence_ref") is not None
+        assert "decision_visibility:" in police["evidence_ref"]
+
+    def test_mso_kernel_evidence_ref_contains_kernel_boundary(self):
+        stages = _stage_list()
+        mso = next(s for s in stages if s["id"] == "mso_kernel")
+        assert mso.get("evidence_ref") is not None
+        assert "kernel_boundary:true" in mso["evidence_ref"]
+
+    def test_authority_artifact_evidence_ref_contains_artifact_version(self):
+        stages = _stage_list()
+        artifact = next(s for s in stages if s["id"] == "authority_artifact")
+        assert artifact.get("evidence_ref") is not None
+        assert "artifact_version:" in artifact["evidence_ref"]
+
+    def test_outcome_state_not_available_without_context(self):
+        """With no request context, outcome state must be 'unavailable'."""
+        stages = _stage_list()
+        outcome = next(s for s in stages if s["id"] == "outcome")
+        assert outcome["state"] in ("unavailable", "architectural")
+
+    def test_no_stage_state_is_running_or_live(self):
+        """No stage may have state='running' or 'live'."""
+        stages = _stage_list()
+        for stage in stages:
+            assert stage["state"] not in ("running", "live", "executing")
+
+    def test_does_not_raise_with_empty_snapshot(self):
+        stages = _stage_list({})
+        assert isinstance(stages, list)
+        assert len(stages) == 9
+
+    def test_runner_state_is_architectural(self):
+        """Runner is always 'architectural' — closed by design from UI."""
+        stages = _stage_list()
+        runner = next(s for s in stages if s["id"] == "runner")
+        assert runner["state"] == "architectural"
 
 
 class TestMissionControlRouteHandlers:

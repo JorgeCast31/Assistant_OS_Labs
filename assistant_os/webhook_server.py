@@ -5533,45 +5533,13 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         try:
             from .mso.authority_trace import build_authority_trace_snapshot, AUTHORITY_CHAIN
+            from .mso.mission_control_status import build_authority_trace_stage_list
 
             # Build snapshot with no per-request context → architectural/snapshot mode
             snapshot = build_authority_trace_snapshot()
 
-            # Map raw trace stages to a UI-friendly list
-            stage_map = {
-                "mso_kernel":         ("MSO Kernel",         snapshot.get("mso", {})),
-                "intent_contract":    ("Intent Contract",    snapshot.get("request", {})),
-                "policy":             ("PolicyDecision",     snapshot.get("policy", {})),
-                "governance":         ("Governance",         snapshot.get("governance", {})),
-                "capability_token":   ("CapabilityToken",    snapshot.get("capability", {})),
-                "police_gate":        ("Police Gate",        snapshot.get("police", {})),
-                "authority_artifact": ("AuthorityArtifact",  snapshot.get("artifact", {})),
-                "runner":             ("Runner",             snapshot.get("runner", {})),
-                "outcome":            ("Outcome",            snapshot.get("outcome", {})),
-            }
-
-            stages = []
-            for stage_id in AUTHORITY_CHAIN:
-                label, stage_data = stage_map.get(stage_id, (stage_id, {}))
-                available = stage_data.get("available", False)
-                executed = stage_data.get("executed", False)
-
-                if stage_id == "runner":
-                    # Runner is architecturally closed unless executed
-                    state = "blocked" if not executed else "available"
-                elif stage_id == "outcome":
-                    state = "unavailable" if not available else "available"
-                elif available:
-                    state = "available"
-                else:
-                    state = "architectural"
-
-                stages.append({
-                    "id": stage_id,
-                    "label": label,
-                    "state": state,
-                    "evidence_ref": None,
-                })
+            # Delegate stage mapping (with evidence refs) to the shared helper
+            stages = build_authority_trace_stage_list(snapshot)
 
             self._send_json_response(
                 200,
