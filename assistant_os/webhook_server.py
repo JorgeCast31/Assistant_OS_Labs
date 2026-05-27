@@ -1945,6 +1945,23 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_mso_cognitive_usage_recent_get()
             return
 
+        # S-MISSION-CONTROL-TRUTH-CONTRACTS-ALPHA-01: aggregated Mission Control read models
+        if path == "/mso/mission-control/status":
+            self._handle_mso_mission_control_status_get()
+            return
+
+        if path == "/mso/mission-control/readiness":
+            self._handle_mso_mission_control_readiness_get()
+            return
+
+        if path == "/mso/mission-control/orchestration-snapshot":
+            self._handle_mso_orchestration_snapshot_get()
+            return
+
+        if path == "/mso/authority/trace/snapshot":
+            self._handle_mso_authority_trace_snapshot_get()
+            return
+
         # 405 for everything else
         status, error = _make_json_error(405, "Method not allowed. Use POST.", "MethodNotAllowed")
         self._send_json_response(status, error)
@@ -5399,6 +5416,188 @@ class WebhookHandler(BaseHTTPRequestHandler):
                     "error": f"{type(exc).__name__}: {exc}",
                     "providers": [],
                     "used_execution": False,
+                },
+            )
+
+    def _handle_mso_mission_control_status_get(self) -> None:
+        """GET /mso/mission-control/status — aggregated Mission Control status read model.
+
+        Aggregates entity_status, seat_status, prepared action queue count, and
+        authority counts into a single truth-contract snapshot.
+        Read-only: no execution, no token issuance, no mutation.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from .mso.mission_control_status import build_mission_control_status
+            data = build_mission_control_status()
+            self._send_json_response(200, data)
+        except Exception as exc:  # noqa: BLE001 — fail-soft read-only surface
+            self._send_json_response(
+                200,
+                {
+                    "ok": False,
+                    "source": "backend_read_model",
+                    "execution_allowed": False,
+                    "used_execution": False,
+                    "runner_reachable_from_ui": False,
+                    "status": "unavailable",
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+
+    def _handle_mso_mission_control_readiness_get(self) -> None:
+        """GET /mso/mission-control/readiness — arm/executor readiness read model.
+
+        Returns registered agents with availability and readiness metadata.
+        Available ≠ authorized. Every arm requires MSO authority.
+        Read-only: no execution, no token issuance, no mutation.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from .mso.mission_control_status import build_mission_control_readiness
+            data = build_mission_control_readiness()
+            self._send_json_response(200, data)
+        except Exception as exc:  # noqa: BLE001 — fail-soft read-only surface
+            self._send_json_response(
+                200,
+                {
+                    "ok": False,
+                    "source": "backend_read_model",
+                    "execution_allowed": False,
+                    "used_execution": False,
+                    "runner_reachable_from_ui": False,
+                    "arms": [],
+                    "system": {"overall": "unavailable"},
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+
+    def _handle_mso_orchestration_snapshot_get(self) -> None:
+        """GET /mso/mission-control/orchestration-snapshot — orchestration state read model.
+
+        Returns prepared actions and confirm queue as a read-model snapshot.
+        No live execution. No fabricated running threads.
+        Read-only: no execution, no token issuance, no mutation.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from .mso.mission_control_status import build_orchestration_snapshot
+            data = build_orchestration_snapshot()
+            self._send_json_response(200, data)
+        except Exception as exc:  # noqa: BLE001 — fail-soft read-only surface
+            self._send_json_response(
+                200,
+                {
+                    "ok": False,
+                    "source": "backend_read_model",
+                    "execution_allowed": False,
+                    "used_execution": False,
+                    "runner_reachable_from_ui": False,
+                    "runs": [],
+                    "threads": [],
+                    "prepared_actions": [],
+                    "confirm_pending": [],
+                    "live_execution": False,
+                    "event_stream_connected": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+
+    def _handle_mso_authority_trace_snapshot_get(self) -> None:
+        """GET /mso/authority/trace/snapshot — authority chain trace read model.
+
+        Returns a static snapshot of the authority chain with available stage data.
+        trace_mode is 'snapshot' when no live request context is present.
+        Read-only: no execution, no token issuance, no mutation.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from .mso.authority_trace import build_authority_trace_snapshot, AUTHORITY_CHAIN
+
+            # Build snapshot with no per-request context → architectural/snapshot mode
+            snapshot = build_authority_trace_snapshot()
+
+            # Map raw trace stages to a UI-friendly list
+            stage_map = {
+                "mso_kernel":         ("MSO Kernel",         snapshot.get("mso", {})),
+                "intent_contract":    ("Intent Contract",    snapshot.get("request", {})),
+                "policy":             ("PolicyDecision",     snapshot.get("policy", {})),
+                "governance":         ("Governance",         snapshot.get("governance", {})),
+                "capability_token":   ("CapabilityToken",    snapshot.get("capability", {})),
+                "police_gate":        ("Police Gate",        snapshot.get("police", {})),
+                "authority_artifact": ("AuthorityArtifact",  snapshot.get("artifact", {})),
+                "runner":             ("Runner",             snapshot.get("runner", {})),
+                "outcome":            ("Outcome",            snapshot.get("outcome", {})),
+            }
+
+            stages = []
+            for stage_id in AUTHORITY_CHAIN:
+                label, stage_data = stage_map.get(stage_id, (stage_id, {}))
+                available = stage_data.get("available", False)
+                executed = stage_data.get("executed", False)
+
+                if stage_id == "runner":
+                    # Runner is architecturally closed unless executed
+                    state = "blocked" if not executed else "available"
+                elif stage_id == "outcome":
+                    state = "unavailable" if not available else "available"
+                elif available:
+                    state = "available"
+                else:
+                    state = "architectural"
+
+                stages.append({
+                    "id": stage_id,
+                    "label": label,
+                    "state": state,
+                    "evidence_ref": None,
+                })
+
+            self._send_json_response(
+                200,
+                {
+                    "ok": True,
+                    "source": "backend_read_model",
+                    "trace_mode": "snapshot",
+                    "execution_allowed": False,
+                    "used_execution": False,
+                    "runner_reachable_from_ui": False,
+                    "stages": stages,
+                    "chain": list(AUTHORITY_CHAIN),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-soft read-only surface
+            self._send_json_response(
+                200,
+                {
+                    "ok": False,
+                    "source": "backend_read_model",
+                    "trace_mode": "unavailable",
+                    "execution_allowed": False,
+                    "used_execution": False,
+                    "runner_reachable_from_ui": False,
+                    "stages": [],
+                    "error": f"{type(exc).__name__}: {exc}",
                 },
             )
 

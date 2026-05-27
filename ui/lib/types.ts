@@ -872,6 +872,108 @@ export interface MSOEntityStatusResponse {
   error?: string
 }
 
+// ---------------------------------------------------------------------------
+// Mission Control Truth Contracts — S-MISSION-CONTROL-TRUTH-CONTRACTS-ALPHA-01
+// ---------------------------------------------------------------------------
+
+export interface MCArm {
+  id: string
+  label: string
+  available: boolean
+  execution_status: 'real' | 'stub' | 'unavailable' | 'partial'
+  readiness_source: 'agent_registry' | 'backend_read_model' | 'unavailable'
+  can_execute_without_mso: false
+  requires_authority: true
+}
+
+export interface MCTraceStage {
+  id: string
+  label: string
+  state: 'available' | 'pending' | 'blocked' | 'unavailable' | 'architectural'
+  evidence_ref: string | null
+}
+
+export interface MCPreparedAction {
+  id: string
+  status: 'prepared'
+  domain: string | null
+  intent: string | null
+}
+
+export interface MissionControlStatusResponse {
+  ok: boolean
+  source: 'backend_read_model'
+  execution_allowed: false
+  used_execution: false
+  runner_reachable_from_ui: false
+  mission_control: {
+    state: 'available' | 'partial' | 'unavailable'
+    mode: 'read_model'
+    execution_allowed: false
+    used_execution: false
+  }
+  mso: {
+    entity_status: 'available' | 'unavailable'
+    seat_status: 'available' | 'unavailable'
+    boundary: string
+  }
+  queues: {
+    prepared_actions_count: number
+    confirm_pending_count: number
+  }
+  authority: {
+    status: 'available' | 'unavailable'
+    counts: Record<string, number>
+  }
+  outcome: {
+    status: 'unavailable'
+  }
+  status?: 'unavailable'
+  error?: string
+}
+
+export interface MissionControlReadinessResponse {
+  ok: boolean
+  source: 'backend_read_model'
+  execution_allowed: false
+  used_execution: false
+  runner_reachable_from_ui: false
+  arms: MCArm[]
+  system: {
+    overall: 'available' | 'partial' | 'unavailable'
+  }
+  status?: 'unavailable'
+  error?: string
+}
+
+export interface OrchestrationSnapshotResponse {
+  ok: boolean
+  source: 'backend_read_model'
+  execution_allowed: false
+  used_execution: false
+  runner_reachable_from_ui: false
+  runs: never[]
+  threads: never[]
+  prepared_actions: MCPreparedAction[]
+  confirm_pending: never[]
+  live_execution: false
+  event_stream_connected: false
+  status?: 'unavailable'
+  error?: string
+}
+
+export interface AuthorityTraceSnapshotResponse {
+  ok: boolean
+  source: 'backend_read_model'
+  execution_allowed: false
+  used_execution: false
+  runner_reachable_from_ui: false
+  trace_mode: 'snapshot' | 'unavailable'
+  stages: MCTraceStage[]
+  status?: 'unavailable'
+  error?: string
+}
+
 // MSO seat status — read-only cognitive seat snapshot
 export interface MSOSeatAvailableSeat {
   name: string

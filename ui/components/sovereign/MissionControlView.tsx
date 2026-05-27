@@ -12,6 +12,12 @@ import { useSeatProviderPolling } from '@/hooks/use-seat-provider-polling'
 import { usePreparedActionsPolling } from '@/hooks/use-prepared-actions-polling'
 import { useConfirmPendingPolling } from '@/hooks/use-confirm-pending-polling'
 import { useAuthorityStatusPolling } from '@/hooks/use-authority-status-polling'
+import {
+  getMissionControlStatus,
+  getMissionControlReadiness,
+  getOrchestrationSnapshot,
+  getAuthorityTraceSnapshot,
+} from '@/lib/api'
 import { MissionControlChainView } from './MissionControlChainView'
 import { OutcomeStatusPanel } from './OutcomeStatusPanel'
 import type {
@@ -20,7 +26,77 @@ import type {
   OrchestrationThread,
   MSOEntityStatusResponse,
   MSOSeatStatusResponse,
+  MissionControlStatusResponse,
+  MissionControlReadinessResponse,
+  OrchestrationSnapshotResponse,
+  AuthorityTraceSnapshotResponse,
 } from '@/lib/types'
+
+// ── Backend truth-contract polling hooks ─────────────────────────────────────
+//
+// Each hook fetches once on mount and refreshes every 30 s. Fail-soft:
+// returns null (or the UNAVAILABLE sentinel from the helper) on any error.
+// Never throws. No execution path.
+
+function useMCStatusQuery() {
+  const [data, setData] = useState<MissionControlStatusResponse | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    const poll = async () => {
+      const result = await getMissionControlStatus()
+      if (!cancelled) setData(result)
+    }
+    poll()
+    const id = setInterval(poll, 30_000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+  return data
+}
+
+function useMCReadinessQuery() {
+  const [data, setData] = useState<MissionControlReadinessResponse | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    const poll = async () => {
+      const result = await getMissionControlReadiness()
+      if (!cancelled) setData(result)
+    }
+    poll()
+    const id = setInterval(poll, 30_000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+  return data
+}
+
+function useMCOrchestrationQuery() {
+  const [data, setData] = useState<OrchestrationSnapshotResponse | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    const poll = async () => {
+      const result = await getOrchestrationSnapshot()
+      if (!cancelled) setData(result)
+    }
+    poll()
+    const id = setInterval(poll, 30_000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+  return data
+}
+
+function useMCTraceQuery() {
+  const [data, setData] = useState<AuthorityTraceSnapshotResponse | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    const poll = async () => {
+      const result = await getAuthorityTraceSnapshot()
+      if (!cancelled) setData(result)
+    }
+    poll()
+    const id = setInterval(poll, 30_000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+  return data
+}
 
 // ── Tab identifiers ───────────────────────────────────────────────────────────
 
@@ -434,8 +510,17 @@ function MSOEscalationSpace() {
 // ── Space 3: Arms / Executor Availability ─────────────────────────────────────
 
 function ArmsAvailabilitySpace() {
+  // Backend truth readiness (preferred source)
+  const readinessData     = useMCReadinessQuery()
+  // Fallback: Zustand-derived agent registry
   const registeredAgents  = useSovereignStore((s) => s.systemState.registeredAgents)
   const agentRegistrySource = useSovereignStore((s) => s.systemState.agentRegistrySource)
+
+  // Use backend arms when backend responded ok. Arms availability ≠ authorization.
+  // can_execute_without_mso: false and requires_authority: true are always enforced.
+  const useBackendArms = readinessData?.ok === true
+  const backendArms    = useBackendArms ? readinessData!.arms : null
+  const backendOverall = readinessData?.system.overall ?? null
 
   const mapExecStatus = (status: string): 'real' | 'stub' | 'unavailable' | 'partial' => {
     if (status === 'active')   return 'real'
@@ -458,82 +543,138 @@ function ArmsAvailabilitySpace() {
       {/* Agents / Destinations sub-header */}
       <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest">Agents / Destinations</p>
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <span className="text-[10px] font-mono text-tx-muted">Registry source:</span>
-        <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono uppercase border ${
-          agentRegistrySource.status === 'available' ? 'text-ok border-ok/30 bg-ok/10' :
-          agentRegistrySource.status === 'stale'     ? 'text-warn border-warn/30 bg-warn/10' :
-          agentRegistrySource.status === 'loading'   ? 'text-cyan-400 border-cyan-400/30 bg-cyan-400/10' :
-          'text-tx-muted border-os-border bg-os-base'
-        }`}>
-          {agentRegistrySource.status}
-        </span>
-        {!sourceOk && agentRegistrySource.status !== 'loading' && (
-          <span className="text-[10px] font-mono text-warn">Data may be fallback or unavailable.</span>
+        {useBackendArms ? (
+          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono uppercase border text-ok border-ok/30 bg-ok/10">
+            backend_read_model
+          </span>
+        ) : (
+          <>
+            <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono uppercase border ${
+              agentRegistrySource.status === 'available' ? 'text-ok border-ok/30 bg-ok/10' :
+              agentRegistrySource.status === 'stale'     ? 'text-warn border-warn/30 bg-warn/10' :
+              agentRegistrySource.status === 'loading'   ? 'text-cyan-400 border-cyan-400/30 bg-cyan-400/10' :
+              'text-tx-muted border-os-border bg-os-base'
+            }`}>
+              {agentRegistrySource.status}
+            </span>
+            {!sourceOk && agentRegistrySource.status !== 'loading' && (
+              <span className="text-[10px] font-mono text-warn">Data may be fallback or unavailable.</span>
+            )}
+          </>
+        )}
+        {readinessData !== null && !readinessData.ok && (
+          <span className="text-[10px] font-mono text-tx-muted">[derived fallback]</span>
+        )}
+        {backendOverall && (
+          <span className="text-[10px] font-mono text-tx-muted">overall: {backendOverall}</span>
         )}
       </div>
 
-      {registeredAgents.length === 0 ? (
-        <div className="rounded-lg border border-os-border bg-os-surface p-4 space-y-2">
-          <p className="text-[10px] font-mono text-tx-muted">
-            No arms/executors registered in the current session. Registry source: {agentRegistrySource.status}.
-          </p>
-          <ExecStatusBadge status="unavailable" />
-          <p className="text-[9px] font-mono text-tx-muted/70">
-            executionStatus: unavailable — no backend agent registry data connected for this session.
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {registeredAgents.map((agent) => {
-            const exStatus = mapExecStatus(agent.status)
-            return (
-              <div key={agent.id} className="rounded-lg border border-os-border bg-os-surface p-3">
+      {/* Backend truth arms (preferred) */}
+      {useBackendArms && backendArms !== null ? (
+        backendArms.length === 0 ? (
+          <div className="rounded-lg border border-os-border bg-os-surface p-4 space-y-2">
+            <p className="text-[10px] font-mono text-tx-muted">
+              No arms registered in agent registry. Overall: {backendOverall ?? 'unavailable'}. source: backend_read_model.
+            </p>
+            <ExecStatusBadge status="unavailable" />
+            <p className="text-[9px] font-mono text-tx-muted/70">
+              executionStatus: unavailable — no arms in backend registry.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {backendArms.map((arm) => (
+              <div key={arm.id} className="rounded-lg border border-os-border bg-os-surface p-3" data-testid="backend-arm">
                 <div className="flex items-start justify-between gap-3 mb-2">
                   <div className="min-w-0">
-                    <p className="text-xs font-mono text-tx-primary">{agent.name}</p>
-                    {agent.domain && (
-                      <p className="text-[10px] font-mono text-tx-muted">{agent.domain}</p>
-                    )}
-                    {agent.description && (
-                      <p className="text-[10px] font-mono text-tx-muted/70 mt-0.5 truncate">{agent.description}</p>
-                    )}
+                    <p className="text-xs font-mono text-tx-primary">{arm.label}</p>
+                    <p className="text-[10px] font-mono text-tx-muted">source: {arm.readiness_source}</p>
                   </div>
                   <div className="flex items-center gap-1.5 flex-shrink-0">
                     <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono border ${
-                      agent.status === 'active'   ? 'text-ok border-ok/30 bg-ok/10' :
-                      agent.status === 'degraded' ? 'text-warn border-warn/30 bg-warn/10' :
-                      'text-tx-muted border-os-border bg-os-base'
+                      arm.available ? 'text-ok border-ok/30 bg-ok/10' : 'text-tx-muted border-os-border bg-os-base'
                     }`}>
-                      {agent.status}
+                      {arm.available ? 'available' : 'unavailable'}
                     </span>
-                    <ExecStatusBadge status={exStatus} />
+                    <ExecStatusBadge status={arm.execution_status} />
                   </div>
                 </div>
-                {agent.capabilities.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mb-1.5">
-                    {agent.capabilities.map((cap) => (
-                      <span key={cap} className="px-1 py-0.5 rounded text-[9px] font-mono bg-os-base border border-os-border text-tx-muted">
-                        {cap}
-                      </span>
-                    ))}
-                  </div>
-                )}
-                <div className="flex flex-wrap items-center gap-3">
-                  {agent.requires_authority && (
-                    <span className="text-[9px] font-mono text-tx-muted">requires_authority</span>
-                  )}
-                  {agent.requires_review && (
-                    <span className="text-[9px] font-mono text-tx-muted">requires_review</span>
-                  )}
-                  {agent.policy_restricted && (
-                    <span className="text-[9px] font-mono text-warn">policy_restricted</span>
-                  )}
+                {/* Invariants always visible — arm availability ≠ authorization */}
+                <div className="flex flex-wrap items-center gap-3 text-[9px] font-mono text-tx-muted">
+                  <span>can_execute_without_mso: false</span>
+                  <span>requires_authority: true</span>
                 </div>
               </div>
-            )
-          })}
-        </div>
+            ))}
+          </div>
+        )
+      ) : (
+        /* Fallback: Zustand-derived registry data */
+        registeredAgents.length === 0 ? (
+          <div className="rounded-lg border border-os-border bg-os-surface p-4 space-y-2">
+            <p className="text-[10px] font-mono text-tx-muted">
+              No arms/executors registered in the current session. Registry source: {agentRegistrySource.status}.
+            </p>
+            <ExecStatusBadge status="unavailable" />
+            <p className="text-[9px] font-mono text-tx-muted/70">
+              executionStatus: unavailable — no backend agent registry data connected for this session.
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {registeredAgents.map((agent) => {
+              const exStatus = mapExecStatus(agent.status)
+              return (
+                <div key={agent.id} className="rounded-lg border border-os-border bg-os-surface p-3">
+                  <div className="flex items-start justify-between gap-3 mb-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-mono text-tx-primary">{agent.name}</p>
+                      {agent.domain && (
+                        <p className="text-[10px] font-mono text-tx-muted">{agent.domain}</p>
+                      )}
+                      {agent.description && (
+                        <p className="text-[10px] font-mono text-tx-muted/70 mt-0.5 truncate">{agent.description}</p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono border ${
+                        agent.status === 'active'   ? 'text-ok border-ok/30 bg-ok/10' :
+                        agent.status === 'degraded' ? 'text-warn border-warn/30 bg-warn/10' :
+                        'text-tx-muted border-os-border bg-os-base'
+                      }`}>
+                        {agent.status}
+                      </span>
+                      <ExecStatusBadge status={exStatus} />
+                    </div>
+                  </div>
+                  {agent.capabilities.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mb-1.5">
+                      {agent.capabilities.map((cap) => (
+                        <span key={cap} className="px-1 py-0.5 rounded text-[9px] font-mono bg-os-base border border-os-border text-tx-muted">
+                          {cap}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <div className="flex flex-wrap items-center gap-3">
+                    {agent.requires_authority && (
+                      <span className="text-[9px] font-mono text-tx-muted">requires_authority</span>
+                    )}
+                    {agent.requires_review && (
+                      <span className="text-[9px] font-mono text-tx-muted">requires_review</span>
+                    )}
+                    {agent.policy_restricted && (
+                      <span className="text-[9px] font-mono text-warn">policy_restricted</span>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )
       )}
 
       <div className="rounded-lg border border-os-border bg-os-base p-3">
@@ -549,22 +690,45 @@ function ArmsAvailabilitySpace() {
 // ── Space 4: Orchestration View ───────────────────────────────────────────────
 
 function OrchestrationViewSpace() {
+  // Backend truth snapshot (preferred source). Never fabricates runs or live threads.
+  const orchestrationData = useMCOrchestrationQuery()
+
   const { operationalMode, webhookStatus, apiStatus } = useUIStore((s) => s.systemData)
-  const preparedActions = usePreparedActionsStore((s) => s.preparedActions)
-  const confirmPending  = useConfirmPendingStore((s) => s.confirmPending)
+  // Fallback stores (used when backend snapshot is unavailable)
+  const preparedActionsStore = usePreparedActionsStore((s) => s.preparedActions)
+  const confirmPending       = useConfirmPendingStore((s) => s.confirmPending)
 
-  const latestItem    = preparedActions?.items?.[0] ?? null
-  const preparedCount = preparedActions?.count ?? 0
-  const confirmCount  = confirmPending?.pending_count ?? 0
+  // Backend snapshot is authoritative when ok. Runs/threads are always [] by contract.
+  // live_execution is always false — Runner is never reachable from UI.
+  const useBackendSnapshot = orchestrationData?.ok === true
+  const liveExecution      = orchestrationData?.live_execution ?? false  // always false
+  const orchestrationSource = useBackendSnapshot ? 'backend_read_model' : 'derived'
 
-  const threads: OrchestrationThread[] = (preparedActions?.items ?? []).map((item) => ({
-    id:            item.queue_entry_id ?? item.prepared_action_id ?? item.proposal_id ?? 'unknown',
-    label:         (item.user_intent?.slice(0, 70) ?? item.requested_action ?? 'Unknown mission intent'),
-    status:        'prepared' as MissionLifecycleState,
-    assignedArm:   item.domain ?? undefined,
-    lastEvent:     item.preparation_id ? `preparation:${item.preparation_id.slice(0, 12)}` : undefined,
-    executionStatus: 'unavailable' as const,
-  }))
+  const confirmCount = confirmPending?.pending_count ?? 0
+  const latestItem   = preparedActionsStore?.items?.[0] ?? null
+
+  // Derive threads: backend prepared_actions preferred, Zustand fallback.
+  // A prepared action is NOT a running execution — status is always 'prepared'.
+  const threads: OrchestrationThread[] = useBackendSnapshot
+    ? orchestrationData!.prepared_actions.map((a) => ({
+        id:            a.id,
+        label:         a.intent ?? a.domain ?? 'Prepared action',
+        status:        'prepared' as MissionLifecycleState,
+        assignedArm:   a.domain ?? undefined,
+        executionStatus: 'unavailable' as const,
+      }))
+    : (preparedActionsStore?.items ?? []).map((item) => ({
+        id:            item.queue_entry_id ?? item.prepared_action_id ?? item.proposal_id ?? 'unknown',
+        label:         (item.user_intent?.slice(0, 70) ?? item.requested_action ?? 'Unknown mission intent'),
+        status:        'prepared' as MissionLifecycleState,
+        assignedArm:   item.domain ?? undefined,
+        lastEvent:     item.preparation_id ? `preparation:${item.preparation_id.slice(0, 12)}` : undefined,
+        executionStatus: 'unavailable' as const,
+      }))
+
+  const preparedCount = useBackendSnapshot
+    ? orchestrationData!.prepared_actions.length
+    : (preparedActionsStore?.count ?? 0)
 
   return (
     <div className="space-y-4">
@@ -592,11 +756,17 @@ function OrchestrationViewSpace() {
             accent={apiStatus === 'ok' && webhookStatus === 'ok'}
           />
           <SituationTile
-            label="Active Threads"
-            value={preparedActions === null ? '…' : String(preparedCount)}
+            label="Prepared Actions"
+            value={orchestrationData === null ? '…' : String(preparedCount)}
             warn={preparedCount > 0}
-            accent={preparedActions !== null && preparedCount === 0}
+            accent={orchestrationData !== null && preparedCount === 0}
           />
+        </div>
+        {/* Execution invariants — always surfaced */}
+        <div className="mt-2 flex flex-wrap items-center gap-3 text-[9px] font-mono text-tx-muted">
+          <span>live_execution: {String(liveExecution)}</span>
+          <span>runner_reachable_from_ui: false</span>
+          <span>source: {orchestrationSource}</span>
         </div>
       </section>
 
@@ -606,9 +776,9 @@ function OrchestrationViewSpace() {
         <div className="grid grid-cols-2 gap-3 mb-2">
           <SituationTile
             label="Prepared Actions"
-            value={preparedActions === null ? '…' : String(preparedCount)}
+            value={orchestrationData === null ? '…' : String(preparedCount)}
             warn={preparedCount > 0}
-            accent={preparedActions !== null && preparedCount === 0}
+            accent={orchestrationData !== null && preparedCount === 0}
           />
           <SituationTile
             label="Confirm Pending"
@@ -799,6 +969,27 @@ function AuthorityTraceStage({
 }
 
 function OutcomeTraceSpace() {
+  // Backend truth trace snapshot (preferred source)
+  const traceData = useMCTraceQuery()
+
+  // Map backend MCTraceStage.state → local TraceStageStatus.
+  // 'architectural' and 'unavailable' both map to 'closed' (architecturally closed to UI).
+  // This is NOT a live runtime trace unless backend explicitly says trace_mode='live'.
+  const mapTraceState = (state: string): TraceStageStatus => {
+    if (state === 'available') return 'active'
+    if (state === 'pending')   return 'pending'
+    if (state === 'blocked')   return 'pending'
+    return 'closed'  // 'unavailable' | 'architectural'
+  }
+
+  // Only use backend trace when ok and explicitly mode=snapshot. Never infer live execution.
+  const useBackendTrace = traceData?.ok === true && traceData.trace_mode === 'snapshot'
+  const traceModeLabel  = useBackendTrace
+    ? 'snapshot · source: backend_read_model'
+    : traceData?.ok === false
+      ? 'unavailable · showing derived fallback'
+      : 'loading…'
+
   return (
     <div className="space-y-4">
       <div className="rounded-lg border border-rose-400/20 bg-rose-400/5 p-4">
@@ -813,16 +1004,31 @@ function OutcomeTraceSpace() {
       <section>
         <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-2">Authority Chain Trace</p>
         <div className="rounded-lg border border-os-border bg-os-surface p-4">
+          {/* trace_mode annotation — always visible, never omitted */}
+          <p className="text-[9px] font-mono text-tx-muted mb-3" data-testid="trace-mode-label">
+            trace_mode: {traceModeLabel}
+          </p>
           <div className="space-y-0">
-            {AUTHORITY_TRACE_STAGES.map((stage, i) => (
-              <AuthorityTraceStage
-                key={stage.label}
-                label={stage.label}
-                note={stage.note}
-                status={stage.status}
-                last={i === AUTHORITY_TRACE_STAGES.length - 1}
-              />
-            ))}
+            {useBackendTrace
+              ? traceData!.stages.map((stage, i) => (
+                  <AuthorityTraceStage
+                    key={stage.id}
+                    label={stage.label}
+                    note={stage.evidence_ref ?? ''}
+                    status={mapTraceState(stage.state)}
+                    last={i === traceData!.stages.length - 1}
+                  />
+                ))
+              : AUTHORITY_TRACE_STAGES.map((stage, i) => (
+                  <AuthorityTraceStage
+                    key={stage.label}
+                    label={stage.label}
+                    note={stage.note}
+                    status={stage.status}
+                    last={i === AUTHORITY_TRACE_STAGES.length - 1}
+                  />
+                ))
+            }
           </div>
           <p className="text-[9px] font-mono text-tx-muted mt-3 pt-2 border-t border-os-border/60">
             Stages marked &quot;active&quot; reflect the current MSO session invariants.
@@ -879,6 +1085,10 @@ export function MissionControlView() {
 
   const [activeTab, setActiveTab] = useState<MCTab>('planner')
 
+  // Backend truth — aggregated MC status for header badge
+  const mcStatus = useMCStatusQuery()
+  const mcState  = mcStatus?.mission_control.state ?? null
+
   const mcEntity = getEntity('mission_control')
 
   const { operationalMode } = useUIStore((s) => s.systemData)
@@ -906,7 +1116,20 @@ export function MissionControlView() {
               </p>
             </div>
             {/* Status strip */}
-            <div className="flex items-center gap-2 flex-shrink-0">
+            <div className="flex items-center gap-2 flex-shrink-0 flex-wrap justify-end">
+              {/* Backend MC state badge — sourced from backend_read_model truth contract */}
+              {mcState !== null && (
+                <span
+                  className={`px-2 py-0.5 rounded text-[10px] font-mono uppercase border ${
+                    mcState === 'available' ? 'text-ok border-ok/30 bg-ok/10' :
+                    mcState === 'partial'   ? 'text-warn border-warn/30 bg-warn/10' :
+                    'text-tx-muted border-os-border bg-os-base'
+                  }`}
+                  data-testid="mc-state-badge"
+                >
+                  mc:{mcState}
+                </span>
+              )}
               <span className={`px-2 py-0.5 rounded text-[10px] font-mono uppercase border ${modeOk ? 'text-ok border-ok/30 bg-ok/10' : 'text-warn border-warn/30 bg-warn/10'}`}>
                 {operationalMode}
               </span>

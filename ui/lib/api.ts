@@ -731,6 +731,12 @@ import type { CodeReadinessResponse } from './types'
 import type { ConfirmPendingResponse } from './types'
 import type { PreparedActionsQueueResponse } from './types'
 import type { MSOSeatProviderResponse } from './types'
+import type {
+  MissionControlStatusResponse,
+  MissionControlReadinessResponse,
+  OrchestrationSnapshotResponse,
+  AuthorityTraceSnapshotResponse,
+} from './types'
 
 const CODE_READINESS_UNAVAILABLE: CodeReadinessResponse = {
   ok: false,
@@ -1018,5 +1024,117 @@ export async function getMSOSeatStatus(): Promise<MSOSeatStatusResponse> {
     return json.ok !== undefined ? json : MSO_SEAT_STATUS_UNAVAILABLE
   } catch {
     return MSO_SEAT_STATUS_UNAVAILABLE
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Mission Control Truth Contracts — S-MISSION-CONTROL-TRUTH-CONTRACTS-ALPHA-01
+// Read-only aggregated Mission Control read models. Never executes.
+// ---------------------------------------------------------------------------
+
+const MC_STATUS_UNAVAILABLE: MissionControlStatusResponse = {
+  ok: false,
+  source: 'backend_read_model',
+  execution_allowed: false,
+  used_execution: false,
+  runner_reachable_from_ui: false,
+  mission_control: { state: 'unavailable', mode: 'read_model', execution_allowed: false, used_execution: false },
+  mso: { entity_status: 'unavailable', seat_status: 'unavailable', boundary: 'sovereign' },
+  queues: { prepared_actions_count: 0, confirm_pending_count: 0 },
+  authority: { status: 'unavailable', counts: {} },
+  outcome: { status: 'unavailable' },
+  error: 'Mission Control status backend unavailable',
+}
+
+export async function getMissionControlStatus(): Promise<MissionControlStatusResponse> {
+  try {
+    const res = await fetch('/api/mso/mission-control/status', {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) return MC_STATUS_UNAVAILABLE
+    const json = await res.json() as MissionControlStatusResponse
+    return json.ok ? json : { ...MC_STATUS_UNAVAILABLE, error: json.error ?? 'unavailable' }
+  } catch {
+    return MC_STATUS_UNAVAILABLE
+  }
+}
+
+const MC_READINESS_UNAVAILABLE: MissionControlReadinessResponse = {
+  ok: false,
+  source: 'backend_read_model',
+  execution_allowed: false,
+  used_execution: false,
+  runner_reachable_from_ui: false,
+  arms: [],
+  system: { overall: 'unavailable' },
+  error: 'Mission Control readiness backend unavailable',
+}
+
+export async function getMissionControlReadiness(): Promise<MissionControlReadinessResponse> {
+  try {
+    const res = await fetch('/api/mso/mission-control/readiness', {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) return MC_READINESS_UNAVAILABLE
+    const json = await res.json() as MissionControlReadinessResponse
+    return json.ok ? json : { ...MC_READINESS_UNAVAILABLE, error: json.error ?? 'unavailable' }
+  } catch {
+    return MC_READINESS_UNAVAILABLE
+  }
+}
+
+const ORCHESTRATION_SNAPSHOT_UNAVAILABLE: OrchestrationSnapshotResponse = {
+  ok: false,
+  source: 'backend_read_model',
+  execution_allowed: false,
+  used_execution: false,
+  runner_reachable_from_ui: false,
+  runs: [],
+  threads: [],
+  prepared_actions: [],
+  confirm_pending: [],
+  live_execution: false,
+  event_stream_connected: false,
+  error: 'Orchestration snapshot backend unavailable',
+}
+
+export async function getOrchestrationSnapshot(): Promise<OrchestrationSnapshotResponse> {
+  try {
+    const res = await fetch('/api/mso/mission-control/orchestration-snapshot', {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) return ORCHESTRATION_SNAPSHOT_UNAVAILABLE
+    const json = await res.json() as OrchestrationSnapshotResponse
+    return json.ok ? json : { ...ORCHESTRATION_SNAPSHOT_UNAVAILABLE, error: json.error ?? 'unavailable' }
+  } catch {
+    return ORCHESTRATION_SNAPSHOT_UNAVAILABLE
+  }
+}
+
+const AUTHORITY_TRACE_SNAPSHOT_UNAVAILABLE: AuthorityTraceSnapshotResponse = {
+  ok: false,
+  source: 'backend_read_model',
+  execution_allowed: false,
+  used_execution: false,
+  runner_reachable_from_ui: false,
+  trace_mode: 'unavailable',
+  stages: [],
+  error: 'Authority trace snapshot backend unavailable',
+}
+
+export async function getAuthorityTraceSnapshot(): Promise<AuthorityTraceSnapshotResponse> {
+  try {
+    const res = await fetch('/api/mso/authority/trace/snapshot', {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) return AUTHORITY_TRACE_SNAPSHOT_UNAVAILABLE
+    const json = await res.json() as AuthorityTraceSnapshotResponse
+    return json.ok ? json : { ...AUTHORITY_TRACE_SNAPSHOT_UNAVAILABLE, error: json.error ?? 'unavailable' }
+  } catch {
+    return AUTHORITY_TRACE_SNAPSHOT_UNAVAILABLE
   }
 }

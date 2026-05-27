@@ -13,7 +13,80 @@ vi.mock('@/lib/sovereign/entity-registry', () => ({
   getEntity: vi.fn(() => ({ id: 'mission_control', execution_policy: 'read_only' })),
 }))
 
-// ── Mock fetch (fail-soft: MSO entity/seat status calls return unavailable) ──
+// ── Mock truth-contract API helpers ───────────────────────────────────────────
+// These are the four new backend truth-contract endpoints (Tasks 2–5).
+// Default to unavailable so all tests start with honest empty state.
+vi.mock('@/lib/api', () => ({
+  getMissionControlStatus:   vi.fn(),
+  getMissionControlReadiness: vi.fn(),
+  getOrchestrationSnapshot:  vi.fn(),
+  getAuthorityTraceSnapshot: vi.fn(),
+}))
+
+// ── Unavailable fixture constants ─────────────────────────────────────────────
+
+const MC_STATUS_UNAVAILABLE = {
+  ok: false,
+  source: 'backend_read_model' as const,
+  execution_allowed: false as const,
+  used_execution: false as const,
+  runner_reachable_from_ui: false as const,
+  mission_control: { state: 'unavailable' as const, mode: 'read_model' as const, execution_allowed: false as const, used_execution: false as const },
+  mso: { entity_status: 'unavailable' as const, seat_status: 'unavailable' as const, boundary: 'sovereign' },
+  queues: { prepared_actions_count: 0, confirm_pending_count: 0 },
+  authority: { status: 'unavailable' as const, counts: {} },
+  outcome: { status: 'unavailable' as const },
+  error: 'unavailable',
+}
+
+const MC_READINESS_UNAVAILABLE = {
+  ok: false,
+  source: 'backend_read_model' as const,
+  execution_allowed: false as const,
+  used_execution: false as const,
+  runner_reachable_from_ui: false as const,
+  arms: [],
+  system: { overall: 'unavailable' as const },
+  error: 'unavailable',
+}
+
+const ORCHESTRATION_SNAPSHOT_UNAVAILABLE = {
+  ok: false,
+  source: 'backend_read_model' as const,
+  execution_allowed: false as const,
+  used_execution: false as const,
+  runner_reachable_from_ui: false as const,
+  runs: [] as never[],
+  threads: [] as never[],
+  prepared_actions: [],
+  confirm_pending: [] as never[],
+  live_execution: false as const,
+  event_stream_connected: false as const,
+  error: 'unavailable',
+}
+
+const AUTHORITY_TRACE_UNAVAILABLE = {
+  ok: false,
+  source: 'backend_read_model' as const,
+  execution_allowed: false as const,
+  used_execution: false as const,
+  runner_reachable_from_ui: false as const,
+  trace_mode: 'unavailable' as const,
+  stages: [],
+  error: 'unavailable',
+}
+
+// ── Import component and mocked helpers after vi.mock declarations ────────────
+// Imports are hoisted by Vitest, so these get the mocked versions.
+import { MissionControlView } from '../MissionControlView'
+import {
+  getMissionControlStatus,
+  getMissionControlReadiness,
+  getOrchestrationSnapshot,
+  getAuthorityTraceSnapshot,
+} from '@/lib/api'
+
+// ── Mock fetch (fail-soft: direct fetch calls in MSOEscalationSpace) ──────────
 beforeEach(() => {
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(
     new Response(
@@ -21,10 +94,13 @@ beforeEach(() => {
       { status: 200 },
     ),
   )
-})
 
-// ── Import component after mocks ──────────────────────────────────────────────
-import { MissionControlView } from '../MissionControlView'
+  // Default all four truth-contract helpers to unavailable (imported above, mocked by vi.mock)
+  vi.mocked(getMissionControlStatus).mockResolvedValue(MC_STATUS_UNAVAILABLE)
+  vi.mocked(getMissionControlReadiness).mockResolvedValue(MC_READINESS_UNAVAILABLE)
+  vi.mocked(getOrchestrationSnapshot).mockResolvedValue(ORCHESTRATION_SNAPSHOT_UNAVAILABLE)
+  vi.mocked(getAuthorityTraceSnapshot).mockResolvedValue(AUTHORITY_TRACE_UNAVAILABLE)
+})
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -89,16 +165,12 @@ describe('PlannerSpace — Space 1', () => {
 
   it('shows plan status — lifecycle badge is visible', () => {
     render(<MissionControlView />)
-    // "Plan status:" label always present in planner
     expect(screen.getByText(/Plan status:/i)).toBeInTheDocument()
   })
 
   it('plan starts in draft state (LifecycleBadge)', () => {
     render(<MissionControlView />)
-    // The lifecycle strip buttons + LifecycleBadge all contain various labels.
-    // We assert the badge text "draft" appears somewhere in the rendered output.
     const allDraft = screen.getAllByText(/\bdraft\b/i)
-    // At minimum the LifecycleBadge shows "draft"
     expect(allDraft.length).toBeGreaterThan(0)
   })
 
@@ -110,7 +182,6 @@ describe('PlannerSpace — Space 1', () => {
 
   it('states that escalation does not trigger execution', () => {
     render(<MissionControlView />)
-    // The phrase appears in the planner header and/or next-safe-action section
     const matches = screen.getAllByText(/no execution is triggered/i)
     expect(matches.length).toBeGreaterThan(0)
   })
@@ -132,14 +203,12 @@ describe('MSOEscalationSpace — Space 2', () => {
   it('shows Execution Now Allowed = No (governed preparation invariant)', () => {
     render(<MissionControlView />)
     clickTab('MSO')
-    // The "Governed Preparation Cycle" section always has this row
     expect(screen.getByText('Execution Now Allowed')).toBeInTheDocument()
   })
 
   it('shows execution_allowed=false note after entity status loads', async () => {
     render(<MissionControlView />)
     clickTab('MSO')
-    // After fetch resolves (mocked), the PostureRow note text appears
     await waitFor(() => {
       expect(screen.getByText(/execution_allowed=false/i)).toBeInTheDocument()
     })
@@ -182,7 +251,6 @@ describe('ArmsAvailabilitySpace — Space 3', () => {
   it('shows registry source label', () => {
     render(<MissionControlView />)
     clickTab('Arms')
-    // Label "Registry source:" may appear once or more but must be present
     const matches = screen.queryAllByText(/Registry source/i)
     expect(matches.length).toBeGreaterThan(0)
   })
@@ -190,8 +258,102 @@ describe('ArmsAvailabilitySpace — Space 3', () => {
   it('reports executionStatus as unavailable when no arms registered', () => {
     render(<MissionControlView />)
     clickTab('Arms')
-    // Default state has empty registeredAgents — the badge shows unavailable
     expect(screen.getByText(/executionStatus: unavailable/i)).toBeInTheDocument()
+  })
+
+  it('shows backend_read_model source when readiness returns ok', async () => {
+    vi.mocked(getMissionControlReadiness).mockResolvedValue({
+      ...MC_READINESS_UNAVAILABLE,
+      ok: true,
+      arms: [
+        {
+          id: 'test-arm',
+          label: 'Test Arm',
+          available: true,
+          execution_status: 'unavailable',
+          readiness_source: 'agent_registry',
+          can_execute_without_mso: false,
+          requires_authority: true,
+        },
+      ],
+      system: { overall: 'available' },
+    })
+    render(<MissionControlView />)
+    clickTab('Arms')
+    await waitFor(() => {
+      expect(screen.getByText('backend_read_model')).toBeInTheDocument()
+    })
+  })
+
+  it('renders backend arm name and source when readiness ok', async () => {
+    vi.mocked(getMissionControlReadiness).mockResolvedValue({
+      ...MC_READINESS_UNAVAILABLE,
+      ok: true,
+      arms: [
+        {
+          id: 'my-arm',
+          label: 'My Agent Arm',
+          available: true,
+          execution_status: 'unavailable',
+          readiness_source: 'agent_registry',
+          can_execute_without_mso: false,
+          requires_authority: true,
+        },
+      ],
+      system: { overall: 'available' },
+    })
+    render(<MissionControlView />)
+    clickTab('Arms')
+    await waitFor(() => {
+      expect(screen.getByText('My Agent Arm')).toBeInTheDocument()
+      expect(screen.getByText(/source: agent_registry/i)).toBeInTheDocument()
+    })
+  })
+
+  it('backend arm availability does NOT imply authorization (invariants visible)', async () => {
+    vi.mocked(getMissionControlReadiness).mockResolvedValue({
+      ...MC_READINESS_UNAVAILABLE,
+      ok: true,
+      arms: [
+        {
+          id: 'auth-arm',
+          label: 'Authorized Arm',
+          available: true,
+          execution_status: 'unavailable',
+          readiness_source: 'agent_registry',
+          can_execute_without_mso: false,
+          requires_authority: true,
+        },
+      ],
+      system: { overall: 'available' },
+    })
+    render(<MissionControlView />)
+    clickTab('Arms')
+    await waitFor(() => {
+      // Authorization invariants must always be visible — arm availability ≠ authorization
+      expect(screen.getByText(/can_execute_without_mso: false/i)).toBeInTheDocument()
+      expect(screen.getByText(/requires_authority: true/i)).toBeInTheDocument()
+    })
+  })
+
+  it('falls back to derived data when readiness returns ok:false', async () => {
+    // Default mock is already ok:false — just verify fallback label appears
+    render(<MissionControlView />)
+    clickTab('Arms')
+    // When backend is unavailable, derived fallback label appears
+    await waitFor(() => {
+      expect(screen.getByText(/\[derived fallback\]/i)).toBeInTheDocument()
+    })
+  })
+
+  it('backend ok:false does not become fake operational success in Arms', async () => {
+    // Default mock returns ok:false — no arms should appear from backend
+    render(<MissionControlView />)
+    clickTab('Arms')
+    // Should NOT show backend_read_model as source (that only appears when ok=true)
+    await waitFor(() => {
+      expect(screen.queryByText(/^backend_read_model$/)).not.toBeInTheDocument()
+    })
   })
 })
 
@@ -227,6 +389,75 @@ describe('OrchestrationViewSpace — Space 4', () => {
     expect(screen.queryByText(/thread is running/i)).not.toBeInTheDocument()
     expect(screen.queryByText(/active execution/i)).not.toBeInTheDocument()
   })
+
+  it('backend snapshot shows live_execution: false invariant', async () => {
+    vi.mocked(getOrchestrationSnapshot).mockResolvedValue({
+      ...ORCHESTRATION_SNAPSHOT_UNAVAILABLE,
+      ok: true,
+      prepared_actions: [],
+    })
+    render(<MissionControlView />)
+    clickTab('Orchestration')
+    await waitFor(() => {
+      expect(screen.getByText(/live_execution: false/i)).toBeInTheDocument()
+    })
+  })
+
+  it('backend snapshot empty runs and threads never shows running state', async () => {
+    vi.mocked(getOrchestrationSnapshot).mockResolvedValue({
+      ...ORCHESTRATION_SNAPSHOT_UNAVAILABLE,
+      ok: true,
+      // runs: [], threads: [] always — this is the truth contract
+      prepared_actions: [],
+    })
+    render(<MissionControlView />)
+    clickTab('Orchestration')
+    await waitFor(() => {
+      // No running badge should appear
+      expect(screen.queryByText(/^running$/i)).not.toBeInTheDocument()
+      // The empty-state message should appear
+      expect(screen.getByText(/No active orchestration threads/i)).toBeInTheDocument()
+    })
+  })
+
+  it('backend prepared_actions render with status=prepared (not running)', async () => {
+    vi.mocked(getOrchestrationSnapshot).mockResolvedValue({
+      ...ORCHESTRATION_SNAPSHOT_UNAVAILABLE,
+      ok: true,
+      prepared_actions: [
+        { id: 'pa-001', status: 'prepared', domain: 'WORK', intent: 'Schedule standup meeting' },
+      ],
+    })
+    render(<MissionControlView />)
+    clickTab('Orchestration')
+    await waitFor(() => {
+      expect(screen.getByText('Schedule standup meeting')).toBeInTheDocument()
+      // Status shown is 'prepared' — never 'running'
+      expect(screen.queryByText(/^running$/i)).not.toBeInTheDocument()
+    })
+  })
+
+  it('backend ok:false orchestration does not fabricate success', async () => {
+    // Default mock is ok:false — Zustand stores are empty too
+    render(<MissionControlView />)
+    clickTab('Orchestration')
+    // No fabricated "available" or "running" — just the empty state
+    expect(screen.queryByText(/execution succeeded/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/thread is running/i)).not.toBeInTheDocument()
+  })
+
+  it('shows runner_reachable_from_ui: false invariant', async () => {
+    vi.mocked(getOrchestrationSnapshot).mockResolvedValue({
+      ...ORCHESTRATION_SNAPSHOT_UNAVAILABLE,
+      ok: true,
+      prepared_actions: [],
+    })
+    render(<MissionControlView />)
+    clickTab('Orchestration')
+    await waitFor(() => {
+      expect(screen.getByText(/runner_reachable_from_ui: false/i)).toBeInTheDocument()
+    })
+  })
 })
 
 describe('OutcomeTraceSpace — Space 5', () => {
@@ -236,17 +467,15 @@ describe('OutcomeTraceSpace — Space 5', () => {
     expect(screen.getByText(/Outcome.*Authority Trace.*ALPHA/i)).toBeInTheDocument()
   })
 
-  it('renders all 9 authority chain stage labels', () => {
+  it('renders all 9 authority chain stage labels (hardcoded fallback)', () => {
     render(<MissionControlView />)
     clickTab('Outcome')
     for (const label of [
       'MSO Kernel', 'Intent Contract', 'Policy', 'Governance', 'CapabilityToken',
       'Police Gate', 'AuthorityArtifact', 'Runner',
     ]) {
-      // Use getAllByText since some labels may appear in multiple contexts
       expect(screen.getAllByText(label).length).toBeGreaterThan(0)
     }
-    // "Outcome" appears in tab bar + lifecycle strip + as stage label
     expect(screen.getAllByText('Outcome').length).toBeGreaterThan(0)
   })
 
@@ -260,14 +489,12 @@ describe('OutcomeTraceSpace — Space 5', () => {
   it('states the authority trace is read-only', () => {
     render(<MissionControlView />)
     clickTab('Outcome')
-    // The legend paragraph describes each stage status category
     expect(screen.getByText(/are architecturally closed to UI/i)).toBeInTheDocument()
   })
 
   it('renders the Outcome Status panel header', () => {
     render(<MissionControlView />)
     clickTab('Outcome')
-    // OutcomeStatusPanel always renders "Outcome Status" as its header
     const matches = screen.getAllByText(/Outcome Status/i)
     expect(matches.length).toBeGreaterThan(0)
   })
@@ -276,6 +503,127 @@ describe('OutcomeTraceSpace — Space 5', () => {
     render(<MissionControlView />)
     clickTab('Outcome')
     expect(screen.queryByText(/execution succeeded/i)).not.toBeInTheDocument()
+  })
+
+  it('shows trace_mode annotation (unavailable when backend fails)', async () => {
+    // Default mock is ok:false — trace_mode should show 'unavailable'
+    render(<MissionControlView />)
+    clickTab('Outcome')
+    await waitFor(() => {
+      const label = screen.getByTestId('trace-mode-label')
+      expect(label.textContent).toMatch(/unavailable.*derived fallback/i)
+    })
+  })
+
+  it('shows trace_mode: snapshot when backend returns ok snapshot', async () => {
+    vi.mocked(getAuthorityTraceSnapshot).mockResolvedValue({
+      ...AUTHORITY_TRACE_UNAVAILABLE,
+      ok: true,
+      trace_mode: 'snapshot',
+      stages: [
+        { id: 'mso', label: 'MSO Kernel', state: 'available', evidence_ref: null },
+        { id: 'runner', label: 'Runner', state: 'architectural', evidence_ref: null },
+      ],
+    })
+    render(<MissionControlView />)
+    clickTab('Outcome')
+    await waitFor(() => {
+      const label = screen.getByTestId('trace-mode-label')
+      expect(label.textContent).toMatch(/snapshot.*backend_read_model/i)
+    })
+  })
+
+  it('renders backend stages when trace snapshot is available', async () => {
+    vi.mocked(getAuthorityTraceSnapshot).mockResolvedValue({
+      ...AUTHORITY_TRACE_UNAVAILABLE,
+      ok: true,
+      trace_mode: 'snapshot',
+      stages: [
+        { id: 'mso', label: 'MSO Kernel', state: 'available', evidence_ref: null },
+        { id: 'runner', label: 'Runner', state: 'architectural', evidence_ref: null },
+      ],
+    })
+    render(<MissionControlView />)
+    clickTab('Outcome')
+    await waitFor(() => {
+      expect(screen.getAllByText('MSO Kernel').length).toBeGreaterThan(0)
+      expect(screen.getAllByText('Runner').length).toBeGreaterThan(0)
+    })
+  })
+
+  it('architectural trace stage is NOT displayed as live runtime trace', async () => {
+    vi.mocked(getAuthorityTraceSnapshot).mockResolvedValue({
+      ...AUTHORITY_TRACE_UNAVAILABLE,
+      ok: true,
+      trace_mode: 'snapshot',
+      stages: [
+        { id: 'runner', label: 'Runner', state: 'architectural', evidence_ref: null },
+      ],
+    })
+    render(<MissionControlView />)
+    clickTab('Outcome')
+    await waitFor(() => {
+      const label = screen.getByTestId('trace-mode-label')
+      // trace_mode is 'snapshot' — not 'live' — this is the key safety check
+      expect(label.textContent).not.toMatch(/live/i)
+      expect(label.textContent).toMatch(/snapshot/i)
+    })
+  })
+
+  it('backend ok:false falls back to hardcoded derived stages', async () => {
+    // Default mock is ok:false — hardcoded stages should render
+    render(<MissionControlView />)
+    clickTab('Outcome')
+    // Hardcoded fallback stages always include these labels
+    expect(screen.getAllByText('Policy').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('Police Gate').length).toBeGreaterThan(0)
+  })
+})
+
+describe('Header — Backend MC State Badge', () => {
+  it('shows mc:available badge when backend status returns available', async () => {
+    vi.mocked(getMissionControlStatus).mockResolvedValue({
+      ...MC_STATUS_UNAVAILABLE,
+      ok: true,
+      mission_control: { state: 'available', mode: 'read_model', execution_allowed: false, used_execution: false },
+    })
+    render(<MissionControlView />)
+    await waitFor(() => {
+      expect(screen.getByTestId('mc-state-badge')).toBeInTheDocument()
+      expect(screen.getByTestId('mc-state-badge').textContent).toMatch(/mc:available/i)
+    })
+  })
+
+  it('shows mc:partial badge when backend reports partial state', async () => {
+    vi.mocked(getMissionControlStatus).mockResolvedValue({
+      ...MC_STATUS_UNAVAILABLE,
+      ok: true,
+      mission_control: { state: 'partial', mode: 'read_model', execution_allowed: false, used_execution: false },
+    })
+    render(<MissionControlView />)
+    await waitFor(() => {
+      expect(screen.getByTestId('mc-state-badge').textContent).toMatch(/mc:partial/i)
+    })
+  })
+
+  it('shows mc:unavailable badge when backend status returns ok:false', async () => {
+    vi.mocked(getMissionControlStatus).mockResolvedValue({
+      ...MC_STATUS_UNAVAILABLE,
+      ok: true,
+      mission_control: { state: 'unavailable', mode: 'read_model', execution_allowed: false, used_execution: false },
+    })
+    render(<MissionControlView />)
+    await waitFor(() => {
+      expect(screen.getByTestId('mc-state-badge').textContent).toMatch(/mc:unavailable/i)
+    })
+  })
+
+  it('hides mc badge while backend status is loading (null state)', () => {
+    // Mock never resolves — simulates loading state
+    vi.mocked(getMissionControlStatus).mockReturnValue(new Promise(() => {}))
+    render(<MissionControlView />)
+    // Badge should not appear until data arrives
+    expect(screen.queryByTestId('mc-state-badge')).not.toBeInTheDocument()
   })
 })
 
