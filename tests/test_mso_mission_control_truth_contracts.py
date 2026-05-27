@@ -336,3 +336,111 @@ class TestBuildOrchestrationSnapshot:
                 assert len(intent) <= 60, (
                     f"intent for action {action.get('id')!r} exceeds 60 chars"
                 )
+
+
+class TestMissionControlRouteHandlers:
+    """Verify the four new webhook_server handler methods exist and are callable.
+
+    These tests confirm:
+    - Each handler method exists on the server class
+    - Handler can be called without raising (fail-soft)
+    - Responses include read-only invariants
+    - Runner is never called
+    """
+
+    def _make_mock_handler(self):
+        """Build a minimal WebhookHandler with mocked transport."""
+        from assistant_os.webhook_server import WebhookHandler
+        import unittest.mock as mock
+
+        handler = object.__new__(WebhookHandler)
+        handler._responses = []
+
+        def fake_send(status_code, body):
+            handler._responses.append((status_code, body))
+
+        handler._send_json_response = fake_send
+        handler._check_auth = lambda: None  # auth passes
+        return handler
+
+    def test_mission_control_status_handler_exists(self):
+        from assistant_os.webhook_server import WebhookHandler
+        assert hasattr(WebhookHandler, "_handle_mso_mission_control_status_get")
+
+    def test_mission_control_readiness_handler_exists(self):
+        from assistant_os.webhook_server import WebhookHandler
+        assert hasattr(WebhookHandler, "_handle_mso_mission_control_readiness_get")
+
+    def test_orchestration_snapshot_handler_exists(self):
+        from assistant_os.webhook_server import WebhookHandler
+        assert hasattr(WebhookHandler, "_handle_mso_orchestration_snapshot_get")
+
+    def test_authority_trace_snapshot_handler_exists(self):
+        from assistant_os.webhook_server import WebhookHandler
+        assert hasattr(WebhookHandler, "_handle_mso_authority_trace_snapshot_get")
+
+    def test_status_handler_returns_read_only_invariants(self):
+        handler = self._make_mock_handler()
+        handler._handle_mso_mission_control_status_get()
+        assert len(handler._responses) == 1
+        status_code, body = handler._responses[0]
+        assert status_code == 200
+        assert body.get("execution_allowed") is False
+        assert body.get("used_execution") is False
+        assert body.get("runner_reachable_from_ui") is False
+
+    def test_readiness_handler_returns_read_only_invariants(self):
+        handler = self._make_mock_handler()
+        handler._handle_mso_mission_control_readiness_get()
+        assert len(handler._responses) == 1
+        status_code, body = handler._responses[0]
+        assert status_code == 200
+        assert body.get("execution_allowed") is False
+        assert body.get("used_execution") is False
+        assert body.get("runner_reachable_from_ui") is False
+
+    def test_orchestration_handler_returns_read_only_invariants(self):
+        handler = self._make_mock_handler()
+        handler._handle_mso_orchestration_snapshot_get()
+        assert len(handler._responses) == 1
+        status_code, body = handler._responses[0]
+        assert status_code == 200
+        assert body.get("execution_allowed") is False
+        assert body.get("used_execution") is False
+        assert body.get("live_execution") is False
+
+    def test_authority_trace_handler_returns_read_only_invariants(self):
+        handler = self._make_mock_handler()
+        handler._handle_mso_authority_trace_snapshot_get()
+        assert len(handler._responses) == 1
+        status_code, body = handler._responses[0]
+        assert status_code == 200
+        assert body.get("execution_allowed") is False
+        assert body.get("used_execution") is False
+        assert body.get("runner_reachable_from_ui") is False
+
+    def test_authority_trace_handler_returns_stages_list(self):
+        handler = self._make_mock_handler()
+        handler._handle_mso_authority_trace_snapshot_get()
+        status_code, body = handler._responses[0]
+        assert isinstance(body.get("stages"), list)
+        assert len(body["stages"]) == 9  # all 9 authority chain stages
+
+    def test_authority_trace_runner_stage_not_reachable(self):
+        handler = self._make_mock_handler()
+        handler._handle_mso_authority_trace_snapshot_get()
+        status_code, body = handler._responses[0]
+        stages = {s["id"]: s for s in body.get("stages", [])}
+        runner = stages.get("runner")
+        assert runner is not None
+        # Runner is architecturally closed — state must NOT be "available"
+        assert runner["state"] in ("blocked", "architectural", "unavailable")
+        assert runner["state"] != "available"
+
+    def test_orchestration_handler_runs_always_empty(self):
+        handler = self._make_mock_handler()
+        handler._handle_mso_orchestration_snapshot_get()
+        status_code, body = handler._responses[0]
+        assert body.get("runs") == []
+        assert body.get("threads") == []
+        assert body.get("live_execution") is False
