@@ -1146,8 +1146,13 @@ export function MissionControlView() {
   const confirmPending  = useConfirmPendingStore((s) => s.confirmPending)
   const authorityStatus = useAuthorityStatusStore((s) => s.authorityStatus)
 
-  const preparedCount = preparedActions?.count ?? 0
-  const confirmCount  = confirmPending?.pending_count ?? 0
+  // Prefer backend truth from mcStatus (already polled above); fall back to Zustand while loading
+  const preparedCount = mcStatus !== null
+    ? mcStatus.queues.prepared_actions_count
+    : (preparedActions?.count ?? 0)
+  const confirmCount  = mcStatus !== null
+    ? mcStatus.queues.confirm_pending_count
+    : (confirmPending?.pending_count ?? 0)
   const modeOk        = operationalMode === 'NORMAL'
 
   return (

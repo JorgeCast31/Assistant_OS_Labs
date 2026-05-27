@@ -691,6 +691,32 @@ describe('Header — Backend MC State Badge', () => {
     // Badge should not appear until data arrives
     expect(screen.queryByTestId('mc-state-badge')).not.toBeInTheDocument()
   })
+
+  it('header shows prepared badge using mcStatus.queues.prepared_actions_count when backend available', async () => {
+    vi.mocked(getMissionControlStatus).mockResolvedValue({
+      ...MC_STATUS_UNAVAILABLE,
+      ok: true,
+      queues: { prepared_actions_count: 3, confirm_pending_count: 0 },
+      mission_control: { state: 'available', mode: 'read_model', execution_allowed: false, used_execution: false },
+    })
+    render(<MissionControlView />)
+    await waitFor(() => {
+      expect(screen.getByText(/3 prepared/i)).toBeInTheDocument()
+    })
+  })
+
+  it('header shows confirm badge using mcStatus.queues.confirm_pending_count when backend available', async () => {
+    vi.mocked(getMissionControlStatus).mockResolvedValue({
+      ...MC_STATUS_UNAVAILABLE,
+      ok: true,
+      queues: { prepared_actions_count: 0, confirm_pending_count: 2 },
+      mission_control: { state: 'available', mode: 'read_model', execution_allowed: false, used_execution: false },
+    })
+    render(<MissionControlView />)
+    await waitFor(() => {
+      expect(screen.getByText(/2 pending/i)).toBeInTheDocument()
+    })
+  })
 })
 
 describe('Mission Control — Global Invariants', () => {
