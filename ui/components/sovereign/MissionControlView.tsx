@@ -346,11 +346,14 @@ function MSOEscalationSpace() {
     return 'planning'
   })()
 
+  // Next stage: after awaiting_confirmation the full authority chain must complete
+  // before any execution occurs — the honest state is 'blocked', not 'running'.
+  // 'running' is prohibited: it implies live execution which never comes from this surface.
   const nextStage: MissionLifecycleState = (() => {
     if (currentStage === 'planning')              return 'mso_review'
     if (currentStage === 'prepared')              return 'awaiting_confirmation'
-    if (currentStage === 'awaiting_confirmation') return 'running'
-    return 'completed'
+    if (currentStage === 'awaiting_confirmation') return 'blocked'  // authority chain required
+    return 'blocked'                                                // default: execution closed
   })()
 
   return (

@@ -85,6 +85,7 @@ import {
   getOrchestrationSnapshot,
   getAuthorityTraceSnapshot,
 } from '@/lib/api'
+import { useConfirmPendingStore } from '@/stores/confirm-pending-store'
 
 // ── Mock fetch (fail-soft: direct fetch calls in MSOEscalationSpace) ──────────
 beforeEach(() => {
@@ -226,6 +227,31 @@ describe('MSOEscalationSpace — Space 2', () => {
     render(<MissionControlView />)
     clickTab('MSO')
     expect(screen.getByText(/PolicyDecision.*CapabilityToken.*PoliceGate/i)).toBeInTheDocument()
+  })
+
+  it('nextStage is never "running" — shows "blocked" when confirm queue has items', () => {
+    // Set confirm pending count > 0 so currentStage becomes awaiting_confirmation
+    useConfirmPendingStore.setState({
+      confirmPending: {
+        ok: true,
+        source: 'confirm_flow',
+        note: 'test',
+        pending_count: 1,
+        expired_pending_count: 0,
+        pending: [],
+      },
+      isPolling: false,
+      lastPolled: null,
+      pollError: null,
+    })
+    render(<MissionControlView />)
+    clickTab('MSO')
+    // 'running' must not appear as a lifecycle badge or label
+    expect(screen.queryByText(/^running$/i)).not.toBeInTheDocument()
+    // 'blocked' should appear as the next required stage
+    expect(screen.getByText(/^blocked$/i)).toBeInTheDocument()
+    // Cleanup store state
+    useConfirmPendingStore.setState({ confirmPending: null })
   })
 })
 
