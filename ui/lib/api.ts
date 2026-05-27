@@ -1042,7 +1042,7 @@ const MC_STATUS_UNAVAILABLE: MissionControlStatusResponse = {
   mso: { entity_status: 'unavailable', seat_status: 'unavailable', boundary: 'sovereign' },
   queues: { prepared_actions_count: 0, confirm_pending_count: 0 },
   authority: { status: 'unavailable', counts: {} },
-  outcome: { status: 'unavailable' },
+  outcome: { status: 'unavailable', found: false, execution_closed: true, sources_checked: [] },
   error: 'Mission Control status backend unavailable',
 }
 

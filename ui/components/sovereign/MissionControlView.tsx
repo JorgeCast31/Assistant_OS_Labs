@@ -704,8 +704,11 @@ function OrchestrationViewSpace() {
   const liveExecution      = orchestrationData?.live_execution ?? false  // always false
   const orchestrationSource = useBackendSnapshot ? 'backend_read_model' : 'derived'
 
-  const confirmCount = confirmPending?.pending_count ?? 0
-  const latestItem   = preparedActionsStore?.items?.[0] ?? null
+  // Prefer backend snapshot confirm count; fall back to Zustand store
+  const backendConfirmCount  = useBackendSnapshot ? orchestrationData!.confirm_pending.length : null
+  const confirmCount         = backendConfirmCount ?? confirmPending?.pending_count ?? 0
+  const confirmPendingLoaded = useBackendSnapshot || confirmPending !== null
+  const latestItem           = preparedActionsStore?.items?.[0] ?? null
 
   // Derive threads: backend prepared_actions preferred, Zustand fallback.
   // A prepared action is NOT a running execution — status is always 'prepared'.
@@ -782,9 +785,9 @@ function OrchestrationViewSpace() {
           />
           <SituationTile
             label="Confirm Pending"
-            value={confirmPending === null ? '…' : String(confirmCount)}
+            value={!confirmPendingLoaded ? '…' : String(confirmCount)}
             warn={confirmCount > 0}
-            accent={confirmPending !== null && confirmCount === 0}
+            accent={confirmPendingLoaded && confirmCount === 0}
           />
         </div>
         {preparedCount > 0 ? (
@@ -971,6 +974,8 @@ function AuthorityTraceStage({
 function OutcomeTraceSpace() {
   // Backend truth trace snapshot (preferred source)
   const traceData = useMCTraceQuery()
+  // MC status outcome summary (read-model, enriched by build_mission_control_status)
+  const mcStatus  = useMCStatusQuery()
 
   // Map backend MCTraceStage.state → local TraceStageStatus.
   // 'architectural' and 'unavailable' both map to 'closed' (architecturally closed to UI).
@@ -1038,7 +1043,49 @@ function OutcomeTraceSpace() {
         </div>
       </section>
 
-      {/* Outcome status */}
+      {/* Outcome summary — sourced from MC status read model */}
+      <section>
+        <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-2">Outcome Summary</p>
+        <div className="rounded-lg border border-os-border bg-os-surface p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono text-tx-muted">status</span>
+            <span
+              className="text-[10px] font-mono text-tx-primary"
+              data-testid="outcome-status-label"
+            >
+              {mcStatus === null ? '…' : (mcStatus.outcome?.status ?? 'unavailable')}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono text-tx-muted">execution_closed</span>
+            <span
+              className="text-[10px] font-mono text-tx-primary"
+              data-testid="outcome-execution-closed"
+            >
+              {mcStatus === null ? '…' : String(mcStatus.outcome?.execution_closed ?? true)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono text-tx-muted">found</span>
+            <span className="text-[10px] font-mono text-tx-primary">
+              {mcStatus === null ? '…' : String(mcStatus.outcome?.found ?? false)}
+            </span>
+          </div>
+          {mcStatus?.outcome?.sources_checked && mcStatus.outcome.sources_checked.length > 0 && (
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono text-tx-muted">sources_checked</span>
+              <span className="text-[10px] font-mono text-tx-primary">
+                {mcStatus.outcome.sources_checked.join(', ')}
+              </span>
+            </div>
+          )}
+          <p className="text-[9px] font-mono text-tx-muted pt-1 border-t border-os-border/60">
+            source: backend_read_model · execution_closed is always true
+          </p>
+        </div>
+      </section>
+
+      {/* Outcome status — detailed polling panel */}
       <section>
         <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-2">Execution Outcome</p>
         <OutcomeStatusPanel />

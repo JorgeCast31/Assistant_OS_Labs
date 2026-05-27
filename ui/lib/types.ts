@@ -900,6 +900,16 @@ export interface MCPreparedAction {
   intent: string | null
 }
 
+export interface MCConfirmPendingAction {
+  id: string
+  status: 'awaiting_confirmation'
+  domain: string | null
+  intent: string | null
+  requested_action: string | null
+  execution_allowed: false
+  can_execute_now: false
+}
+
 export interface MissionControlStatusResponse {
   ok: boolean
   source: 'backend_read_model'
@@ -926,7 +936,10 @@ export interface MissionControlStatusResponse {
     counts: Record<string, number>
   }
   outcome: {
-    status: 'unavailable'
+    status: string
+    found: boolean
+    execution_closed: true
+    sources_checked: string[]
   }
   status?: 'unavailable'
   error?: string
@@ -955,7 +968,7 @@ export interface OrchestrationSnapshotResponse {
   runs: never[]
   threads: never[]
   prepared_actions: MCPreparedAction[]
-  confirm_pending: never[]
+  confirm_pending: MCConfirmPendingAction[]
   live_execution: false
   event_stream_connected: false
   status?: 'unavailable'

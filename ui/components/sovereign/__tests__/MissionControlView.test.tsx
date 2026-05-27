@@ -35,7 +35,7 @@ const MC_STATUS_UNAVAILABLE = {
   mso: { entity_status: 'unavailable' as const, seat_status: 'unavailable' as const, boundary: 'sovereign' },
   queues: { prepared_actions_count: 0, confirm_pending_count: 0 },
   authority: { status: 'unavailable' as const, counts: {} },
-  outcome: { status: 'unavailable' as const },
+  outcome: { status: 'unavailable' as const, found: false, execution_closed: true as const, sources_checked: [] as string[] },
   error: 'unavailable',
 }
 
@@ -59,7 +59,7 @@ const ORCHESTRATION_SNAPSHOT_UNAVAILABLE = {
   runs: [] as never[],
   threads: [] as never[],
   prepared_actions: [],
-  confirm_pending: [] as never[],
+  confirm_pending: [],
   live_execution: false as const,
   event_stream_connected: false as const,
   error: 'unavailable',
@@ -567,6 +567,46 @@ describe('OutcomeTraceSpace — Space 5', () => {
       // trace_mode is 'snapshot' — not 'live' — this is the key safety check
       expect(label.textContent).not.toMatch(/live/i)
       expect(label.textContent).toMatch(/snapshot/i)
+    })
+  })
+
+  it('renders outcome-status-label testid in Outcome tab', async () => {
+    vi.mocked(getMissionControlStatus).mockResolvedValue({
+      ...MC_STATUS_UNAVAILABLE,
+      ok: true,
+      outcome: { status: 'not_found', found: false, execution_closed: true, sources_checked: [] },
+    })
+    render(<MissionControlView />)
+    clickTab('Outcome')
+    await waitFor(() => {
+      const label = screen.getByTestId('outcome-status-label')
+      expect(label).toBeInTheDocument()
+      expect(label.textContent).toBe('not_found')
+    })
+  })
+
+  it('renders outcome-execution-closed testid always true', async () => {
+    vi.mocked(getMissionControlStatus).mockResolvedValue({
+      ...MC_STATUS_UNAVAILABLE,
+      ok: true,
+      outcome: { status: 'unavailable', found: false, execution_closed: true, sources_checked: [] },
+    })
+    render(<MissionControlView />)
+    clickTab('Outcome')
+    await waitFor(() => {
+      const el = screen.getByTestId('outcome-execution-closed')
+      expect(el).toBeInTheDocument()
+      expect(el.textContent).toBe('true')
+    })
+  })
+
+  it('outcome-status-label shows unavailable when backend returns unavailable status', async () => {
+    // Default mock — MC_STATUS_UNAVAILABLE has outcome.status = 'unavailable'
+    render(<MissionControlView />)
+    clickTab('Outcome')
+    await waitFor(() => {
+      const label = screen.getByTestId('outcome-status-label')
+      expect(label.textContent).toBe('unavailable')
     })
   })
 
