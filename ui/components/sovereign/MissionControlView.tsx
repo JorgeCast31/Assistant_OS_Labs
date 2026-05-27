@@ -805,6 +805,42 @@ function OrchestrationViewSpace() {
         ) : (
           <PostureRow label="Queue Status" value="Clear" tone="ok" note="No prepared actions pending." />
         )}
+
+        {/* Confirm Pending Items — read-only observability, no execution affordance */}
+        {useBackendSnapshot && orchestrationData!.confirm_pending.length > 0 && (
+          <div className="space-y-2 mt-3">
+            <p className="text-[9px] font-mono text-tx-muted uppercase tracking-widest">Awaiting Confirmation</p>
+            {orchestrationData!.confirm_pending.map((item) => (
+              <div
+                key={item.id}
+                className="rounded-lg border border-orange-400/20 bg-orange-400/5 p-3"
+                data-testid="confirm-pending-item"
+              >
+                <div className="flex items-start justify-between gap-2 mb-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-mono text-orange-400 uppercase">awaiting_confirmation</span>
+                    {item.domain && (
+                      <span className="text-[9px] font-mono text-tx-muted">· {item.domain}</span>
+                    )}
+                  </div>
+                  <span className="text-[9px] font-mono text-tx-muted/60 shrink-0 tabular-nums">
+                    {item.id.slice(0, 12)}…
+                  </span>
+                </div>
+                {item.intent && (
+                  <p className="text-[10px] font-mono text-tx-secondary mb-1 line-clamp-2">{item.intent}</p>
+                )}
+                {item.requested_action && (
+                  <p className="text-[9px] font-mono text-tx-muted">{item.requested_action}</p>
+                )}
+                <div className="mt-2 flex gap-3 text-[9px] font-mono text-tx-muted border-t border-os-border/40 pt-1.5">
+                  <span>execution_allowed: false</span>
+                  <span>can_execute_now: false</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </section>
 
       {/* Authority Posture */}

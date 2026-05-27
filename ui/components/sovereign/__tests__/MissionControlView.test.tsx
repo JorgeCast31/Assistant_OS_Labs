@@ -484,6 +484,57 @@ describe('OrchestrationViewSpace — Space 4', () => {
       expect(screen.getByText(/runner_reachable_from_ui: false/i)).toBeInTheDocument()
     })
   })
+
+  it('renders confirm-pending-item cards when orchestration snapshot has items', async () => {
+    vi.mocked(getOrchestrationSnapshot).mockResolvedValue({
+      ...ORCHESTRATION_SNAPSHOT_UNAVAILABLE,
+      ok: true,
+      prepared_actions: [],
+      confirm_pending: [
+        {
+          id: 'qe-test-alpha-001',
+          status: 'awaiting_confirmation',
+          domain: 'COGNITIVE',
+          intent: 'Review the Q2 proposal draft',
+          requested_action: 'review_document',
+          execution_allowed: false,
+          can_execute_now: false,
+        },
+      ],
+    })
+    render(<MissionControlView />)
+    clickTab('Orchestration')
+    await waitFor(() => {
+      expect(screen.getByTestId('confirm-pending-item')).toBeInTheDocument()
+      expect(screen.getByText(/COGNITIVE/i)).toBeInTheDocument()
+      expect(screen.getByText(/Review the Q2 proposal draft/i)).toBeInTheDocument()
+    })
+  })
+
+  it('confirm-pending-item cards always show execution_allowed: false and can_execute_now: false', async () => {
+    vi.mocked(getOrchestrationSnapshot).mockResolvedValue({
+      ...ORCHESTRATION_SNAPSHOT_UNAVAILABLE,
+      ok: true,
+      prepared_actions: [],
+      confirm_pending: [
+        {
+          id: 'qe-test-alpha-002',
+          status: 'awaiting_confirmation',
+          domain: 'WORK',
+          intent: 'Schedule team meeting',
+          requested_action: 'create_calendar_event',
+          execution_allowed: false,
+          can_execute_now: false,
+        },
+      ],
+    })
+    render(<MissionControlView />)
+    clickTab('Orchestration')
+    await waitFor(() => {
+      expect(screen.getByText(/execution_allowed: false/i)).toBeInTheDocument()
+      expect(screen.getByText(/can_execute_now: false/i)).toBeInTheDocument()
+    })
+  })
 })
 
 describe('OutcomeTraceSpace — Space 5', () => {
