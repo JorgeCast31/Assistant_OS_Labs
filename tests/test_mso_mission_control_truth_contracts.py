@@ -711,3 +711,119 @@ class TestMissionControlRouteHandlers:
         assert body.get("runs") == []
         assert body.get("threads") == []
         assert body.get("live_execution") is False
+
+
+# ===========================================================================
+# S-MISSION-CONTROL-LIFECYCLE-SNAPSHOT-01
+# ===========================================================================
+
+
+class TestBuildLifecycleSnapshot:
+    """build_lifecycle_snapshot() — read-only queue-driven lifecycle derivation."""
+
+    def test_returns_dict(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert isinstance(result, dict)
+
+    def test_ok_is_true(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["ok"] is True
+
+    def test_source_is_backend_read_model(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["source"] == "backend_read_model"
+
+    def test_execution_allowed_is_false(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["execution_allowed"] is False
+
+    def test_used_execution_is_false(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["used_execution"] is False
+
+    def test_runner_reachable_from_ui_is_false(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["runner_reachable_from_ui"] is False
+
+    def test_current_stage_is_valid_state(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        valid = {"planning", "prepared", "awaiting_confirmation"}
+        result = build_lifecycle_snapshot()
+        assert result["current_stage"] in valid
+
+    def test_current_stage_is_never_running(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["current_stage"] != "running"
+
+    def test_current_stage_is_never_completed(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["current_stage"] != "completed"
+
+    def test_queues_at_snapshot_is_dict(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert isinstance(result["queues_at_snapshot"], dict)
+
+    def test_queues_at_snapshot_has_prepared_actions_count(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert "prepared_actions_count" in result["queues_at_snapshot"]
+        assert isinstance(result["queues_at_snapshot"]["prepared_actions_count"], int)
+
+    def test_queues_at_snapshot_has_confirm_pending_count(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert "confirm_pending_count" in result["queues_at_snapshot"]
+        assert isinstance(result["queues_at_snapshot"]["confirm_pending_count"], int)
+
+    def test_current_stage_is_planning_when_queue_empty(self, monkeypatch):
+        from assistant_os.mso import mission_control_status
+        monkeypatch.setattr(
+            mission_control_status,
+            "_get_queue_counts_for_lifecycle",
+            lambda: (0, 0),
+        )
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["current_stage"] == "planning"
+
+    def test_current_stage_is_prepared_when_prepared_nonzero(self, monkeypatch):
+        from assistant_os.mso import mission_control_status
+        monkeypatch.setattr(
+            mission_control_status,
+            "_get_queue_counts_for_lifecycle",
+            lambda: (2, 0),  # (prepared_count, confirm_pending_count)
+        )
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["current_stage"] == "prepared"
+
+    def test_current_stage_is_awaiting_confirmation_when_confirm_nonzero(self, monkeypatch):
+        from assistant_os.mso import mission_control_status
+        monkeypatch.setattr(
+            mission_control_status,
+            "_get_queue_counts_for_lifecycle",
+            lambda: (0, 1),  # (prepared_count, confirm_pending_count)
+        )
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["current_stage"] == "awaiting_confirmation"
+
+    def test_confirm_pending_takes_priority_over_prepared(self, monkeypatch):
+        from assistant_os.mso import mission_control_status
+        monkeypatch.setattr(
+            mission_control_status,
+            "_get_queue_counts_for_lifecycle",
+            lambda: (1, 1),  # both nonzero — confirm must win
+        )
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["current_stage"] == "awaiting_confirmation"

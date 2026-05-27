@@ -427,3 +427,74 @@ def build_authority_trace_stage_list(
             }
         )
     return stages
+
+
+# ---------------------------------------------------------------------------
+# 5. _get_queue_counts_for_lifecycle  (internal, monkeypatch target)
+# ---------------------------------------------------------------------------
+
+
+def _get_queue_counts_for_lifecycle() -> tuple[int, int]:
+    """
+    Return (prepared_actions_count, confirm_pending_count) from the queue.
+
+    Separated so tests can monkeypatch without touching the real queue.
+    Returns (0, 0) on any failure — fail-soft.
+    """
+    try:
+        from .prepared_action_queue import list_pending_confirmable_action_dicts
+
+        items = list_pending_confirmable_action_dicts()
+        prepared = sum(1 for i in items if i.get("status") == "prepared")
+        confirm = sum(1 for i in items if i.get("status") == "awaiting_confirmation")
+        return prepared, confirm
+    except Exception:  # noqa: BLE001
+        return 0, 0
+
+
+# ---------------------------------------------------------------------------
+# 6. build_lifecycle_snapshot
+# ---------------------------------------------------------------------------
+
+
+def build_lifecycle_snapshot() -> dict[str, Any]:
+    """
+    Derive the current mission lifecycle stage from queue state.
+
+    Stage derivation (read-only, queue-driven):
+      - 'awaiting_confirmation'  if confirm_pending_count > 0  (takes priority)
+      - 'prepared'               if prepared_actions_count > 0
+      - 'planning'               otherwise (default floor)
+
+    INVARIANTS (never relaxed):
+      - execution_allowed = False
+      - used_execution    = False
+      - source            = "backend_read_model"
+      - current_stage ∉ {'running', 'completed', 'executing'}
+
+    Returns
+    -------
+    dict
+        Truth-contract dict. Never raises.
+    """
+    prepared_count, confirm_count = _get_queue_counts_for_lifecycle()
+
+    if confirm_count > 0:
+        current_stage = "awaiting_confirmation"
+    elif prepared_count > 0:
+        current_stage = "prepared"
+    else:
+        current_stage = "planning"
+
+    return {
+        "ok": True,
+        "source": "backend_read_model",
+        "execution_allowed": False,
+        "used_execution": False,
+        "runner_reachable_from_ui": False,
+        "current_stage": current_stage,
+        "queues_at_snapshot": {
+            "prepared_actions_count": prepared_count,
+            "confirm_pending_count": confirm_count,
+        },
+    }
