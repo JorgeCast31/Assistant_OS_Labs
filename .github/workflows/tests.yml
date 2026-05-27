@@ -23,6 +23,9 @@ jobs:
       NOTION_WORK_DB_ID: "test_db_id_not_real"
       WEBHOOK_TOKEN: "test_webhook_token_not_real"
       SHEETS_SPREADSHEET_ID: "test_spreadsheet_id_not_real"
+      # Force UTF-8 everywhere — prevents charmap errors on Windows runners
+      # and makes cross-platform behavior consistent (Python 3.7+ standard fix).
+      PYTHONUTF8: "1"
     
     steps:
     - name: Checkout repository
