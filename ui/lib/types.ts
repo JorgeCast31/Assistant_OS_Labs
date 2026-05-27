@@ -910,6 +910,21 @@ export interface MCConfirmPendingAction {
   can_execute_now: false
 }
 
+// S-MISSION-CONTROL-LIFECYCLE-SNAPSHOT-01
+export interface LifecycleSnapshotResponse {
+  ok: boolean
+  source: string
+  execution_allowed: false
+  used_execution: false
+  runner_reachable_from_ui: false
+  current_stage: 'planning' | 'prepared' | 'awaiting_confirmation'
+  queues_at_snapshot: {
+    prepared_actions_count: number
+    confirm_pending_count: number
+  }
+  error?: string
+}
+
 export interface MissionControlStatusResponse {
   ok: boolean
   source: 'backend_read_model'

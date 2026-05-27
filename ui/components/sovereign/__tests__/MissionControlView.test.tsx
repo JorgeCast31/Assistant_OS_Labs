@@ -17,10 +17,11 @@ vi.mock('@/lib/sovereign/entity-registry', () => ({
 // These are the four new backend truth-contract endpoints (Tasks 2–5).
 // Default to unavailable so all tests start with honest empty state.
 vi.mock('@/lib/api', () => ({
-  getMissionControlStatus:   vi.fn(),
-  getMissionControlReadiness: vi.fn(),
-  getOrchestrationSnapshot:  vi.fn(),
-  getAuthorityTraceSnapshot: vi.fn(),
+  getMissionControlStatus:             vi.fn(),
+  getMissionControlReadiness:          vi.fn(),
+  getOrchestrationSnapshot:            vi.fn(),
+  getAuthorityTraceSnapshot:           vi.fn(),
+  getMissionControlLifecycleSnapshot:  vi.fn(),
 }))
 
 // ── Unavailable fixture constants ─────────────────────────────────────────────
@@ -76,6 +77,17 @@ const AUTHORITY_TRACE_UNAVAILABLE = {
   error: 'unavailable',
 }
 
+const LC_SNAPSHOT_UNAVAILABLE = {
+  ok: false,
+  source: 'backend_read_model' as const,
+  execution_allowed: false as const,
+  used_execution: false as const,
+  runner_reachable_from_ui: false as const,
+  current_stage: 'planning' as const,
+  queues_at_snapshot: { prepared_actions_count: 0, confirm_pending_count: 0 },
+  error: 'unavailable',
+}
+
 // ── Import component and mocked helpers after vi.mock declarations ────────────
 // Imports are hoisted by Vitest, so these get the mocked versions.
 import { MissionControlView } from '../MissionControlView'
@@ -84,6 +96,7 @@ import {
   getMissionControlReadiness,
   getOrchestrationSnapshot,
   getAuthorityTraceSnapshot,
+  getMissionControlLifecycleSnapshot,
 } from '@/lib/api'
 import { useConfirmPendingStore } from '@/stores/confirm-pending-store'
 
@@ -96,11 +109,12 @@ beforeEach(() => {
     ),
   )
 
-  // Default all four truth-contract helpers to unavailable (imported above, mocked by vi.mock)
+  // Default all truth-contract helpers to unavailable (imported above, mocked by vi.mock)
   vi.mocked(getMissionControlStatus).mockResolvedValue(MC_STATUS_UNAVAILABLE)
   vi.mocked(getMissionControlReadiness).mockResolvedValue(MC_READINESS_UNAVAILABLE)
   vi.mocked(getOrchestrationSnapshot).mockResolvedValue(ORCHESTRATION_SNAPSHOT_UNAVAILABLE)
   vi.mocked(getAuthorityTraceSnapshot).mockResolvedValue(AUTHORITY_TRACE_UNAVAILABLE)
+  vi.mocked(getMissionControlLifecycleSnapshot).mockResolvedValue(LC_SNAPSHOT_UNAVAILABLE)
 })
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -784,5 +798,52 @@ describe('Mission Control — Global Invariants', () => {
   it('describes the full lifecycle in the cockpit header', () => {
     render(<MissionControlView />)
     expect(screen.getByText(/Planning.*MSO.*Governed Preparation.*Confirmation.*Orchestration.*Outcome/i)).toBeInTheDocument()
+  })
+})
+
+// S-MISSION-CONTROL-LIFECYCLE-SNAPSHOT-01
+describe('MSOEscalationSpace — lifecycle backend wiring', () => {
+  it('uses backend current_stage when lifecycle snapshot returns prepared', async () => {
+    vi.mocked(getMissionControlLifecycleSnapshot).mockResolvedValue({
+      ok: true,
+      source: 'backend_read_model',
+      execution_allowed: false,
+      used_execution: false,
+      runner_reachable_from_ui: false,
+      current_stage: 'prepared',
+      queues_at_snapshot: { prepared_actions_count: 2, confirm_pending_count: 0 },
+    })
+    render(<MissionControlView />)
+    clickTab('MSO')
+    await waitFor(() => {
+      expect(screen.getByText(/prepared/i)).toBeInTheDocument()
+    })
+  })
+
+  it('falls back gracefully when lifecycle snapshot is loading (never resolves)', () => {
+    vi.mocked(getMissionControlLifecycleSnapshot).mockImplementation(
+      () => new Promise(() => {}), // never resolves — simulates loading
+    )
+    render(<MissionControlView />)
+    clickTab('MSO')
+    // Component must render without crash — Zustand fallback active
+    expect(screen.getByText(/MSO Escalation/i)).toBeInTheDocument()
+  })
+
+  it('does not show running as current stage', async () => {
+    vi.mocked(getMissionControlLifecycleSnapshot).mockResolvedValue({
+      ok: true,
+      source: 'backend_read_model',
+      execution_allowed: false,
+      used_execution: false,
+      runner_reachable_from_ui: false,
+      current_stage: 'planning',
+      queues_at_snapshot: { prepared_actions_count: 0, confirm_pending_count: 0 },
+    })
+    render(<MissionControlView />)
+    clickTab('MSO')
+    await waitFor(() => {
+      expect(screen.queryByText(/^running$/i)).not.toBeInTheDocument()
+    })
   })
 })

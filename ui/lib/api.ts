@@ -736,6 +736,7 @@ import type {
   MissionControlReadinessResponse,
   OrchestrationSnapshotResponse,
   AuthorityTraceSnapshotResponse,
+  LifecycleSnapshotResponse,
 } from './types'
 
 const CODE_READINESS_UNAVAILABLE: CodeReadinessResponse = {
@@ -1136,5 +1137,31 @@ export async function getAuthorityTraceSnapshot(): Promise<AuthorityTraceSnapsho
     return json.ok ? json : { ...AUTHORITY_TRACE_SNAPSHOT_UNAVAILABLE, error: json.error ?? 'unavailable' }
   } catch {
     return AUTHORITY_TRACE_SNAPSHOT_UNAVAILABLE
+  }
+}
+
+// S-MISSION-CONTROL-LIFECYCLE-SNAPSHOT-01
+const LC_SNAPSHOT_UNAVAILABLE: LifecycleSnapshotResponse = {
+  ok: false,
+  source: 'backend_read_model',
+  execution_allowed: false,
+  used_execution: false,
+  runner_reachable_from_ui: false,
+  current_stage: 'planning',
+  queues_at_snapshot: { prepared_actions_count: 0, confirm_pending_count: 0 },
+  error: 'Lifecycle snapshot backend unavailable',
+}
+
+export async function getMissionControlLifecycleSnapshot(): Promise<LifecycleSnapshotResponse> {
+  try {
+    const res = await fetch('/api/mso/mission-control/lifecycle-snapshot', {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) return LC_SNAPSHOT_UNAVAILABLE
+    const json = await res.json() as LifecycleSnapshotResponse
+    return json.ok ? json : { ...LC_SNAPSHOT_UNAVAILABLE, error: json.error ?? 'unavailable' }
+  } catch {
+    return LC_SNAPSHOT_UNAVAILABLE
   }
 }

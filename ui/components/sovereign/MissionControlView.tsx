@@ -17,6 +17,7 @@ import {
   getMissionControlReadiness,
   getOrchestrationSnapshot,
   getAuthorityTraceSnapshot,
+  getMissionControlLifecycleSnapshot,
 } from '@/lib/api'
 import { MissionControlChainView } from './MissionControlChainView'
 import { OutcomeStatusPanel } from './OutcomeStatusPanel'
@@ -30,6 +31,7 @@ import type {
   MissionControlReadinessResponse,
   OrchestrationSnapshotResponse,
   AuthorityTraceSnapshotResponse,
+  LifecycleSnapshotResponse,
 } from '@/lib/types'
 
 // ── Backend truth-contract polling hooks ─────────────────────────────────────
@@ -89,6 +91,22 @@ function useMCTraceQuery() {
     let cancelled = false
     const poll = async () => {
       const result = await getAuthorityTraceSnapshot()
+      if (!cancelled) setData(result)
+    }
+    poll()
+    const id = setInterval(poll, 30_000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+  return data
+}
+
+// S-MISSION-CONTROL-LIFECYCLE-SNAPSHOT-01
+function useMCLifecycleQuery() {
+  const [data, setData] = useState<LifecycleSnapshotResponse | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    const poll = async () => {
+      const result = await getMissionControlLifecycleSnapshot()
       if (!cancelled) setData(result)
     }
     poll()
@@ -336,15 +354,24 @@ function MSOEscalationSpace() {
     return () => { cancelled = true; clearInterval(interval) }
   }, [])
 
-  const preparedCount = preparedActions?.count ?? 0
-  const confirmCount  = confirmPending?.pending_count ?? 0
   const provider      = seatProvider?.seat_provider ?? null
 
-  const currentStage: MissionLifecycleState = (() => {
-    if (confirmCount > 0)  return 'awaiting_confirmation'
-    if (preparedCount > 0) return 'prepared'
-    return 'planning'
-  })()
+  // S-MISSION-CONTROL-LIFECYCLE-SNAPSHOT-01
+  // Prefer backend lifecycle truth; fall back to Zustand while loading/unavailable.
+  const lifecycleData = useMCLifecycleQuery()
+  const preparedCount = lifecycleData !== null
+    ? lifecycleData.queues_at_snapshot.prepared_actions_count
+    : (preparedActions?.count ?? 0)
+  const confirmCount  = lifecycleData !== null
+    ? lifecycleData.queues_at_snapshot.confirm_pending_count
+    : (confirmPending?.pending_count ?? 0)
+  const currentStage: MissionLifecycleState = lifecycleData !== null
+    ? lifecycleData.current_stage
+    : (() => {
+        if (confirmCount > 0)  return 'awaiting_confirmation' as const
+        if (preparedCount > 0) return 'prepared' as const
+        return 'planning' as const
+      })()
 
   // Next stage: after awaiting_confirmation the full authority chain must complete
   // before any execution occurs — the honest state is 'blocked', not 'running'.
