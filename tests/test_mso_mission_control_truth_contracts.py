@@ -130,6 +130,11 @@ class TestBuildMissionControlStatus:
         result = _status()
         assert "outcome" in result
 
+    def test_authority_status_is_valid_state_word(self):
+        from assistant_os.mso.mission_control_status import build_mission_control_status
+        result = build_mission_control_status()
+        assert result["authority"]["status"] in ("available", "unavailable", "degraded")
+
     def test_does_not_raise(self):
         # Should complete without exception even if internals fail
         try:

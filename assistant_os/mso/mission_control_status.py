@@ -50,7 +50,7 @@ def build_mission_control_status() -> dict[str, Any]:
     entity_ok = False
     try:
         from .entity_status import build_mso_entity_status
-        build_mso_entity_status()
+        build_mso_entity_status()  # called for reachability probe only; result intentionally discarded
         entity_ok = True
     except Exception:
         entity_ok = False
@@ -64,6 +64,9 @@ def build_mission_control_status() -> dict[str, Any]:
         seat_result = build_mso_seat_status()
         # Seat status always returns a dict; treat as available unless it
         # explicitly signals an error (the function itself is fail-soft).
+        # "available" here means the seat module is reachable and returned a valid
+        # dict — not that a cognitive seat is configured. A seat with no configured
+        # provider (availability="not_configured") is still counted as reachable.
         seat_ok = "error" not in seat_result
     except Exception:
         seat_ok = False
@@ -84,7 +87,7 @@ def build_mission_control_status() -> dict[str, Any]:
     try:
         from .authority_status import get_authority_status
         auth = get_authority_status()
-        authority_status_str = auth.get("source", "authority_status")
+        authority_status_str = "unavailable" if "error" in auth else "available"
         authority_counts = dict(auth.get("counts", {}))
     except Exception:
         authority_status_str = "unavailable"
