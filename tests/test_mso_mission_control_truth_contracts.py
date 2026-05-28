@@ -162,6 +162,39 @@ class TestBuildMissionControlStatus:
         result = _status()
         assert isinstance(result["authority"]["counts"], dict)
 
+    # ---- outcome section tests ----
+
+    def test_outcome_found_is_false_with_no_query(self):
+        """No query IDs → outcome.found must be False (honest: nothing found)."""
+        result = _status()
+        assert result["outcome"].get("found") is False
+
+    def test_outcome_execution_closed_is_true(self):
+        """Invariant: outcome.execution_closed must always be True."""
+        result = _status()
+        assert result["outcome"].get("execution_closed") is True
+
+    def test_outcome_status_is_valid_state_word(self):
+        """outcome.status must be a known honest state, not a fabricated success."""
+        result = _status()
+        valid_states = (
+            "unavailable", "not_found", "unknown",
+            "pending", "completed", "failed", "blocked",
+        )
+        assert result["outcome"]["status"] in valid_states, (
+            f"outcome.status={result['outcome']['status']!r} is not a known honest state"
+        )
+
+    def test_outcome_status_is_not_running(self):
+        """outcome.status must NEVER be 'running' — nothing is executing."""
+        result = _status()
+        assert result["outcome"]["status"] != "running"
+
+    def test_outcome_sources_checked_is_list(self):
+        """outcome.sources_checked must be present and be a list."""
+        result = _status()
+        assert isinstance(result["outcome"].get("sources_checked"), list)
+
 
 # ===========================================================================
 # build_mission_control_readiness
@@ -337,6 +370,240 @@ class TestBuildOrchestrationSnapshot:
                     f"intent for action {action.get('id')!r} exceeds 60 chars"
                 )
 
+    # ---- confirm_pending tests ----
+
+    def test_confirm_pending_is_list(self):
+        result = _snapshot()
+        assert isinstance(result["confirm_pending"], list)
+
+    def test_confirm_pending_empty_by_default(self):
+        """Queue is empty by default → confirm_pending must be []."""
+        result = _snapshot()
+        assert result["confirm_pending"] == []
+
+    def test_confirm_pending_populated_when_queue_has_entry(self):
+        """When an action is enqueued, confirm_pending must reflect it."""
+        from assistant_os.mso.confirmable_prepared_action import ConfirmablePreparedAction
+        from assistant_os.mso.prepared_action_queue import enqueue_confirmable_prepared_action
+        action = ConfirmablePreparedAction(
+            preparation_id="prep-test-cp-1",
+            proposal_id="prop-test-cp-1",
+            user_intent="test confirm pending intent",
+            domain="CODE",
+            requested_action="write_test",
+            capability_name="code_execution",
+        )
+        enqueue_confirmable_prepared_action(action)
+        result = _snapshot()
+        assert len(result["confirm_pending"]) == 1
+
+    def test_confirm_pending_status_is_awaiting_confirmation(self):
+        """Confirm pending items must carry status='awaiting_confirmation'."""
+        from assistant_os.mso.confirmable_prepared_action import ConfirmablePreparedAction
+        from assistant_os.mso.prepared_action_queue import enqueue_confirmable_prepared_action
+        action = ConfirmablePreparedAction(
+            preparation_id="prep-test-cp-2",
+            proposal_id="prop-test-cp-2",
+            user_intent="status check intent",
+            domain="CODE",
+            requested_action="check_status",
+            capability_name="code_execution",
+        )
+        enqueue_confirmable_prepared_action(action)
+        result = _snapshot()
+        for item in result["confirm_pending"]:
+            assert item["status"] == "awaiting_confirmation", (
+                f"confirm_pending item has unexpected status={item.get('status')!r}"
+            )
+
+    def test_confirm_pending_execution_allowed_is_false(self):
+        """Invariant: confirm_pending items must always have execution_allowed=False."""
+        from assistant_os.mso.confirmable_prepared_action import ConfirmablePreparedAction
+        from assistant_os.mso.prepared_action_queue import enqueue_confirmable_prepared_action
+        action = ConfirmablePreparedAction(
+            preparation_id="prep-test-cp-3",
+            proposal_id="prop-test-cp-3",
+            user_intent="exec check intent",
+            domain="CODE",
+            requested_action="exec_check",
+            capability_name="code_execution",
+        )
+        enqueue_confirmable_prepared_action(action)
+        result = _snapshot()
+        for item in result["confirm_pending"]:
+            assert item["execution_allowed"] is False
+
+    def test_confirm_pending_can_execute_now_is_false(self):
+        """Invariant: confirm_pending items must always have can_execute_now=False."""
+        from assistant_os.mso.confirmable_prepared_action import ConfirmablePreparedAction
+        from assistant_os.mso.prepared_action_queue import enqueue_confirmable_prepared_action
+        action = ConfirmablePreparedAction(
+            preparation_id="prep-test-cp-4",
+            proposal_id="prop-test-cp-4",
+            user_intent="can exec check",
+            domain="CODE",
+            requested_action="can_exec_check",
+            capability_name="code_execution",
+        )
+        enqueue_confirmable_prepared_action(action)
+        result = _snapshot()
+        for item in result["confirm_pending"]:
+            assert item["can_execute_now"] is False
+
+    def test_confirm_pending_does_not_imply_execution(self):
+        """Confirm pending != running. No item may have status='running'."""
+        from assistant_os.mso.confirmable_prepared_action import ConfirmablePreparedAction
+        from assistant_os.mso.prepared_action_queue import enqueue_confirmable_prepared_action
+        action = ConfirmablePreparedAction(
+            preparation_id="prep-test-cp-5",
+            proposal_id="prop-test-cp-5",
+            user_intent="no running check",
+            domain="CODE",
+            requested_action="no_running",
+            capability_name="code_execution",
+        )
+        enqueue_confirmable_prepared_action(action)
+        result = _snapshot()
+        for item in result["confirm_pending"]:
+            assert item.get("status") != "running"
+
+    def test_confirm_pending_has_required_keys(self):
+        """Each confirm_pending item must have id, status, domain, intent, requested_action."""
+        from assistant_os.mso.confirmable_prepared_action import ConfirmablePreparedAction
+        from assistant_os.mso.prepared_action_queue import enqueue_confirmable_prepared_action
+        action = ConfirmablePreparedAction(
+            preparation_id="prep-test-cp-6",
+            proposal_id="prop-test-cp-6",
+            user_intent="keys check intent",
+            domain="CODE",
+            requested_action="write_keys_check",
+            capability_name="code_execution",
+        )
+        enqueue_confirmable_prepared_action(action)
+        result = _snapshot()
+        for item in result["confirm_pending"]:
+            for key in ("id", "status", "domain", "intent", "requested_action",
+                        "execution_allowed", "can_execute_now"):
+                assert key in item, f"confirm_pending item missing required key {key!r}"
+
+    def test_confirm_pending_count_matches_prepared_actions_count(self):
+        """When queue has N entries, both prepared_actions and confirm_pending have N items."""
+        from assistant_os.mso.confirmable_prepared_action import ConfirmablePreparedAction
+        from assistant_os.mso.prepared_action_queue import enqueue_confirmable_prepared_action
+        for i in range(2):
+            action = ConfirmablePreparedAction(
+                preparation_id=f"prep-cp-count-{i}",
+                proposal_id=f"prop-cp-count-{i}",
+                user_intent=f"count check intent {i}",
+                domain="CODE",
+                requested_action=f"count_check_{i}",
+                capability_name="code_execution",
+            )
+            enqueue_confirmable_prepared_action(action)
+        result = _snapshot()
+        assert len(result["prepared_actions"]) == len(result["confirm_pending"]) == 2
+
+
+# ===========================================================================
+# build_authority_trace_stage_list
+# ===========================================================================
+
+
+def _stage_list(snapshot=None):
+    from assistant_os.mso.mission_control_status import build_authority_trace_stage_list
+    if snapshot is None:
+        from assistant_os.mso.authority_trace import build_authority_trace_snapshot
+        snapshot = build_authority_trace_snapshot()
+    return build_authority_trace_stage_list(snapshot)
+
+
+class TestBuildAuthorityTraceStageList:
+
+    def test_returns_list(self):
+        stages = _stage_list()
+        assert isinstance(stages, list)
+
+    def test_returns_nine_stages(self):
+        stages = _stage_list()
+        assert len(stages) == 9
+
+    def test_all_stages_have_required_keys(self):
+        stages = _stage_list()
+        for stage in stages:
+            for key in ("id", "label", "state", "evidence_ref"):
+                assert key in stage, f"Stage {stage.get('id')!r} missing key {key!r}"
+
+    def test_stage_ids_match_authority_chain(self):
+        from assistant_os.mso.authority_trace import AUTHORITY_CHAIN
+        stages = _stage_list()
+        stage_ids = [s["id"] for s in stages]
+        assert stage_ids == list(AUTHORITY_CHAIN)
+
+    def test_mso_kernel_is_always_available(self):
+        """MSO kernel is always present — must show 'available'."""
+        stages = _stage_list()
+        mso = next(s for s in stages if s["id"] == "mso_kernel")
+        assert mso["state"] == "available"
+
+    def test_runner_is_not_available(self):
+        """Runner is architecturally closed from UI — must NOT be 'available'."""
+        stages = _stage_list()
+        runner = next(s for s in stages if s["id"] == "runner")
+        assert runner["state"] != "available"
+        assert runner["state"] in ("architectural", "blocked", "unavailable", "pending")
+
+    def test_runner_evidence_ref_contains_fail_closed(self):
+        stages = _stage_list()
+        runner = next(s for s in stages if s["id"] == "runner")
+        assert runner.get("evidence_ref") is not None
+        assert "fail_closed:true" in runner["evidence_ref"]
+
+    def test_runner_evidence_ref_contains_runner_reachable_false(self):
+        stages = _stage_list()
+        runner = next(s for s in stages if s["id"] == "runner")
+        assert "runner_reachable_from_ui:false" in runner["evidence_ref"]
+
+    def test_police_gate_evidence_ref_contains_decision_visibility(self):
+        stages = _stage_list()
+        police = next(s for s in stages if s["id"] == "police_gate")
+        assert police.get("evidence_ref") is not None
+        assert "decision_visibility:" in police["evidence_ref"]
+
+    def test_mso_kernel_evidence_ref_contains_kernel_boundary(self):
+        stages = _stage_list()
+        mso = next(s for s in stages if s["id"] == "mso_kernel")
+        assert mso.get("evidence_ref") is not None
+        assert "kernel_boundary:true" in mso["evidence_ref"]
+
+    def test_authority_artifact_evidence_ref_contains_artifact_version(self):
+        stages = _stage_list()
+        artifact = next(s for s in stages if s["id"] == "authority_artifact")
+        assert artifact.get("evidence_ref") is not None
+        assert "artifact_version:" in artifact["evidence_ref"]
+
+    def test_outcome_state_not_available_without_context(self):
+        """With no request context, outcome state must be 'unavailable'."""
+        stages = _stage_list()
+        outcome = next(s for s in stages if s["id"] == "outcome")
+        assert outcome["state"] in ("unavailable", "architectural")
+
+    def test_no_stage_state_is_running_or_live(self):
+        """No stage may have state='running' or 'live'."""
+        stages = _stage_list()
+        for stage in stages:
+            assert stage["state"] not in ("running", "live", "executing")
+
+    def test_does_not_raise_with_empty_snapshot(self):
+        stages = _stage_list({})
+        assert isinstance(stages, list)
+        assert len(stages) == 9
+
+    def test_runner_state_is_architectural(self):
+        """Runner is always 'architectural' — closed by design from UI."""
+        stages = _stage_list()
+        runner = next(s for s in stages if s["id"] == "runner")
+        assert runner["state"] == "architectural"
+
 
 class TestMissionControlRouteHandlers:
     """Verify the four new webhook_server handler methods exist and are callable.
@@ -444,3 +711,119 @@ class TestMissionControlRouteHandlers:
         assert body.get("runs") == []
         assert body.get("threads") == []
         assert body.get("live_execution") is False
+
+
+# ===========================================================================
+# S-MISSION-CONTROL-LIFECYCLE-SNAPSHOT-01
+# ===========================================================================
+
+
+class TestBuildLifecycleSnapshot:
+    """build_lifecycle_snapshot() — read-only queue-driven lifecycle derivation."""
+
+    def test_returns_dict(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert isinstance(result, dict)
+
+    def test_ok_is_true(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["ok"] is True
+
+    def test_source_is_backend_read_model(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["source"] == "backend_read_model"
+
+    def test_execution_allowed_is_false(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["execution_allowed"] is False
+
+    def test_used_execution_is_false(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["used_execution"] is False
+
+    def test_runner_reachable_from_ui_is_false(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["runner_reachable_from_ui"] is False
+
+    def test_current_stage_is_valid_state(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        valid = {"planning", "prepared", "awaiting_confirmation"}
+        result = build_lifecycle_snapshot()
+        assert result["current_stage"] in valid
+
+    def test_current_stage_is_never_running(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["current_stage"] != "running"
+
+    def test_current_stage_is_never_completed(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["current_stage"] != "completed"
+
+    def test_queues_at_snapshot_is_dict(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert isinstance(result["queues_at_snapshot"], dict)
+
+    def test_queues_at_snapshot_has_prepared_actions_count(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert "prepared_actions_count" in result["queues_at_snapshot"]
+        assert isinstance(result["queues_at_snapshot"]["prepared_actions_count"], int)
+
+    def test_queues_at_snapshot_has_confirm_pending_count(self):
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert "confirm_pending_count" in result["queues_at_snapshot"]
+        assert isinstance(result["queues_at_snapshot"]["confirm_pending_count"], int)
+
+    def test_current_stage_is_planning_when_queue_empty(self, monkeypatch):
+        from assistant_os.mso import mission_control_status
+        monkeypatch.setattr(
+            mission_control_status,
+            "_get_queue_counts_for_lifecycle",
+            lambda: (0, 0),
+        )
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["current_stage"] == "planning"
+
+    def test_current_stage_is_prepared_when_prepared_nonzero(self, monkeypatch):
+        from assistant_os.mso import mission_control_status
+        monkeypatch.setattr(
+            mission_control_status,
+            "_get_queue_counts_for_lifecycle",
+            lambda: (2, 0),  # (prepared_count, confirm_pending_count)
+        )
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["current_stage"] == "prepared"
+
+    def test_current_stage_is_awaiting_confirmation_when_confirm_nonzero(self, monkeypatch):
+        from assistant_os.mso import mission_control_status
+        monkeypatch.setattr(
+            mission_control_status,
+            "_get_queue_counts_for_lifecycle",
+            lambda: (0, 1),  # (prepared_count, confirm_pending_count)
+        )
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["current_stage"] == "awaiting_confirmation"
+
+    def test_confirm_pending_takes_priority_over_prepared(self, monkeypatch):
+        from assistant_os.mso import mission_control_status
+        monkeypatch.setattr(
+            mission_control_status,
+            "_get_queue_counts_for_lifecycle",
+            lambda: (1, 1),  # both nonzero — confirm must win
+        )
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["current_stage"] == "awaiting_confirmation"

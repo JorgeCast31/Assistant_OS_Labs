@@ -900,6 +900,31 @@ export interface MCPreparedAction {
   intent: string | null
 }
 
+export interface MCConfirmPendingAction {
+  id: string
+  status: 'awaiting_confirmation'
+  domain: string | null
+  intent: string | null
+  requested_action: string | null
+  execution_allowed: false
+  can_execute_now: false
+}
+
+// S-MISSION-CONTROL-LIFECYCLE-SNAPSHOT-01
+export interface LifecycleSnapshotResponse {
+  ok: boolean
+  source: string
+  execution_allowed: false
+  used_execution: false
+  runner_reachable_from_ui: false
+  current_stage: 'planning' | 'prepared' | 'awaiting_confirmation'
+  queues_at_snapshot: {
+    prepared_actions_count: number
+    confirm_pending_count: number
+  }
+  error?: string
+}
+
 export interface MissionControlStatusResponse {
   ok: boolean
   source: 'backend_read_model'
@@ -926,7 +951,10 @@ export interface MissionControlStatusResponse {
     counts: Record<string, number>
   }
   outcome: {
-    status: 'unavailable'
+    status: string
+    found: boolean
+    execution_closed: true
+    sources_checked: string[]
   }
   status?: 'unavailable'
   error?: string
@@ -955,7 +983,7 @@ export interface OrchestrationSnapshotResponse {
   runs: never[]
   threads: never[]
   prepared_actions: MCPreparedAction[]
-  confirm_pending: never[]
+  confirm_pending: MCConfirmPendingAction[]
   live_execution: false
   event_stream_connected: false
   status?: 'unavailable'

@@ -93,6 +93,33 @@ def build_mission_control_status() -> dict[str, Any]:
         authority_status_str = "unavailable"
         authority_counts = {}
 
+    # -- Outcome status (read-only, fail-soft) -----------------------------------
+    # build_outcome_status() with no IDs returns found=False, status="not_found"
+    # immediately (all _find_* helpers return None when no IDs are supplied).
+    # This is more honest than hardcoding "unavailable".
+    outcome_info: dict[str, Any] = {
+        "status": "unavailable",
+        "found": False,
+        "execution_closed": True,
+        "sources_checked": [],
+    }
+    try:
+        from .outcome_status import build_outcome_status
+        raw_outcome = build_outcome_status()  # no IDs → not_found
+        outcome_info = {
+            "status": raw_outcome.get("outcome", {}).get("status", "unknown"),
+            "found": bool(raw_outcome.get("found", False)),
+            "execution_closed": True,  # ALWAYS True — no execution from UI
+            "sources_checked": list(raw_outcome.get("sources", {}).keys()),
+        }
+    except Exception:
+        outcome_info = {
+            "status": "unavailable",
+            "found": False,
+            "execution_closed": True,
+            "sources_checked": [],
+        }
+
     # -- Derive overall state ------------------------------------------------
     available_count = sum([entity_ok, seat_ok])
     if available_count == 2:
@@ -129,9 +156,7 @@ def build_mission_control_status() -> dict[str, Any]:
             "status": authority_status_str,
             "counts": authority_counts,
         },
-        "outcome": {
-            "status": "unavailable",  # no live outcome data at this layer
-        },
+        "outcome": outcome_info,
     }
 
 
@@ -215,6 +240,7 @@ def build_orchestration_snapshot() -> dict[str, Any]:
 
     - runs and threads are always [] — there is no live execution
     - prepared_actions is derived from the queue (honest read-model)
+    - confirm_pending reflects the same queue entries viewed as awaiting human confirmation
     - A run must NEVER have status: "running" — if nothing is running, return empty
 
     Returns
@@ -223,6 +249,7 @@ def build_orchestration_snapshot() -> dict[str, Any]:
         Truth-contract dict. Never raises.
     """
     prepared_actions: list[dict[str, Any]] = []
+    confirm_pending_items: list[dict[str, Any]] = []
 
     try:
         from .prepared_action_queue import list_pending_confirmable_action_dicts
@@ -248,8 +275,24 @@ def build_orchestration_snapshot() -> dict[str, Any]:
                     "intent": intent,
                 }
             )
+
+            # Confirm pending: same entry viewed as awaiting human confirmation.
+            # human_confirmation_status is always "pending" for queue entries.
+            # execution_allowed and can_execute_now are always False (dataclass invariants).
+            confirm_pending_items.append(
+                {
+                    "id": entry_id,
+                    "status": "awaiting_confirmation",
+                    "domain": entry.get("domain") or None,
+                    "intent": intent,
+                    "requested_action": entry.get("requested_action") or None,
+                    "execution_allowed": False,   # ALWAYS False
+                    "can_execute_now": False,      # ALWAYS False
+                }
+            )
     except Exception:
         prepared_actions = []
+        confirm_pending_items = []
 
     return {
         "ok": True,
@@ -257,10 +300,201 @@ def build_orchestration_snapshot() -> dict[str, Any]:
         "execution_allowed": False,
         "used_execution": False,
         "runner_reachable_from_ui": False,
-        "runs": [],       # no live runs — honest empty
-        "threads": [],    # no live threads — honest empty
+        "runs": [],        # no live runs — honest empty
+        "threads": [],     # no live threads — honest empty
         "prepared_actions": prepared_actions,
-        "confirm_pending": [],  # no separate confirm queue at this layer yet
+        "confirm_pending": confirm_pending_items,
         "live_execution": False,
         "event_stream_connected": False,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 4. build_authority_trace_stage_list
+# ---------------------------------------------------------------------------
+
+
+def build_authority_trace_stage_list(
+    snapshot: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """
+    Map a build_authority_trace_snapshot() result to a UI-ready stages list.
+
+    Each stage gets:
+      - id          : stage key from AUTHORITY_CHAIN
+      - label       : human-readable name
+      - state       : 'available' | 'architectural' | 'unavailable'
+      - evidence_ref: honest metadata string where available, None otherwise
+
+    State rules:
+      - mso_kernel         → always "available" (MSO is always present)
+      - intent_contract    → "available" if snapshot.request.available else "architectural"
+      - policy             → "available" if snapshot.policy.available else "architectural"
+      - governance         → "available" if snapshot.governance.available else "architectural"
+      - capability_token   → "available" if snapshot.capability.available else "architectural"
+      - police_gate        → always "available" (wired into chain)
+      - authority_artifact → always "available" (wired into chain)
+      - runner             → always "architectural" (closed from UI — never reachable)
+      - outcome            → "available" if snapshot.outcome.available else "unavailable"
+
+    Evidence refs are populated honestly from snapshot data where present.
+    Never fabricated. Returns a list even if snapshot is empty or malformed.
+
+    Returns
+    -------
+    list[dict[str, Any]]
+        9-element stages list. Never raises.
+    """
+    from .authority_trace import AUTHORITY_CHAIN
+
+    # Safely extract nested stage data from snapshot
+    def _stage(key: str) -> dict[str, Any]:
+        val = snapshot.get(key, {})
+        return val if isinstance(val, dict) else {}
+
+    request_data    = _stage("request")
+    policy_data     = _stage("policy")
+    governance_data = _stage("governance")
+    capability_data = _stage("capability")
+    police_data     = _stage("police")
+    artifact_data   = _stage("artifact")
+    outcome_data    = _stage("outcome")
+
+    # Each entry: (label, state, evidence_ref)
+    stage_specs: dict[str, tuple[str, str, str | None]] = {
+        "mso_kernel": (
+            "MSO Kernel",
+            "available",  # MSO is always present — never architectural
+            "kernel_boundary:true · orchestrator_owned:true",
+        ),
+        "intent_contract": (
+            "Intent Contract",
+            "available" if request_data.get("available") else "architectural",
+            "execution_intent:false",  # no execution intent at architectural rest
+        ),
+        "policy": (
+            "PolicyDecision",
+            "available" if policy_data.get("available") else "architectural",
+            None,
+        ),
+        "governance": (
+            "Governance",
+            "available" if governance_data.get("available") else "architectural",
+            None,
+        ),
+        "capability_token": (
+            "CapabilityToken",
+            "available" if capability_data.get("available") else "architectural",
+            None,
+        ),
+        "police_gate": (
+            "Police Gate",
+            "available",  # always wired into the authority chain
+            f"decision_visibility:{police_data.get('decision_visibility', 'not_persisted_yet')}",
+        ),
+        "authority_artifact": (
+            "AuthorityArtifact",
+            "available",  # always wired into the authority chain
+            (
+                f"artifact_version:{artifact_data.get('artifact_version', 'unknown')}"
+                f" · authority_source:{artifact_data.get('authority_source', 'unknown')}"
+            ),
+        ),
+        "runner": (
+            "Runner",
+            "architectural",  # ALWAYS closed from UI — runner_reachable_from_ui:false
+            "fail_closed:true · executed:false · runner_reachable_from_ui:false",
+        ),
+        "outcome": (
+            "Outcome",
+            "available" if outcome_data.get("available") else "unavailable",
+            "execution_closed:true",
+        ),
+    }
+
+    stages: list[dict[str, Any]] = []
+    for stage_id in AUTHORITY_CHAIN:
+        label, state, evidence_ref = stage_specs.get(
+            stage_id,
+            (stage_id, "architectural", None),
+        )
+        stages.append(
+            {
+                "id": stage_id,
+                "label": label,
+                "state": state,
+                "evidence_ref": evidence_ref,
+            }
+        )
+    return stages
+
+
+# ---------------------------------------------------------------------------
+# 5. _get_queue_counts_for_lifecycle  (internal, monkeypatch target)
+# ---------------------------------------------------------------------------
+
+
+def _get_queue_counts_for_lifecycle() -> tuple[int, int]:
+    """
+    Return (prepared_actions_count, confirm_pending_count) from the queue.
+
+    Separated so tests can monkeypatch without touching the real queue.
+    Returns (0, 0) on any failure — fail-soft.
+    """
+    try:
+        from .prepared_action_queue import list_pending_confirmable_action_dicts
+
+        items = list_pending_confirmable_action_dicts()
+        prepared = sum(1 for i in items if i.get("status") == "prepared")
+        confirm = sum(1 for i in items if i.get("status") == "awaiting_confirmation")
+        return prepared, confirm
+    except Exception:  # noqa: BLE001
+        return 0, 0
+
+
+# ---------------------------------------------------------------------------
+# 6. build_lifecycle_snapshot
+# ---------------------------------------------------------------------------
+
+
+def build_lifecycle_snapshot() -> dict[str, Any]:
+    """
+    Derive the current mission lifecycle stage from queue state.
+
+    Stage derivation (read-only, queue-driven):
+      - 'awaiting_confirmation'  if confirm_pending_count > 0  (takes priority)
+      - 'prepared'               if prepared_actions_count > 0
+      - 'planning'               otherwise (default floor)
+
+    INVARIANTS (never relaxed):
+      - execution_allowed = False
+      - used_execution    = False
+      - source            = "backend_read_model"
+      - current_stage ∉ {'running', 'completed', 'executing'}
+
+    Returns
+    -------
+    dict
+        Truth-contract dict. Never raises.
+    """
+    prepared_count, confirm_count = _get_queue_counts_for_lifecycle()
+
+    if confirm_count > 0:
+        current_stage = "awaiting_confirmation"
+    elif prepared_count > 0:
+        current_stage = "prepared"
+    else:
+        current_stage = "planning"
+
+    return {
+        "ok": True,
+        "source": "backend_read_model",
+        "execution_allowed": False,
+        "used_execution": False,
+        "runner_reachable_from_ui": False,
+        "current_stage": current_stage,
+        "queues_at_snapshot": {
+            "prepared_actions_count": prepared_count,
+            "confirm_pending_count": confirm_count,
+        },
     }

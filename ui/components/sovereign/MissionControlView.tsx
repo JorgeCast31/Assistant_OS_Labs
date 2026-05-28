@@ -17,6 +17,7 @@ import {
   getMissionControlReadiness,
   getOrchestrationSnapshot,
   getAuthorityTraceSnapshot,
+  getMissionControlLifecycleSnapshot,
 } from '@/lib/api'
 import { MissionControlChainView } from './MissionControlChainView'
 import { OutcomeStatusPanel } from './OutcomeStatusPanel'
@@ -30,6 +31,7 @@ import type {
   MissionControlReadinessResponse,
   OrchestrationSnapshotResponse,
   AuthorityTraceSnapshotResponse,
+  LifecycleSnapshotResponse,
 } from '@/lib/types'
 
 // ── Backend truth-contract polling hooks ─────────────────────────────────────
@@ -89,6 +91,22 @@ function useMCTraceQuery() {
     let cancelled = false
     const poll = async () => {
       const result = await getAuthorityTraceSnapshot()
+      if (!cancelled) setData(result)
+    }
+    poll()
+    const id = setInterval(poll, 30_000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [])
+  return data
+}
+
+// S-MISSION-CONTROL-LIFECYCLE-SNAPSHOT-01
+function useMCLifecycleQuery() {
+  const [data, setData] = useState<LifecycleSnapshotResponse | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    const poll = async () => {
+      const result = await getMissionControlLifecycleSnapshot()
       if (!cancelled) setData(result)
     }
     poll()
@@ -336,21 +354,33 @@ function MSOEscalationSpace() {
     return () => { cancelled = true; clearInterval(interval) }
   }, [])
 
-  const preparedCount = preparedActions?.count ?? 0
-  const confirmCount  = confirmPending?.pending_count ?? 0
   const provider      = seatProvider?.seat_provider ?? null
 
-  const currentStage: MissionLifecycleState = (() => {
-    if (confirmCount > 0)  return 'awaiting_confirmation'
-    if (preparedCount > 0) return 'prepared'
-    return 'planning'
-  })()
+  // S-MISSION-CONTROL-LIFECYCLE-SNAPSHOT-01
+  // Prefer backend lifecycle truth; fall back to Zustand while loading/unavailable.
+  const lifecycleData = useMCLifecycleQuery()
+  const preparedCount = lifecycleData !== null
+    ? lifecycleData.queues_at_snapshot.prepared_actions_count
+    : (preparedActions?.count ?? 0)
+  const confirmCount  = lifecycleData !== null
+    ? lifecycleData.queues_at_snapshot.confirm_pending_count
+    : (confirmPending?.pending_count ?? 0)
+  const currentStage: MissionLifecycleState = lifecycleData !== null
+    ? lifecycleData.current_stage
+    : (() => {
+        if (confirmCount > 0)  return 'awaiting_confirmation' as const
+        if (preparedCount > 0) return 'prepared' as const
+        return 'planning' as const
+      })()
 
+  // Next stage: after awaiting_confirmation the full authority chain must complete
+  // before any execution occurs — the honest state is 'blocked', not 'running'.
+  // 'running' is prohibited: it implies live execution which never comes from this surface.
   const nextStage: MissionLifecycleState = (() => {
     if (currentStage === 'planning')              return 'mso_review'
     if (currentStage === 'prepared')              return 'awaiting_confirmation'
-    if (currentStage === 'awaiting_confirmation') return 'running'
-    return 'completed'
+    if (currentStage === 'awaiting_confirmation') return 'blocked'  // authority chain required
+    return 'blocked'                                                // default: execution closed
   })()
 
   return (
@@ -704,8 +734,11 @@ function OrchestrationViewSpace() {
   const liveExecution      = orchestrationData?.live_execution ?? false  // always false
   const orchestrationSource = useBackendSnapshot ? 'backend_read_model' : 'derived'
 
-  const confirmCount = confirmPending?.pending_count ?? 0
-  const latestItem   = preparedActionsStore?.items?.[0] ?? null
+  // Prefer backend snapshot confirm count; fall back to Zustand store
+  const backendConfirmCount  = useBackendSnapshot ? orchestrationData!.confirm_pending.length : null
+  const confirmCount         = backendConfirmCount ?? confirmPending?.pending_count ?? 0
+  const confirmPendingLoaded = useBackendSnapshot || confirmPending !== null
+  const latestItem           = preparedActionsStore?.items?.[0] ?? null
 
   // Derive threads: backend prepared_actions preferred, Zustand fallback.
   // A prepared action is NOT a running execution — status is always 'prepared'.
@@ -782,9 +815,9 @@ function OrchestrationViewSpace() {
           />
           <SituationTile
             label="Confirm Pending"
-            value={confirmPending === null ? '…' : String(confirmCount)}
+            value={!confirmPendingLoaded ? '…' : String(confirmCount)}
             warn={confirmCount > 0}
-            accent={confirmPending !== null && confirmCount === 0}
+            accent={confirmPendingLoaded && confirmCount === 0}
           />
         </div>
         {preparedCount > 0 ? (
@@ -798,6 +831,42 @@ function OrchestrationViewSpace() {
           </div>
         ) : (
           <PostureRow label="Queue Status" value="Clear" tone="ok" note="No prepared actions pending." />
+        )}
+
+        {/* Confirm Pending Items — read-only observability, no execution affordance */}
+        {useBackendSnapshot && orchestrationData!.confirm_pending.length > 0 && (
+          <div className="space-y-2 mt-3">
+            <p className="text-[9px] font-mono text-tx-muted uppercase tracking-widest">Awaiting Confirmation</p>
+            {orchestrationData!.confirm_pending.map((item) => (
+              <div
+                key={item.id}
+                className="rounded-lg border border-orange-400/20 bg-orange-400/5 p-3"
+                data-testid="confirm-pending-item"
+              >
+                <div className="flex items-start justify-between gap-2 mb-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] font-mono text-orange-400 uppercase">awaiting_confirmation</span>
+                    {item.domain && (
+                      <span className="text-[9px] font-mono text-tx-muted">· {item.domain}</span>
+                    )}
+                  </div>
+                  <span className="text-[9px] font-mono text-tx-muted/60 shrink-0 tabular-nums">
+                    {item.id.slice(0, 12)}…
+                  </span>
+                </div>
+                {item.intent && (
+                  <p className="text-[10px] font-mono text-tx-secondary mb-1 line-clamp-2">{item.intent}</p>
+                )}
+                {item.requested_action && (
+                  <p className="text-[9px] font-mono text-tx-muted">{item.requested_action}</p>
+                )}
+                <div className="mt-2 flex gap-3 text-[9px] font-mono text-tx-muted border-t border-os-border/40 pt-1.5">
+                  <span>execution_allowed: false</span>
+                  <span>can_execute_now: false</span>
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </section>
 
@@ -971,6 +1040,8 @@ function AuthorityTraceStage({
 function OutcomeTraceSpace() {
   // Backend truth trace snapshot (preferred source)
   const traceData = useMCTraceQuery()
+  // MC status outcome summary (read-model, enriched by build_mission_control_status)
+  const mcStatus  = useMCStatusQuery()
 
   // Map backend MCTraceStage.state → local TraceStageStatus.
   // 'architectural' and 'unavailable' both map to 'closed' (architecturally closed to UI).
@@ -1038,7 +1109,49 @@ function OutcomeTraceSpace() {
         </div>
       </section>
 
-      {/* Outcome status */}
+      {/* Outcome summary — sourced from MC status read model */}
+      <section>
+        <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-2">Outcome Summary</p>
+        <div className="rounded-lg border border-os-border bg-os-surface p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono text-tx-muted">status</span>
+            <span
+              className="text-[10px] font-mono text-tx-primary"
+              data-testid="outcome-status-label"
+            >
+              {mcStatus === null ? '…' : (mcStatus.outcome?.status ?? 'unavailable')}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono text-tx-muted">execution_closed</span>
+            <span
+              className="text-[10px] font-mono text-tx-primary"
+              data-testid="outcome-execution-closed"
+            >
+              {mcStatus === null ? '…' : String(mcStatus.outcome?.execution_closed ?? true)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono text-tx-muted">found</span>
+            <span className="text-[10px] font-mono text-tx-primary">
+              {mcStatus === null ? '…' : String(mcStatus.outcome?.found ?? false)}
+            </span>
+          </div>
+          {mcStatus?.outcome?.sources_checked && mcStatus.outcome.sources_checked.length > 0 && (
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-mono text-tx-muted">sources_checked</span>
+              <span className="text-[10px] font-mono text-tx-primary">
+                {mcStatus.outcome.sources_checked.join(', ')}
+              </span>
+            </div>
+          )}
+          <p className="text-[9px] font-mono text-tx-muted pt-1 border-t border-os-border/60">
+            source: backend_read_model · execution_closed is always true
+          </p>
+        </div>
+      </section>
+
+      {/* Outcome status — detailed polling panel */}
       <section>
         <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-2">Execution Outcome</p>
         <OutcomeStatusPanel />
@@ -1096,8 +1209,13 @@ export function MissionControlView() {
   const confirmPending  = useConfirmPendingStore((s) => s.confirmPending)
   const authorityStatus = useAuthorityStatusStore((s) => s.authorityStatus)
 
-  const preparedCount = preparedActions?.count ?? 0
-  const confirmCount  = confirmPending?.pending_count ?? 0
+  // Prefer backend truth from mcStatus (already polled above); fall back to Zustand while loading
+  const preparedCount = mcStatus !== null
+    ? mcStatus.queues.prepared_actions_count
+    : (preparedActions?.count ?? 0)
+  const confirmCount  = mcStatus !== null
+    ? mcStatus.queues.confirm_pending_count
+    : (confirmPending?.pending_count ?? 0)
   const modeOk        = operationalMode === 'NORMAL'
 
   return (
