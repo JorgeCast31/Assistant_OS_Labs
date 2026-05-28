@@ -842,11 +842,22 @@ export type MissionLifecycleState =
   | 'failed'
   | 'cancelled'
 
+// S-MISSION-CONTROL-PLAN-STATE-HARDENING-01
+// PlannerSpace is a local, non-executing surface. Plans can only ever be in
+// draft, planning, or mso_review. Narrowing prevents execution-adjacent states
+// (prepared, blocked, failed, etc.) from appearing on plan.state at compile time.
+export type MissionControlPlanState =
+  | 'draft'
+  | 'planning'
+  | 'mso_review'
+
 export interface MissionControlPlan {
   id?: string
   title: string
   body: string
-  state: MissionLifecycleState
+  // S-MISSION-CONTROL-PLAN-STATE-HARDENING-01
+  // Narrowed from MissionLifecycleState: plans never reach execution-adjacent states.
+  state: MissionControlPlanState
   createdAt?: string
   updatedAt?: string
 }
