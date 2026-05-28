@@ -99,6 +99,7 @@ import {
   getMissionControlLifecycleSnapshot,
 } from '@/lib/api'
 import { useConfirmPendingStore } from '@/stores/confirm-pending-store'
+import { useSovereignStore } from '@/stores/sovereign-store'
 
 // ── Mock fetch (fail-soft: direct fetch calls in MSOEscalationSpace) ──────────
 beforeEach(() => {
@@ -845,5 +846,113 @@ describe('MSOEscalationSpace — lifecycle backend wiring', () => {
     await waitFor(() => {
       expect(screen.queryByText(/^running$/i)).not.toBeInTheDocument()
     })
+  })
+})
+
+// S-MISSION-CONTROL-LANGUAGE-HARDENING-01
+// These tests prove that LifecycleBadge and ExecStatusBadge never render
+// dangerous execution language regardless of what value is passed to them.
+// They test the guard maps directly via the rendered component.
+describe('Language hardening — S-MISSION-CONTROL-LANGUAGE-HARDENING-01', () => {
+  it('LifecycleBadge: rogue backend state "running" renders "blocked" not "running"', async () => {
+    // Simulate a rogue or future-schema lifecycle value containing 'running'.
+    // The DANGEROUS_LIFECYCLE_DISPLAY_MAP must intercept this before render.
+    vi.mocked(getMissionControlLifecycleSnapshot).mockResolvedValue({
+      ...LC_SNAPSHOT_UNAVAILABLE,
+      ok: true,
+      current_stage: 'running' as unknown as 'planning',
+      queues_at_snapshot: { prepared_actions_count: 1, confirm_pending_count: 1 },
+    })
+    render(<MissionControlView />)
+    clickTab('MSO')
+    await waitFor(() => {
+      // 'running' must never appear as a rendered lifecycle badge label
+      expect(screen.queryByText(/^running$/i)).not.toBeInTheDocument()
+      // The guard maps 'running' → 'blocked'. Expect 'blocked' to appear.
+      const blockedEls = screen.getAllByText(/^blocked$/i)
+      expect(blockedEls.length).toBeGreaterThan(0)
+    })
+  })
+
+  it('LifecycleBadge: rogue backend state "executing" renders "blocked" not "executing"', async () => {
+    // 'executing' is a forbidden display term — defense-in-depth guard.
+    vi.mocked(getMissionControlLifecycleSnapshot).mockResolvedValue({
+      ...LC_SNAPSHOT_UNAVAILABLE,
+      ok: true,
+      current_stage: 'executing' as unknown as 'planning',
+      queues_at_snapshot: { prepared_actions_count: 1, confirm_pending_count: 1 },
+    })
+    render(<MissionControlView />)
+    clickTab('MSO')
+    await waitFor(() => {
+      expect(screen.queryByText(/^executing$/i)).not.toBeInTheDocument()
+      const blockedEls = screen.getAllByText(/^blocked$/i)
+      expect(blockedEls.length).toBeGreaterThan(0)
+    })
+  })
+
+  it('LifecycleBadge: rogue backend state "completed" renders "closed" not "completed"', async () => {
+    // 'completed' implies execution completed — impossible from this surface.
+    // The guard maps 'completed' → 'closed'.
+    vi.mocked(getMissionControlLifecycleSnapshot).mockResolvedValue({
+      ...LC_SNAPSHOT_UNAVAILABLE,
+      ok: true,
+      current_stage: 'completed' as unknown as 'planning',
+      queues_at_snapshot: { prepared_actions_count: 0, confirm_pending_count: 0 },
+    })
+    render(<MissionControlView />)
+    clickTab('MSO')
+    // Wait for 'blocked' to appear — nextStage always becomes 'blocked' when
+    // currentStage is an unrecognised/non-standard value. Before async data loads,
+    // nextStage is 'mso_review' (rendered as "mso review"). 'blocked' appearing
+    // proves the async lifecycle data was received by the component.
+    await waitFor(() => {
+      expect(screen.getAllByText(/^blocked$/i).length).toBeGreaterThan(0)
+    })
+    // Now that async data is confirmed received: 'completed' must NOT be rendered.
+    // The guard must have remapped 'completed' → 'closed' before rendering.
+    expect(screen.queryByText(/^completed$/i)).not.toBeInTheDocument()
+  })
+
+  it('ExecStatusBadge: active Zustand arm renders "registered" not "real"', async () => {
+    // Backend readiness unavailable (default ok:false) → Zustand fallback for arms.
+    // With an active registered agent, mapExecStatus('active') = 'real' previously rendered "real".
+    // After hardening, 'real' must be displayed as 'registered'.
+    useSovereignStore.setState((s) => ({
+      ...s,
+      systemState: {
+        ...s.systemState,
+        registeredAgents: [
+          {
+            id: 'test-active-arm',
+            name: 'Active Test Arm',
+            domain: 'WORK',
+            description: 'Test arm for language hardening',
+            status: 'active',
+            capabilities: [],
+            last_execution_at: null,
+            last_result: null,
+            policy_restricted: false,
+            requires_authority: true,
+            requires_review: false,
+          },
+        ],
+        agentRegistrySource: { status: 'available', lastCheckedAt: null, lastSuccessfulAt: null, error: null },
+        totalAgents: 1,
+      },
+    }))
+    render(<MissionControlView />)
+    clickTab('Arms')
+    await waitFor(() => {
+      // 'real' must not appear as a badge text (execution-adjacent language)
+      expect(screen.queryByText(/^real$/i)).not.toBeInTheDocument()
+      // 'registered' must appear instead (honest description of arm status)
+      expect(screen.getByText(/^registered$/i)).toBeInTheDocument()
+    })
+    // Cleanup: reset registered agents
+    useSovereignStore.setState((s) => ({
+      ...s,
+      systemState: { ...s.systemState, registeredAgents: [], totalAgents: 0 },
+    }))
   })
 })

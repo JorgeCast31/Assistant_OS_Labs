@@ -179,24 +179,48 @@ function PostureRow({
   )
 }
 
+// S-MISSION-CONTROL-LANGUAGE-HARDENING-01
+// Dangerous lifecycle labels must never be rendered on a surface that cannot execute.
+// Applied before CSS lookup and text render — the guard is unconditional.
+const DANGEROUS_LIFECYCLE_DISPLAY_MAP: Readonly<Record<string, string>> = {
+  running:   'blocked',  // never: implies live execution which never comes from this surface
+  executing: 'blocked',  // defense in depth
+  completed: 'closed',   // never: implies execution completed — impossible from this surface
+}
+
 function LifecycleBadge({ state }: { state: MissionLifecycleState | string }) {
+  // Apply safety remapping before CSS lookup or text render.
+  // Dangerous states are blocked unconditionally at display time.
+  const safeState = DANGEROUS_LIFECYCLE_DISPLAY_MAP[state] ?? state
+
   const cls: Record<string, string> = {
     draft:                 'text-tx-muted border-os-border bg-os-base',
     planning:              'text-cyan-400 border-cyan-400/30 bg-cyan-400/10',
     mso_review:            'text-amber-400 border-amber-400/30 bg-amber-400/10',
     prepared:              'text-blue-400 border-blue-400/30 bg-blue-400/10',
     awaiting_confirmation: 'text-orange-400 border-orange-400/30 bg-orange-400/10',
-    running:               'text-warn border-warn/30 bg-warn/10',
     blocked:               'text-rose-400 border-rose-400/30 bg-rose-400/10',
-    completed:             'text-ok border-ok/30 bg-ok/10',
+    closed:                'text-tx-muted/50 border-os-border/50 bg-os-base',
     failed:                'text-rose-400 border-rose-400/30 bg-rose-400/10',
     cancelled:             'text-tx-muted border-os-border bg-os-base',
   }
   return (
-    <span className={`px-2 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider border ${cls[state] ?? 'text-tx-muted border-os-border bg-os-base'}`}>
-      {state.replace(/_/g, ' ')}
+    <span className={`px-2 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider border ${cls[safeState] ?? 'text-tx-muted border-os-border bg-os-base'}`}>
+      {safeState.replace(/_/g, ' ')}
     </span>
   )
+}
+
+// S-MISSION-CONTROL-LANGUAGE-HARDENING-01
+// 'real' is an internal status value meaning "registered real arm implementation"
+// (as opposed to a stub). The word 'real' rendered alone is execution-adjacent
+// and misleading on a surface where no execution occurs.
+// Display label override without changing the internal type contract.
+const EXEC_STATUS_DISPLAY_LABEL: Readonly<Record<string, string>> = {
+  real:        'registered',  // 'real arm' ≠ 'real execution'
+  partial:     'partial',
+  stub:        'stub',
+  unavailable: 'unavailable',
 }
 
 function ExecStatusBadge({ status }: { status: 'real' | 'stub' | 'unavailable' | 'partial' }) {
@@ -208,7 +232,7 @@ function ExecStatusBadge({ status }: { status: 'real' | 'stub' | 'unavailable' |
   }[status]
   return (
     <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono uppercase border ${cls}`}>
-      {status}
+      {EXEC_STATUS_DISPLAY_LABEL[status] ?? status}
     </span>
   )
 }
