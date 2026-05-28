@@ -770,14 +770,14 @@ function OrchestrationViewSpace() {
     ? orchestrationData!.prepared_actions.map((a) => ({
         id:            a.id,
         label:         a.intent ?? a.domain ?? 'Prepared action',
-        status:        'prepared' as MissionLifecycleState,
+        status:        'prepared' as const,
         assignedArm:   a.domain ?? undefined,
         executionStatus: 'unavailable' as const,
       }))
     : (preparedActionsStore?.items ?? []).map((item) => ({
         id:            item.queue_entry_id ?? item.prepared_action_id ?? item.proposal_id ?? 'unknown',
         label:         (item.user_intent?.slice(0, 70) ?? item.requested_action ?? 'Unknown mission intent'),
-        status:        'prepared' as MissionLifecycleState,
+        status:        'prepared' as const,
         assignedArm:   item.domain ?? undefined,
         lastEvent:     item.preparation_id ? `preparation:${item.preparation_id.slice(0, 12)}` : undefined,
         executionStatus: 'unavailable' as const,
