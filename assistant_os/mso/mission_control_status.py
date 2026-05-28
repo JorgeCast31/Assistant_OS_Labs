@@ -73,13 +73,12 @@ def build_mission_control_status() -> dict[str, Any]:
 
     seat_status_str = "available" if seat_ok else "unavailable"
 
-    # -- Prepared action queue count -----------------------------------------
-    prepared_actions_count = 0
-    try:
-        from .prepared_action_queue import list_pending_confirmable_action_dicts
-        prepared_actions_count = len(list_pending_confirmable_action_dicts())
-    except Exception:
-        prepared_actions_count = 0
+    # -- Queue counts (prepared actions and confirm pending share the same items) ----
+    # Use _get_queue_counts_for_lifecycle() as the single source for queue counts.
+    # Both prepared_actions_count and confirm_pending_count equal the total queue
+    # size — all items are simultaneously prepared and awaiting human confirmation.
+    _prepared_count, _confirm_pending_count = _get_queue_counts_for_lifecycle()
+    prepared_actions_count = _prepared_count
 
     # -- Authority status ----------------------------------------------------
     authority_status_str = "unavailable"
@@ -150,7 +149,7 @@ def build_mission_control_status() -> dict[str, Any]:
         },
         "queues": {
             "prepared_actions_count": prepared_actions_count,
-            "confirm_pending_count": 0,  # confirm queue not separate at this layer
+            "confirm_pending_count": _confirm_pending_count,
         },
         "authority": {
             "status": authority_status_str,
@@ -440,14 +439,25 @@ def _get_queue_counts_for_lifecycle() -> tuple[int, int]:
 
     Separated so tests can monkeypatch without touching the real queue.
     Returns (0, 0) on any failure — fail-soft.
+
+    Semantic note
+    -------------
+    All items in the prepared-action queue have queue-level status="pending_review".
+    The strings "prepared" and "awaiting_confirmation" are semantic views applied
+    at the read-model layer in build_orchestration_snapshot(), NOT stored on entries.
+
+    Every pending-review item is simultaneously:
+    - a prepared action (it has been drafted for review)
+    - awaiting human confirmation (it cannot execute without explicit confirmation)
+
+    Therefore both counts equal the total queue size. There is no sub-state of
+    "prepared but not awaiting confirmation" in the current queue model.
     """
     try:
         from .prepared_action_queue import list_pending_confirmable_action_dicts
 
-        items = list_pending_confirmable_action_dicts()
-        prepared = sum(1 for i in items if i.get("status") == "prepared")
-        confirm = sum(1 for i in items if i.get("status") == "awaiting_confirmation")
-        return prepared, confirm
+        total = len(list_pending_confirmable_action_dicts())
+        return total, total  # both counts = N: all items are prepared and awaiting confirmation
     except Exception:  # noqa: BLE001
         return 0, 0
 

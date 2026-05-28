@@ -827,3 +827,122 @@ class TestBuildLifecycleSnapshot:
         from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
         result = build_lifecycle_snapshot()
         assert result["current_stage"] == "awaiting_confirmation"
+
+
+# ===========================================================================
+# S-MISSION-CONTROL-QUEUE-TRUTH-01
+# ===========================================================================
+
+
+class TestGetQueueCountsForLifecycle:
+    """_get_queue_counts_for_lifecycle() — real queue integration correctness."""
+
+    def test_returns_tuple_of_two_ints(self):
+        from assistant_os.mso.mission_control_status import _get_queue_counts_for_lifecycle
+        result = _get_queue_counts_for_lifecycle()
+        assert isinstance(result, tuple)
+        assert len(result) == 2
+        assert all(isinstance(v, int) for v in result)
+
+    def test_both_counts_equal(self):
+        """Prepared and confirm counts must be equal — all queue items are in both views."""
+        from assistant_os.mso.mission_control_status import _get_queue_counts_for_lifecycle
+        prepared, confirm = _get_queue_counts_for_lifecycle()
+        assert prepared == confirm, (
+            f"prepared={prepared} != confirm={confirm}: "
+            "all queue items are simultaneously prepared and awaiting confirmation"
+        )
+
+    def test_counts_reflect_real_queue_size(self):
+        """After enqueueing N items, both counts must be >= N."""
+        from assistant_os.mso.confirmable_prepared_action import ConfirmablePreparedAction
+        from assistant_os.mso.prepared_action_queue import enqueue_confirmable_prepared_action
+        from assistant_os.mso.mission_control_status import _get_queue_counts_for_lifecycle
+        for i in range(3):
+            action = ConfirmablePreparedAction(
+                preparation_id=f"prep-queue-count-truth-{i}",
+                proposal_id=f"prop-queue-count-truth-{i}",
+                user_intent=f"queue count truth test intent {i}",
+                domain="CODE",
+                requested_action=f"queue_count_truth_{i}",
+                capability_name="code_execution",
+            )
+            enqueue_confirmable_prepared_action(action)
+        prepared, confirm = _get_queue_counts_for_lifecycle()
+        assert prepared >= 3, (
+            f"prepared_count={prepared} expected >= 3 after enqueueing 3 items — "
+            "status filter bug: raw items have status='pending_review', not 'prepared'"
+        )
+        assert confirm >= 3, (
+            f"confirm_count={confirm} expected >= 3 after enqueueing 3 items — "
+            "status filter bug: raw items have status='pending_review', not 'awaiting_confirmation'"
+        )
+
+
+class TestMCStatusQueuesConsistency:
+    """build_mission_control_status().queues — both counts must be consistent."""
+
+    def test_confirm_pending_count_is_not_hardcoded_zero(self, monkeypatch):
+        """confirm_pending_count must reflect real queue state, not always 0."""
+        from assistant_os.mso import mission_control_status
+        monkeypatch.setattr(
+            mission_control_status,
+            "_get_queue_counts_for_lifecycle",
+            lambda: (5, 5),  # simulate 5 items in queue
+        )
+        from assistant_os.mso.mission_control_status import build_mission_control_status
+        result = build_mission_control_status()
+        assert result["queues"]["confirm_pending_count"] == 5, (
+            f"confirm_pending_count={result['queues']['confirm_pending_count']} "
+            "expected 5 — must not be hardcoded 0"
+        )
+
+    def test_prepared_actions_count_matches_confirm_pending_count(self, monkeypatch):
+        """Both queue counts must be equal — they reflect the same queue items."""
+        from assistant_os.mso import mission_control_status
+        monkeypatch.setattr(
+            mission_control_status,
+            "_get_queue_counts_for_lifecycle",
+            lambda: (3, 3),
+        )
+        from assistant_os.mso.mission_control_status import build_mission_control_status
+        result = build_mission_control_status()
+        p = result["queues"]["prepared_actions_count"]
+        c = result["queues"]["confirm_pending_count"]
+        assert p == c, (
+            f"prepared_actions_count={p} != confirm_pending_count={c} — "
+            "all queue items are in both views"
+        )
+
+    def test_lifecycle_stage_is_awaiting_confirmation_with_items(self, monkeypatch):
+        """lifecycle snapshot must show awaiting_confirmation when queue has items."""
+        from assistant_os.mso import mission_control_status
+        monkeypatch.setattr(
+            mission_control_status,
+            "_get_queue_counts_for_lifecycle",
+            lambda: (2, 2),  # simulate 2 items in queue
+        )
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        assert result["current_stage"] == "awaiting_confirmation", (
+            f"current_stage={result['current_stage']!r} expected 'awaiting_confirmation' "
+            "when queue has items — status filter bug caused permanent 'planning'"
+        )
+
+    def test_lifecycle_queues_at_snapshot_matches_queue_size(self, monkeypatch):
+        """queues_at_snapshot must reflect real queue size, not always (0, 0)."""
+        from assistant_os.mso import mission_control_status
+        monkeypatch.setattr(
+            mission_control_status,
+            "_get_queue_counts_for_lifecycle",
+            lambda: (4, 4),
+        )
+        from assistant_os.mso.mission_control_status import build_lifecycle_snapshot
+        result = build_lifecycle_snapshot()
+        q = result["queues_at_snapshot"]
+        assert q["prepared_actions_count"] == 4, (
+            f"queues_at_snapshot.prepared_actions_count={q['prepared_actions_count']} expected 4"
+        )
+        assert q["confirm_pending_count"] == 4, (
+            f"queues_at_snapshot.confirm_pending_count={q['confirm_pending_count']} expected 4"
+        )
