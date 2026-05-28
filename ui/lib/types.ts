@@ -828,15 +828,17 @@ export interface MSOSeatProviderResponse {
 // Mission Control Orchestration Spaces — S-MISSION-CONTROL-ORCHESTRATION-SPACES-ALPHA-01
 // ---------------------------------------------------------------------------
 
+// S-MISSION-CONTROL-TYPE-HARDENING-01
+// 'running' and 'completed' removed — no legitimate Mission Control surface produces
+// these states. The display guard in LifecycleBadge (DANGEROUS_LIFECYCLE_DISPLAY_MAP)
+// remains as runtime defense-in-depth against 'as any' casts and backend schema drift.
 export type MissionLifecycleState =
   | 'draft'
   | 'planning'
   | 'mso_review'
   | 'prepared'
   | 'awaiting_confirmation'
-  | 'running'
   | 'blocked'
-  | 'completed'
   | 'failed'
   | 'cancelled'
 
@@ -855,7 +857,10 @@ export interface OrchestrationThread {
   status: MissionLifecycleState
   assignedArm?: string
   lastEvent?: string
-  executionStatus?: 'real' | 'stub' | 'unavailable' | 'partial'
+  // S-MISSION-CONTROL-TYPE-HARDENING-01
+  // Narrowed to 'unavailable': MC threads never claim real/stub/partial execution.
+  // ExecStatusBadge still accepts the full ExecutionStatus union for arms — separate prop type.
+  executionStatus?: 'unavailable'
 }
 
 // MSO entity status — read-only boundary description
