@@ -862,10 +862,19 @@ export interface MissionControlPlan {
   updatedAt?: string
 }
 
+// S-MISSION-CONTROL-THREAD-STATE-HARDENING-01
+// OrchestrationThread is a read-only UI projection of a PreparedAction — not a
+// runtime execution thread. The only reachable status is 'prepared'. Narrowing
+// prevents execution-adjacent states (running, blocked, failed, etc.) from ever
+// appearing on a thread card at compile time.
+export type OrchestrationThreadStatus = 'prepared'
+
 export interface OrchestrationThread {
   id: string
   label: string
-  status: MissionLifecycleState
+  // S-MISSION-CONTROL-THREAD-STATE-HARDENING-01
+  // Narrowed from MissionLifecycleState: thread cards only ever show 'prepared'.
+  status: OrchestrationThreadStatus
   assignedArm?: string
   lastEvent?: string
   // S-MISSION-CONTROL-TYPE-HARDENING-01
