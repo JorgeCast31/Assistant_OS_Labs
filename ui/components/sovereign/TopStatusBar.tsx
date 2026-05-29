@@ -72,7 +72,12 @@ export function TopStatusBar() {
 
       {/* Right: Execution State + Time */}
       <div className="flex items-center gap-4">
-        {/* Execution State — session-local only; no backend poll */}
+        {/* Execution State — session-local cognitive planning state only.
+            This is NOT a runtime execution indicator. msoState.executionState
+            reflects local MSO Chat session state (always 'idle' — setMSOState
+            is not called from active components). It does not represent Runner
+            activity, authority chain status, or any backend execution signal.
+            See ExecutionState in lib/sovereign/types.ts for full context. */}
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-mono text-tx-muted uppercase tracking-wider">
             Exec
