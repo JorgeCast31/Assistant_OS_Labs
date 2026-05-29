@@ -1045,3 +1045,138 @@ export interface MSOSeatStatusResponse {
   cognitive_only: boolean
   error?: string
 }
+
+// ---------------------------------------------------------------------------
+// Draft Store — Plan persistence (S-DRAFT-STORE-01)
+// Pre-authority. No execution. No tokens. No AuthorityArtifact.
+// source: 'draft_store' — NOT 'backend_read_model', NOT an authority artifact.
+// ---------------------------------------------------------------------------
+
+/**
+ * PlanDraftState — the only 3 permitted states for a Plan in ALFA.
+ *
+ * DO NOT add: 'executing', 'running', 'completed', 'approved', 'authorized',
+ *             'cancelled', or any execution-adjacent state.
+ * DO NOT conflate with ExecutionState (lib/sovereign/types.ts) — these are
+ * sovereign planning states, not runtime execution states.
+ */
+export type PlanDraftState = 'draft' | 'planning' | 'mso_review'
+
+export type PlanRiskLevel = 'low' | 'medium' | 'high' | 'critical'
+
+/**
+ * PlanDraftRecord — a Plan as returned by the Draft Store backend.
+ *
+ * Prohibited fields (must never appear here):
+ *   execution_allowed, execution_status, executionState, used_execution,
+ *   policy_decision_ref, governance_ref, capability_token_ref,
+ *   authority_artifact_ref, runner_ref, mission_id, prepared_action_id.
+ */
+export interface PlanDraftRecord {
+  plan_id: string
+  title: string
+  intent_summary: string
+  domain: string
+  state: PlanDraftState
+  operator_seat: string
+  schema_version: string      // always "1" in ALFA
+  created_at: string          // ISO 8601 UTC
+  updated_at: string          // ISO 8601 UTC
+  risk_level?: PlanRiskLevel | null
+  target_actions?: string[]   // free-form strings; not capability registry keys
+  notes?: string | null
+}
+
+/** Payload to create a new Plan draft. */
+export interface PlanDraftPayload {
+  plan_id: string
+  title: string
+  intent_summary: string
+  domain: string
+  state?: PlanDraftState
+  operator_seat: string
+  schema_version?: string
+  risk_level?: PlanRiskLevel | null
+  target_actions?: string[]
+  notes?: string | null
+}
+
+/** Payload to update mutable fields of a Plan. State excluded — use transition endpoint. */
+export interface PlanUpdatePayload {
+  operator_seat: string
+  title?: string
+  intent_summary?: string
+  domain?: string
+  risk_level?: PlanRiskLevel | null
+  target_actions?: string[]
+  notes?: string | null
+}
+
+/** Payload to transition a Plan's state. */
+export interface PlanTransitionPayload {
+  operator_seat: string
+  from_state: PlanDraftState
+  to_state: PlanDraftState
+  notes?: string
+}
+
+/** Payload to abandon a Plan. */
+export interface PlanAbandonPayload {
+  operator_seat: string
+}
+
+/** Single audit log entry for a Plan. */
+export interface PlanAuditEntry {
+  audit_id: string
+  plan_id: string
+  event: string
+  from_state: string | null
+  to_state: string | null
+  operator_seat: string
+  occurred_at: string
+  notes?: string | null
+}
+
+/** Response envelope for a single Plan. source must be 'draft_store'. */
+export interface PlanDraftResponse {
+  ok: boolean
+  source: 'draft_store'
+  execution_allowed: false
+  used_execution: false
+  runner_reachable_from_ui: false
+  plan: PlanDraftRecord
+  note?: string
+  error?: string
+}
+
+/** Response envelope for a list of Plans. source must be 'draft_store'. */
+export interface PlanListResponse {
+  ok: boolean
+  source: 'draft_store'
+  execution_allowed: false
+  used_execution: false
+  runner_reachable_from_ui: false
+  count: number
+  plans: PlanDraftRecord[]
+  note?: string
+  error?: string
+}
+
+/** Response envelope for the audit log. */
+export interface PlanAuditResponse {
+  ok: boolean
+  source: 'draft_store'
+  plan_id: string
+  count: number
+  entries: PlanAuditEntry[]
+  error?: string
+}
+
+/** Abandon response. */
+export interface PlanAbandonResponse {
+  ok: boolean
+  source: 'draft_store'
+  plan_id: string
+  note?: string
+  error?: string
+}
