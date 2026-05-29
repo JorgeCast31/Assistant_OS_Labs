@@ -117,6 +117,18 @@ export interface GovernanceTrace {
 
 // ── MSO Types ─────────────────────────────────────────────────────────────────
 
+/**
+ * MSOPlanItem — cognitive display artifact from MSO Chat responses.
+ *
+ * This is NOT an execution record. It represents a step in a cognitive plan
+ * returned by the MSO chat surface as part of a plan[] in a chat response.
+ * The MSO cognitive seat does not execute — it plans. status='executing' here
+ * means "the cognitive model is processing this step", NOT "something ran".
+ *
+ * This type has no authority implications. It does not correspond to a
+ * PreparedAction, AuthorityArtifact, or any execution-chain artifact.
+ * Source: ui_cognitive_display — local, session-only, no backend persistence.
+ */
 export interface MSOPlanItem {
   id: string
   step: number
@@ -126,7 +138,23 @@ export interface MSOPlanItem {
   requiresAuth?: boolean
 }
 
-export type ExecutionState = 
+/**
+ * ExecutionState — session-local MSO planning state (NOT runtime execution state).
+ *
+ * This type describes the operator's planning session with MSO Chat, not the
+ * execution runtime. 'executing' means "the cognitive seat is actively planning",
+ * not "Runner is executing". 'completed' means "the cognitive session produced a
+ * plan", not "an execution finished".
+ *
+ * IMPORTANT: setMSOState() is never called from active components in this codebase.
+ * msoState.executionState is permanently 'idle' at runtime. This type is a legacy
+ * remnant of a pre-architectural MSO surface and will be replaced by MissionControlPlanState
+ * (draft/planning/mso_review) once the Planner formal layer (Sprint #225+) is implemented.
+ *
+ * DO NOT use this type for Plan state in the Draft Store (Sprint #226+).
+ * Use MissionControlPlanState from lib/types.ts instead.
+ */
+export type ExecutionState =
   | 'idle'
   | 'planning'
   | 'awaiting_confirmation'
@@ -138,6 +166,7 @@ export type ExecutionState =
 export interface MSOState {
   status: AuthorityStatus
   currentPlan: MSOPlanItem[] | null
+  // session-local planning state — see ExecutionState doc above
   executionState: ExecutionState
   lastDecision: string | null
   activePolicy: string | null

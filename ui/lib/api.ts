@@ -1141,13 +1141,18 @@ export async function getAuthorityTraceSnapshot(): Promise<AuthorityTraceSnapsho
 }
 
 // S-MISSION-CONTROL-LIFECYCLE-SNAPSHOT-01
+// NOTE: current_stage defaults to 'planning' in the unavailable fallback because
+// it is the safest pre-execution stage. This is a derived/fallback value, NOT
+// a backend observation. Any consumer rendering this value should check ok===false
+// and treat current_stage as 'unknown' when the backend is unavailable.
+// See docs/mso/SPRINT_224_ALFA_GAP_CONSOLIDATION.md §7 for full context.
 const LC_SNAPSHOT_UNAVAILABLE: LifecycleSnapshotResponse = {
   ok: false,
   source: 'backend_read_model',
   execution_allowed: false,
   used_execution: false,
   runner_reachable_from_ui: false,
-  current_stage: 'planning',
+  current_stage: 'planning',  // derived fallback — not backend truth
   queues_at_snapshot: { prepared_actions_count: 0, confirm_pending_count: 0 },
   error: 'Lifecycle snapshot backend unavailable',
 }
