@@ -9,10 +9,11 @@ import { getWebhookBaseUrl, getWebhookHeaders } from '@/lib/server/webhook-auth'
 
 export const dynamic = 'force-dynamic'
 
-export async function POST(
-  req: NextRequest,
-  { params }: { params: { plan_id: string } },
-) {
+type Ctx = { params: Promise<{ plan_id: string }> }
+
+export async function POST(req: NextRequest, ctx: Ctx) {
+  const { plan_id } = await ctx.params
+
   let body: unknown
   try {
     body = await req.json()
@@ -23,7 +24,7 @@ export async function POST(
   try {
     const base = getWebhookBaseUrl()
     const res = await fetch(
-      `${base}/mso/plans/${encodeURIComponent(params.plan_id)}/abandon`,
+      `${base}/mso/plans/${encodeURIComponent(plan_id)}/abandon`,
       {
         method: 'POST',
         headers: { ...getWebhookHeaders(), 'Content-Type': 'application/json' },

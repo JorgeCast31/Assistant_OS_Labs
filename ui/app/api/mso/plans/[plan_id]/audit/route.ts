@@ -7,14 +7,15 @@ import { getWebhookBaseUrl, getWebhookHeaders } from '@/lib/server/webhook-auth'
 
 export const dynamic = 'force-dynamic'
 
-export async function GET(
-  _req: NextRequest,
-  { params }: { params: { plan_id: string } },
-) {
+type Ctx = { params: Promise<{ plan_id: string }> }
+
+export async function GET(_req: NextRequest, ctx: Ctx) {
+  const { plan_id } = await ctx.params
+
   try {
     const base = getWebhookBaseUrl()
     const res = await fetch(
-      `${base}/mso/plans/${encodeURIComponent(params.plan_id)}/audit`,
+      `${base}/mso/plans/${encodeURIComponent(plan_id)}/audit`,
       {
         headers: getWebhookHeaders(),
         cache: 'no-store',
