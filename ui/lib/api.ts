@@ -1170,3 +1170,174 @@ export async function getMissionControlLifecycleSnapshot(): Promise<LifecycleSna
     return LC_SNAPSHOT_UNAVAILABLE
   }
 }
+
+// ---------------------------------------------------------------------------
+// Draft Store — Plan persistence (S-DRAFT-STORE-01)
+// Pre-authority. No execution. No tokens. No AuthorityArtifact.
+// source: 'draft_store'
+// ---------------------------------------------------------------------------
+
+import type {
+  PlanDraftRecord,
+  PlanDraftPayload,
+  PlanUpdatePayload,
+  PlanTransitionPayload,
+  PlanAbandonPayload,
+  PlanDraftResponse,
+  PlanListResponse,
+  PlanAuditResponse,
+  PlanAbandonResponse,
+} from './types'
+
+const PLAN_LIST_UNAVAILABLE: PlanListResponse = {
+  ok: false,
+  source: 'draft_store',
+  execution_allowed: false,
+  used_execution: false,
+  runner_reachable_from_ui: false,
+  count: 0,
+  plans: [],
+  error: 'Draft store backend unavailable',
+}
+
+/**
+ * GET /api/mso/plans?operator_seat=...
+ * List Plans for the given operator seat. D-09: operator_seat always required.
+ * D-11: Plans in mso_review are included — labeled by caller as escalated/pending.
+ * Never throws.
+ */
+export async function listPlans(operatorSeat: string): Promise<PlanListResponse> {
+  try {
+    const res = await fetch(
+      `/api/mso/plans?operator_seat=${encodeURIComponent(operatorSeat)}`,
+      { cache: 'no-store', signal: AbortSignal.timeout(4000) },
+    )
+    if (!res.ok) return PLAN_LIST_UNAVAILABLE
+    const json = await res.json() as PlanListResponse
+    return json.ok ? json : { ...PLAN_LIST_UNAVAILABLE, error: json.error ?? 'unavailable' }
+  } catch {
+    return PLAN_LIST_UNAVAILABLE
+  }
+}
+
+/**
+ * POST /api/mso/plans
+ * Create a new Plan draft. Returns the created PlanDraftResponse.
+ * Throws on network error or validation failure.
+ */
+export async function createPlan(payload: PlanDraftPayload): Promise<PlanDraftResponse> {
+  const res = await fetch('/api/mso/plans', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    signal: AbortSignal.timeout(4000),
+  })
+  const json = await res.json() as PlanDraftResponse
+  if (!res.ok || !json.ok) {
+    throw new Error(json.error ?? `Create plan failed (${res.status})`)
+  }
+  return json
+}
+
+/**
+ * GET /api/mso/plans/[plan_id]?operator_seat=...
+ * Get a specific Plan. Throws if not found or seat mismatch.
+ */
+export async function getPlan(planId: string, operatorSeat: string): Promise<PlanDraftResponse> {
+  const res = await fetch(
+    `/api/mso/plans/${encodeURIComponent(planId)}?operator_seat=${encodeURIComponent(operatorSeat)}`,
+    { cache: 'no-store', signal: AbortSignal.timeout(4000) },
+  )
+  const json = await res.json() as PlanDraftResponse
+  if (!res.ok || !json.ok) {
+    throw new Error(json.error ?? `Get plan failed (${res.status})`)
+  }
+  return json
+}
+
+/**
+ * PUT /api/mso/plans/[plan_id]
+ * Update mutable fields of a Plan. D-08: audit log mandatory in planning state.
+ */
+export async function updatePlan(
+  planId: string,
+  updates: PlanUpdatePayload,
+): Promise<PlanDraftResponse> {
+  const res = await fetch(`/api/mso/plans/${encodeURIComponent(planId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+    cache: 'no-store',
+    signal: AbortSignal.timeout(4000),
+  })
+  const json = await res.json() as PlanDraftResponse
+  if (!res.ok || !json.ok) {
+    throw new Error(json.error ?? `Update plan failed (${res.status})`)
+  }
+  return json
+}
+
+/**
+ * POST /api/mso/plans/[plan_id]/transition
+ * Transition Plan state. D-04: operator-initiated only.
+ * UI must show confirmation dialog before calling with to_state='mso_review'.
+ */
+export async function transitionPlan(
+  planId: string,
+  payload: PlanTransitionPayload,
+): Promise<PlanDraftResponse> {
+  const res = await fetch(`/api/mso/plans/${encodeURIComponent(planId)}/transition`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    signal: AbortSignal.timeout(4000),
+  })
+  const json = await res.json() as PlanDraftResponse
+  if (!res.ok || !json.ok) {
+    throw new Error(json.error ?? `Transition plan failed (${res.status})`)
+  }
+  return json
+}
+
+/**
+ * POST /api/mso/plans/[plan_id]/abandon
+ * Abandon a Plan. Draft: silent. Planning: audited. mso_review: throws.
+ */
+export async function abandonPlan(
+  planId: string,
+  payload: PlanAbandonPayload,
+): Promise<PlanAbandonResponse> {
+  const res = await fetch(`/api/mso/plans/${encodeURIComponent(planId)}/abandon`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    signal: AbortSignal.timeout(4000),
+  })
+  const json = await res.json() as PlanAbandonResponse
+  if (!res.ok || !json.ok) {
+    throw new Error(json.error ?? `Abandon plan failed (${res.status})`)
+  }
+  return json
+}
+
+/**
+ * GET /api/mso/plans/[plan_id]/audit
+ * Audit log for a Plan. Never throws.
+ */
+export async function getPlanAuditLog(planId: string): Promise<PlanAuditResponse> {
+  try {
+    const res = await fetch(`/api/mso/plans/${encodeURIComponent(planId)}/audit`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    if (!res.ok) {
+      return { ok: false, source: 'draft_store', plan_id: planId, count: 0, entries: [], error: 'Audit log unavailable' }
+    }
+    return await res.json() as PlanAuditResponse
+  } catch {
+    return { ok: false, source: 'draft_store', plan_id: planId, count: 0, entries: [], error: 'Audit log unavailable' }
+  }
+}

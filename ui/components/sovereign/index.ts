@@ -30,3 +30,5 @@ export { AuthorityArtifactCard } from './AuthorityArtifactCard'
 export { PendingConfirmationCard } from './PendingConfirmationCard'
 export { ReadinessPanel } from './ReadinessPanel'
 export { GovernanceRecentPanel } from './GovernanceRecentPanel'
+// S-DRAFT-STORE-01: sovereign Plan state badge (draft/planning/mso_review only)
+export { PlanStateBadge } from './PlanStateBadge'

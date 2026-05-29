@@ -1765,6 +1765,26 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_machine_operator_execute(remote)
             return
 
+        # S-DRAFT-STORE-01: Draft Plan persistence (pre-authority, no execution)
+        if path == "/mso/plans":
+            self._handle_mso_plans_post()
+            return
+
+        m_plan = re.match(r"^/mso/plans/([^/]+)/transition$", path)
+        if m_plan:
+            self._handle_mso_plan_transition_post(m_plan.group(1))
+            return
+
+        m_abandon = re.match(r"^/mso/plans/([^/]+)/abandon$", path)
+        if m_abandon:
+            self._handle_mso_plan_abandon_post(m_abandon.group(1))
+            return
+
+        m_update = re.match(r"^/mso/plans/([^/]+)$", path)
+        if m_update:
+            self._handle_mso_plan_update_put(m_update.group(1))
+            return
+
         # 404 for unknown paths
         status, error = _make_json_error(404, f"Not found: {path}", "NotFound")
         _log_webhook_event(path, remote, ok=False)
@@ -1965,6 +1985,21 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # S-MISSION-CONTROL-LIFECYCLE-SNAPSHOT-01: lifecycle state read model
         if path == "/mso/mission-control/lifecycle-snapshot":
             self._handle_mso_mission_control_lifecycle_snapshot_get()
+            return
+
+        # S-DRAFT-STORE-01: Draft Plan read surfaces (pre-authority, no execution)
+        if path == "/mso/plans":
+            self._handle_mso_plans_list_get()
+            return
+
+        m_plan_get = re.match(r"^/mso/plans/([^/]+)$", path)
+        if m_plan_get:
+            self._handle_mso_plan_get(m_plan_get.group(1))
+            return
+
+        m_audit = re.match(r"^/mso/plans/([^/]+)/audit$", path)
+        if m_audit:
+            self._handle_mso_plan_audit_get(m_audit.group(1))
             return
 
         # 405 for everything else
@@ -6566,6 +6601,351 @@ def start_server_thread(host: str = WEBHOOK_HOST, port: int = 0) -> tuple[Webhoo
     thread.start()
 
     return server, actual_port
+
+
+    # ── S-DRAFT-STORE-01: Draft Plan persistence handlers ─────────────────────
+    # Pre-authority. No execution. No tokens. No AuthorityArtifact.
+    # No Runner. No Police. No Machine Operator. No mission_id.
+
+    def _handle_mso_plans_post(self) -> None:
+        """POST /mso/plans — create a new Plan draft.
+
+        Body: { plan_id, title, intent_summary, domain, state, operator_seat,
+                schema_version?, risk_level?, target_actions?, notes? }
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        ok, body = self._read_body_json()
+        if not ok:
+            status, error = _make_json_error(400, "Invalid JSON body", "BadRequest")
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from datetime import datetime, timezone
+            from .mso.plan_model import PlanRecord, InvalidPlanId, InvalidPlanState, UnknownSchemaVersion
+            from .mso.draft_store import create_plan
+            import sqlite3
+
+            now = datetime.now(timezone.utc).isoformat()
+            plan = PlanRecord(
+                plan_id=body.get("plan_id", ""),
+                title=body.get("title", ""),
+                intent_summary=body.get("intent_summary", ""),
+                domain=body.get("domain", ""),
+                state=body.get("state", "draft"),
+                operator_seat=body.get("operator_seat", ""),
+                schema_version=body.get("schema_version", "1"),
+                created_at=body.get("created_at", now),
+                updated_at=body.get("updated_at", now),
+                risk_level=body.get("risk_level"),
+                target_actions=tuple(body.get("target_actions", [])),
+                notes=body.get("notes"),
+            )
+            create_plan(plan)
+            self._send_json_response(200, {
+                "ok": True,
+                "source": "draft_store",
+                "execution_allowed": False,
+                "used_execution": False,
+                "runner_reachable_from_ui": False,
+                "plan": plan.to_dict(),
+                "note": "Plan created. Pre-authority. No execution implied.",
+            })
+        except (InvalidPlanId, InvalidPlanState, UnknownSchemaVersion, ValueError) as exc:
+            status, error = _make_json_error(400, str(exc), "ValidationError")
+            self._send_json_response(status, error)
+        except sqlite3.IntegrityError:
+            status, error = _make_json_error(409, "Plan with this plan_id already exists.", "Conflict")
+            self._send_json_response(status, error)
+        except Exception as exc:  # noqa: BLE001
+            status, error = _make_json_error(500, f"Draft store error: {exc}", "InternalError")
+            self._send_json_response(status, error)
+
+    def _handle_mso_plan_update_put(self, plan_id: str) -> None:
+        """PUT /mso/plans/{plan_id} — update mutable fields of a Plan.
+
+        Body: { operator_seat, title?, intent_summary?, domain?,
+                risk_level?, target_actions?, notes? }
+        D-08: Updates to plans in 'planning' state require audit log entry.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        ok, body = self._read_body_json()
+        if not ok:
+            status, error = _make_json_error(400, "Invalid JSON body", "BadRequest")
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from .mso.plan_model import (
+                PlanNotFound, PlanImmutable, OperatorSeatMismatch, PlanUpdate
+            )
+            from .mso.draft_store import update_plan
+
+            operator_seat = body.get("operator_seat", "")
+            ta = body.get("target_actions")
+            updates = PlanUpdate(
+                title=body.get("title"),
+                intent_summary=body.get("intent_summary"),
+                domain=body.get("domain"),
+                risk_level=body.get("risk_level"),
+                target_actions=tuple(ta) if ta is not None else None,
+                notes=body.get("notes"),
+            )
+            updated = update_plan(plan_id, operator_seat, updates)
+            self._send_json_response(200, {
+                "ok": True,
+                "source": "draft_store",
+                "execution_allowed": False,
+                "used_execution": False,
+                "runner_reachable_from_ui": False,
+                "plan": updated.to_dict(),
+            })
+        except PlanNotFound as exc:
+            status, error = _make_json_error(404, str(exc), "NotFound")
+            self._send_json_response(status, error)
+        except (PlanImmutable, OperatorSeatMismatch) as exc:
+            status, error = _make_json_error(403, str(exc), "Forbidden")
+            self._send_json_response(status, error)
+        except Exception as exc:  # noqa: BLE001
+            status, error = _make_json_error(500, f"Draft store error: {exc}", "InternalError")
+            self._send_json_response(status, error)
+
+    def _handle_mso_plan_transition_post(self, plan_id: str) -> None:
+        """POST /mso/plans/{plan_id}/transition — transition plan state.
+
+        Body: { operator_seat, from_state, to_state, notes? }
+        D-04: Operator must explicitly initiate; this is the explicit gate.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        ok, body = self._read_body_json()
+        if not ok:
+            status, error = _make_json_error(400, "Invalid JSON body", "BadRequest")
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from .mso.plan_model import (
+                PlanNotFound, InvalidTransition, OperatorSeatMismatch, UnknownSchemaVersion
+            )
+            from .mso.draft_store import transition_plan
+
+            result = transition_plan(
+                plan_id=plan_id,
+                from_state=body.get("from_state", ""),
+                to_state=body.get("to_state", ""),
+                operator_seat=body.get("operator_seat", ""),
+                notes=body.get("notes"),
+            )
+            note = "Plan state transitioned."
+            if result.state == "mso_review":
+                note = (
+                    "Plan escalated to MSO — Pending MSO Read. "
+                    "Plan is now frozen. This does NOT imply acceptance, "
+                    "authorization, preparation, or execution."
+                )
+            self._send_json_response(200, {
+                "ok": True,
+                "source": "draft_store",
+                "execution_allowed": False,
+                "used_execution": False,
+                "runner_reachable_from_ui": False,
+                "plan": result.to_dict(),
+                "note": note,
+            })
+        except PlanNotFound as exc:
+            status, error = _make_json_error(404, str(exc), "NotFound")
+            self._send_json_response(status, error)
+        except InvalidTransition as exc:
+            status, error = _make_json_error(422, str(exc), "InvalidTransition")
+            self._send_json_response(status, error)
+        except OperatorSeatMismatch as exc:
+            status, error = _make_json_error(403, str(exc), "Forbidden")
+            self._send_json_response(status, error)
+        except Exception as exc:  # noqa: BLE001
+            status, error = _make_json_error(500, f"Draft store error: {exc}", "InternalError")
+            self._send_json_response(status, error)
+
+    def _handle_mso_plan_abandon_post(self, plan_id: str) -> None:
+        """POST /mso/plans/{plan_id}/abandon — abandon a Plan.
+
+        Body: { operator_seat }
+        Draft: silent. Planning: audited. mso_review: raises 403.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        ok, body = self._read_body_json()
+        if not ok:
+            status, error = _make_json_error(400, "Invalid JSON body", "BadRequest")
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from .mso.plan_model import PlanNotFound, PlanImmutable, OperatorSeatMismatch
+            from .mso.draft_store import abandon_plan
+
+            abandon_plan(plan_id, body.get("operator_seat", ""))
+            self._send_json_response(200, {
+                "ok": True,
+                "source": "draft_store",
+                "plan_id": plan_id,
+                "note": "Plan abandoned.",
+            })
+        except PlanNotFound as exc:
+            status, error = _make_json_error(404, str(exc), "NotFound")
+            self._send_json_response(status, error)
+        except PlanImmutable as exc:
+            status, error = _make_json_error(403, str(exc), "Forbidden")
+            self._send_json_response(status, error)
+        except OperatorSeatMismatch as exc:
+            status, error = _make_json_error(403, str(exc), "Forbidden")
+            self._send_json_response(status, error)
+        except Exception as exc:  # noqa: BLE001
+            status, error = _make_json_error(500, f"Draft store error: {exc}", "InternalError")
+            self._send_json_response(status, error)
+
+    def _handle_mso_plans_list_get(self) -> None:
+        """GET /mso/plans?operator_seat=... — list Plans for an operator seat.
+
+        D-09: operator_seat is always required in ALFA.
+        D-11: Plans in mso_review are included (labeled escalated/pending by caller).
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from urllib.parse import urlparse, parse_qs
+            from .mso.draft_store import list_plans
+
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            seat_list = params.get("operator_seat", [])
+            if not seat_list or not seat_list[0].strip():
+                status, error = _make_json_error(
+                    400,
+                    "operator_seat query parameter is required in ALFA.",
+                    "MissingOperatorSeat",
+                )
+                self._send_json_response(status, error)
+                return
+
+            operator_seat = seat_list[0].strip()
+            plans = list_plans(operator_seat)
+            self._send_json_response(200, {
+                "ok": True,
+                "source": "draft_store",
+                "execution_allowed": False,
+                "used_execution": False,
+                "runner_reachable_from_ui": False,
+                "count": len(plans),
+                "plans": [p.to_dict() for p in plans],
+                "note": (
+                    "Plans in mso_review are shown as Escalated — Pending MSO Read. "
+                    "Visibility does not imply acceptance or execution authority."
+                ),
+            })
+        except Exception as exc:  # noqa: BLE001
+            status, error = _make_json_error(500, f"Draft store error: {exc}", "InternalError")
+            self._send_json_response(status, error)
+
+    def _handle_mso_plan_get(self, plan_id: str) -> None:
+        """GET /mso/plans/{plan_id}?operator_seat=... — get a specific Plan.
+
+        D-11: Plans in mso_review are returned with state='mso_review'.
+        Visibility does not imply acceptance, authorization, or execution.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from urllib.parse import urlparse, parse_qs
+            from .mso.plan_model import PlanNotFound, OperatorSeatMismatch, UnknownSchemaVersion
+            from .mso.draft_store import get_plan
+
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            seat_list = params.get("operator_seat", [])
+            if not seat_list or not seat_list[0].strip():
+                status, error = _make_json_error(
+                    400, "operator_seat query parameter is required.", "MissingOperatorSeat"
+                )
+                self._send_json_response(status, error)
+                return
+
+            plan = get_plan(plan_id, seat_list[0].strip())
+            note = "Plan retrieved from draft store."
+            if plan.state == "mso_review":
+                note = (
+                    "Plan is in mso_review — Escalated, Pending MSO Read. "
+                    "This does NOT imply acceptance, authorization, or execution."
+                )
+            self._send_json_response(200, {
+                "ok": True,
+                "source": "draft_store",
+                "execution_allowed": False,
+                "used_execution": False,
+                "runner_reachable_from_ui": False,
+                "plan": plan.to_dict(),
+                "note": note,
+            })
+        except PlanNotFound as exc:
+            status, error = _make_json_error(404, str(exc), "NotFound")
+            self._send_json_response(status, error)
+        except OperatorSeatMismatch as exc:
+            status, error = _make_json_error(403, str(exc), "Forbidden")
+            self._send_json_response(status, error)
+        except UnknownSchemaVersion as exc:
+            status, error = _make_json_error(500, str(exc), "UnknownSchemaVersion")
+            self._send_json_response(status, error)
+        except Exception as exc:  # noqa: BLE001
+            status, error = _make_json_error(500, f"Draft store error: {exc}", "InternalError")
+            self._send_json_response(status, error)
+
+    def _handle_mso_plan_audit_get(self, plan_id: str) -> None:
+        """GET /mso/plans/{plan_id}/audit — get audit log for a Plan."""
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from .mso.draft_store import get_audit_log
+            entries = get_audit_log(plan_id)
+            self._send_json_response(200, {
+                "ok": True,
+                "source": "draft_store",
+                "plan_id": plan_id,
+                "count": len(entries),
+                "entries": [e.to_dict() for e in entries],
+            })
+        except Exception as exc:  # noqa: BLE001
+            status, error = _make_json_error(500, f"Audit log error: {exc}", "InternalError")
+            self._send_json_response(status, error)
 
 
 if __name__ == "__main__":
