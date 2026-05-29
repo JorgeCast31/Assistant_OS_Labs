@@ -1828,11 +1828,21 @@ class TestMSOViewLiveSeatReconciliation(unittest.TestCase):
             "MSOView must reference 'authority timeline' in its queue section",
         )
 
-    def test_mso_view_references_eleven_stages(self) -> None:
+    def test_mso_view_references_nine_stages(self) -> None:
         self.assertIn(
-            "11",
+            "9",
             self.mso_src,
-            "MSOView queue section must reference the 11-stage authority timeline",
+            "MSOView queue section must reference the 9-stage authority timeline",
+        )
+        self.assertIn(
+            "mso_kernel",
+            self.mso_src,
+            "MSOView must reference 'mso_kernel' as the first stage of the authority timeline",
+        )
+        self.assertIn(
+            "outcome",
+            self.mso_src,
+            "MSOView must reference 'outcome' as the last stage of the authority timeline",
         )
 
     def test_mso_view_next_safe_step_section(self) -> None:

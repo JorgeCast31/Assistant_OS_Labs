@@ -848,7 +848,7 @@ function OrchestrationViewSpace() {
           <div className="rounded-lg border border-warn/30 bg-warn/5 p-3">
             <p className="text-[10px] font-mono text-warn">
               {preparedCount} prepared action{preparedCount !== 1 ? 's' : ''} waiting for manual review.
-              Each action includes a read-only authority timeline showing all 11 stages.
+              Each action includes a read-only authority timeline showing all 9 stages.
               Open Confirm Queue to inspect prepared action details.
               Execution remains closed.
             </p>

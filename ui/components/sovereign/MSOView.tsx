@@ -255,7 +255,7 @@ export function MSOView() {
                 </div>
               </div>
               <p className="text-[10px] font-mono text-tx-muted px-1">
-                The full authority timeline has 11 stages from plan_request to execution.
+                The full authority timeline has 9 stages from mso_kernel to outcome.
                 Review queue via Mission Control.
               </p>
             </section>
