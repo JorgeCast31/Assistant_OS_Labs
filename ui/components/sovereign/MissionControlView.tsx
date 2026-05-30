@@ -22,6 +22,7 @@ import {
 import { MissionControlChainView } from './MissionControlChainView'
 import { OutcomeStatusPanel } from './OutcomeStatusPanel'
 import { PlanStatusIndicator } from './PlanStatusIndicator'
+import { DraftStorePlansPanel } from './DraftStorePlansPanel'
 import type {
   MissionLifecycleState,
   MissionControlPlan,
@@ -241,20 +242,18 @@ function ExecStatusBadge({ status }: { status: 'real' | 'stub' | 'unavailable' |
 // ── Space 1: Planner ──────────────────────────────────────────────────────────
 
 function PlannerSpace() {
-  const [plan, setPlan] = useState<MissionControlPlan>({
-    title: '',
-    body: '',
-    state: 'draft',
-  })
-  // Plan Status Checker — for Draft Store plans with a known plan_id
+  const [showChatHelper, setShowChatHelper] = useState(false)
+  const [showManualChecker, setShowManualChecker] = useState(false)
   const [checkPlanId, setCheckPlanId] = useState('')
   const [checkSeat, setCheckSeat] = useState('')
-  const [showChecker, setShowChecker] = useState(false)
+
+  // Chat helper (local-only, not connected to Draft Store)
+  const [plan, setPlan] = useState<MissionControlPlan>({ title: '', body: '', state: 'draft' })
   const { setActiveView, setPendingRedirectText } = useSovereignStore()
 
   const canEscalate = plan.title.trim().length > 0 && plan.body.trim().length > 0
 
-  const handleEscalate = () => {
+  const handleChatEscalate = () => {
     if (!canEscalate) return
     const formattedText = `[PLAN REQUEST]\n\nMission: ${plan.title}\n\n${plan.body}`
     setPendingRedirectText(formattedText)
@@ -262,148 +261,110 @@ function PlannerSpace() {
     setActiveView('mso')
   }
 
-  const handleChange = (field: 'title' | 'body', value: string) => {
-    setPlan(p => ({
-      ...p,
-      [field]: value,
-      state: p.state === 'draft' || p.state === 'planning' ? 'planning' : p.state,
-    }))
-  }
-
   return (
     <div className="space-y-4">
-      <div className="rounded-lg border border-violet-400/20 bg-violet-400/5 p-4">
-        <p className="text-xs font-mono text-violet-400 mb-1">Planner Space — ALPHA</p>
-        <p className="text-[10px] font-mono text-tx-muted">
-          Draft a mission or plan. The plan does not execute. Escalating sends it to MSO as a governed preparation request — no execution is triggered.
+      {/* ── Primary: Draft Store Plans Panel ───────────────────────────────── */}
+      <div className="rounded-lg border border-violet-400/20 bg-violet-400/5 p-1">
+        <p className="text-[9px] font-mono text-violet-400 px-3 pt-2 pb-1 uppercase tracking-wider">
+          Draft Store — Sovereign Plan Persistence
         </p>
-      </div>
-
-      <div>
-        <label className="block text-[10px] font-mono text-tx-muted uppercase tracking-wider mb-1">
-          Mission Objective
-        </label>
-        <input
-          type="text"
-          value={plan.title}
-          onChange={(e) => handleChange('title', e.target.value)}
-          placeholder="Describe the mission objective…"
-          className="w-full bg-os-surface border border-os-border rounded px-3 py-2 text-xs font-mono text-tx-primary placeholder-tx-muted focus:outline-none focus:border-violet-400/50 transition-colors"
-        />
-      </div>
-
-      <div>
-        <label className="block text-[10px] font-mono text-tx-muted uppercase tracking-wider mb-1">
-          Plan Body
-        </label>
-        <textarea
-          value={plan.body}
-          onChange={(e) => handleChange('body', e.target.value)}
-          placeholder="Describe the plan steps, context, or details…"
-          rows={7}
-          className="w-full bg-os-surface border border-os-border rounded px-3 py-2 text-xs font-mono text-tx-primary placeholder-tx-muted focus:outline-none focus:border-violet-400/50 resize-y transition-colors"
-        />
-      </div>
-
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <span className="text-[10px] font-mono text-tx-muted">Plan status:</span>
-          <LifecycleBadge state={plan.state} />
+        <p className="text-[9px] font-mono text-tx-muted px-3 pb-2">
+          Plans created here are persisted to the Draft Store backend.
+          The plan does not execute. Escalation sends the plan to MSO for sovereign review.
+          No execution is triggered at any step.
+          The full authority chain remains required before anything can run.
+          Next Safe Step after MSO Review: ACK → Prepare → Confirm queue.
+        </p>
+        <div className="px-3 pb-3">
+          <DraftStorePlansPanel />
         </div>
-        {plan.updatedAt && (
-          <span className="text-[10px] font-mono text-tx-muted">
-            Updated: {new Date(plan.updatedAt).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-          </span>
+      </div>
+
+      {/* ── Secondary: MSO Chat Composer helper ────────────────────────────── */}
+      <div className="rounded-lg border border-os-border bg-os-surface p-3 space-y-3">
+        <button
+          onClick={() => setShowChatHelper(v => !v)}
+          className="text-[10px] font-mono text-tx-muted hover:text-tx-secondary flex items-center gap-1 transition-colors w-full text-left"
+        >
+          <span>{showChatHelper ? '▾' : '▸'}</span>
+          MSO Chat Composer Helper (local, not Draft Store)
+        </button>
+        {showChatHelper && (
+          <div className="space-y-3">
+            <p className="text-[9px] font-mono text-tx-muted">
+              Local-only planner. Formats text to pre-fill the MSO Chat composer.
+              Not persisted. Not connected to the Draft Store.
+            </p>
+            <input
+              type="text"
+              value={plan.title}
+              onChange={e => setPlan(p => ({ ...p, title: e.target.value, state: p.state === 'draft' ? 'planning' : p.state }))}
+              placeholder="Mission objective…"
+              className="w-full bg-os-surface border border-os-border rounded px-2 py-1.5 text-[10px] font-mono text-tx-primary placeholder-tx-muted focus:outline-none focus:border-violet-400/50"
+            />
+            <textarea
+              value={plan.body}
+              onChange={e => setPlan(p => ({ ...p, body: e.target.value, state: p.state === 'draft' ? 'planning' : p.state }))}
+              placeholder="Plan body…"
+              rows={4}
+              className="w-full bg-os-surface border border-os-border rounded px-2 py-1.5 text-[10px] font-mono text-tx-primary placeholder-tx-muted focus:outline-none focus:border-violet-400/50 resize-y"
+            />
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleChatEscalate}
+                disabled={!canEscalate || plan.state === 'mso_review'}
+                className="px-3 py-1 rounded text-[10px] font-mono bg-violet-400/10 border border-violet-400/30 text-violet-400 hover:bg-violet-400/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                {plan.state === 'mso_review' ? 'Sent to MSO Chat ✓' : 'Send to MSO Chat →'}
+              </button>
+              {plan.state === 'mso_review' && (
+                <button
+                  onClick={() => setPlan({ title: '', body: '', state: 'draft' })}
+                  className="text-[9px] font-mono text-tx-muted hover:text-tx-secondary underline"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            <p className="text-[9px] font-mono text-tx-muted">
+              <LifecycleBadge state={plan.state} /> — Local state only. No execution triggered.
+            </p>
+          </div>
         )}
       </div>
 
-      <div className="rounded-lg border border-os-border bg-os-surface p-4 space-y-3">
-        <p className="text-[10px] font-mono text-tx-muted uppercase tracking-wider">Next Safe Step</p>
-        <button
-          onClick={handleEscalate}
-          disabled={!canEscalate || plan.state === 'mso_review'}
-          className="px-4 py-2 rounded text-xs font-mono bg-violet-400/10 border border-violet-400/30 text-violet-400 hover:bg-violet-400/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-        >
-          {plan.state === 'mso_review' ? 'Escalated to MSO ✓' : 'Escalate to MSO →'}
-        </button>
-        <p className="text-[10px] font-mono text-tx-muted">
-          This sends the plan text to the MSO composer for governed preparation. No execution is triggered.
-          The full authority chain (PolicyDecision → CapabilityToken → PoliceGate) remains required before anything executes.
-        </p>
-      </div>
-
-      {plan.state === 'mso_review' && (
-        <div className="rounded-lg border border-amber-400/30 bg-amber-400/5 p-3">
-          <p className="text-xs font-mono text-amber-400">Plan forwarded to MSO for review.</p>
-          <p className="text-[10px] font-mono text-tx-muted mt-1">
-            Navigate to the MSO console to continue the governed preparation cycle. The plan text has been pre-filled in the MSO composer.
-          </p>
-          <button
-            onClick={() => setPlan(p => ({ ...p, title: '', body: '', state: 'draft', updatedAt: undefined }))}
-            className="mt-2 text-[10px] font-mono text-tx-muted hover:text-tx-secondary underline"
-          >
-            Clear plan and start over
-          </button>
-        </div>
-      )}
-
-      {/* ── Draft Store Plan Status Checker ────────────────────────────────── */}
-      {/* Allows checking prepare lifecycle status for any Draft Store plan_id. */}
-      {/* Does NOT execute. Does NOT emit tokens. Does NOT create AuthorityArtifact. */}
+      {/* ── Tertiary: Manual Plan Status Lookup ────────────────────────────── */}
       <div className="rounded-lg border border-os-border bg-os-surface p-3 space-y-3">
         <button
-          onClick={() => setShowChecker(v => !v)}
-          className="text-[10px] font-mono text-tx-muted hover:text-tx-secondary flex items-center gap-1 transition-colors"
+          onClick={() => setShowManualChecker(v => !v)}
+          className="text-[10px] font-mono text-tx-muted hover:text-tx-secondary flex items-center gap-1 transition-colors w-full text-left"
         >
-          <span>{showChecker ? '▾' : '▸'}</span>
-          Check Draft Store Plan Status
+          <span>{showManualChecker ? '▾' : '▸'}</span>
+          Manual Plan Status Lookup
         </button>
-        {showChecker && (
-          <div className="space-y-3 pl-3 border-l border-os-border">
+        {showManualChecker && (
+          <div className="space-y-2 pl-3 border-l border-os-border">
             <p className="text-[9px] font-mono text-tx-muted">
-              Enter a Draft Store plan_id and operator_seat to check the prepare lifecycle status.
-              This is read-only observability — no execution is triggered.
+              Check prepare lifecycle status for any plan_id directly.
             </p>
-            <div className="space-y-2">
-              <div>
-                <label className="block text-[9px] font-mono text-tx-muted uppercase tracking-wider mb-0.5">
-                  Plan ID
-                </label>
-                <input
-                  type="text"
-                  value={checkPlanId}
-                  onChange={(e) => setCheckPlanId(e.target.value.trim())}
-                  placeholder="plan_<timestamp>_<uid>"
-                  className="w-full bg-os-surface border border-os-border rounded px-2 py-1 text-[10px] font-mono text-tx-primary placeholder-tx-muted focus:outline-none focus:border-violet-400/50"
-                />
-              </div>
-              <div>
-                <label className="block text-[9px] font-mono text-tx-muted uppercase tracking-wider mb-0.5">
-                  Operator Seat
-                </label>
-                <input
-                  type="text"
-                  value={checkSeat}
-                  onChange={(e) => setCheckSeat(e.target.value.trim())}
-                  placeholder="operator_seat_id"
-                  className="w-full bg-os-surface border border-os-border rounded px-2 py-1 text-[10px] font-mono text-tx-primary placeholder-tx-muted focus:outline-none focus:border-violet-400/50"
-                />
-              </div>
-            </div>
+            <input
+              type="text"
+              value={checkPlanId}
+              onChange={e => setCheckPlanId(e.target.value.trim())}
+              placeholder="plan_<timestamp>_<uid>"
+              className="w-full bg-os-surface border border-os-border rounded px-2 py-1 text-[10px] font-mono text-tx-primary placeholder-tx-muted focus:outline-none focus:border-violet-400/50"
+            />
+            <input
+              type="text"
+              value={checkSeat}
+              onChange={e => setCheckSeat(e.target.value.trim())}
+              placeholder="operator_seat_id"
+              className="w-full bg-os-surface border border-os-border rounded px-2 py-1 text-[10px] font-mono text-tx-primary placeholder-tx-muted focus:outline-none focus:border-violet-400/50"
+            />
             {checkPlanId && checkSeat ? (
-              <div className="pt-1">
-                <p className="text-[9px] font-mono text-tx-muted mb-2 uppercase tracking-wider">
-                  Prepare Status
-                </p>
-                <PlanStatusIndicator
-                  planId={checkPlanId}
-                  operatorSeat={checkSeat}
-                />
-              </div>
+              <PlanStatusIndicator planId={checkPlanId} operatorSeat={checkSeat} />
             ) : (
-              <p className="text-[9px] font-mono text-tx-muted">
-                Enter plan_id and operator_seat to load status.
-              </p>
+              <p className="text-[9px] font-mono text-tx-muted">Enter both fields to load status.</p>
             )}
           </div>
         )}

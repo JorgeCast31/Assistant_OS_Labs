@@ -22,6 +22,16 @@ vi.mock('@/lib/api', () => ({
   getOrchestrationSnapshot:            vi.fn(),
   getAuthorityTraceSnapshot:           vi.fn(),
   getMissionControlLifecycleSnapshot:  vi.fn(),
+  // Draft Store plan helpers (Sprint #228/#233)
+  listPlans:           vi.fn().mockResolvedValue({ ok: false, source: 'draft_store', execution_allowed: false, used_execution: false, runner_reachable_from_ui: false, count: 0, plans: [], error: 'unavailable' }),
+  createPlan:          vi.fn(),
+  updatePlan:          vi.fn(),
+  transitionPlan:      vi.fn(),
+  abandonPlan:         vi.fn(),
+  // Prepare contract helpers (Sprint #230/#231/#232)
+  getPlanPrepareStatus: vi.fn().mockResolvedValue({ ok: false, source: 'prepare_status', plan_id: '', operator_seat: '', correlation_id: null, status: 'unknown', plan_state: null, ack_status: null, prepare_request_id: null, prepare_request_status: null, prepared_action_id: null, confirm_queue_status: null, authority_stage: 'unknown', missing_requirements: [], error: 'unavailable', execution_allowed: false, used_execution: false, runner_reachable_from_ui: false }),
+  ackPlan:             vi.fn(),
+  preparePlan:         vi.fn(),
 }))
 
 // ── Unavailable fixture constants ─────────────────────────────────────────────
@@ -154,38 +164,41 @@ describe('MissionControlView — Mission Control Cockpit', () => {
 
   it('opens the Planner space by default', () => {
     render(<MissionControlView />)
-    expect(screen.getByText(/Planner Space — ALPHA/i)).toBeInTheDocument()
+    // Sprint #233: PlannerSpace now shows Draft Store Plans Panel as primary surface
+    expect(screen.getByText(/Draft Store — Sovereign Plan Persistence/i)).toBeInTheDocument()
   })
 })
 
 describe('PlannerSpace — Space 1', () => {
-  it('renders mission objective input', () => {
+  it('renders operator seat input for Draft Store Panel', () => {
     render(<MissionControlView />)
-    expect(screen.getByPlaceholderText(/Describe the mission objective/i)).toBeInTheDocument()
+    expect(screen.getByPlaceholderText(/operator_seat/i)).toBeInTheDocument()
   })
 
-  it('renders plan body textarea', () => {
+  it('renders Refresh Plans button', () => {
     render(<MissionControlView />)
-    expect(screen.getByPlaceholderText(/Describe the plan steps/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /refresh plans/i })).toBeInTheDocument()
   })
 
-  it('renders the Escalate to MSO button', () => {
+  it('renders Create Plan toggle button', () => {
     render(<MissionControlView />)
-    expect(screen.getByRole('button', { name: /Escalate to MSO/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /\+ create plan/i })).toBeInTheDocument()
   })
 
-  it('escalate button is disabled when title/body are empty', () => {
+  it('shows MSO Chat Composer Helper (collapsed)', () => {
     render(<MissionControlView />)
-    expect(screen.getByRole('button', { name: /Escalate to MSO/i })).toBeDisabled()
+    expect(screen.getByText(/MSO Chat Composer Helper/i)).toBeInTheDocument()
   })
 
-  it('shows plan status — lifecycle badge is visible', () => {
+  it('shows Manual Plan Status Lookup (collapsed)', () => {
     render(<MissionControlView />)
-    expect(screen.getByText(/Plan status:/i)).toBeInTheDocument()
+    expect(screen.getByText(/Manual Plan Status Lookup/i)).toBeInTheDocument()
   })
 
-  it('plan starts in draft state (LifecycleBadge)', () => {
+  it('plan starts in draft state (LifecycleBadge) inside chat helper', () => {
     render(<MissionControlView />)
+    // Expand the chat helper section
+    fireEvent.click(screen.getByText(/MSO Chat Composer Helper/i))
     const allDraft = screen.getAllByText(/\bdraft\b/i)
     expect(allDraft.length).toBeGreaterThan(0)
   })
