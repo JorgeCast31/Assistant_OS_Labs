@@ -239,3 +239,101 @@ def build_authority_trace_descriptor() -> dict[str, Any]:
         "police_decision_ref_embedded": False,
         "runner_fail_closed_visible": True,
     }
+
+
+# ---------------------------------------------------------------------------
+# Plan-correlated trace (Sprint #231)
+# ---------------------------------------------------------------------------
+
+def build_authority_trace_for_plan(plan_id: str, operator_seat: str) -> dict[str, Any]:
+    """Build a plan-correlated authority trace snapshot.
+
+    Aggregates Plan + ACK + PrepareRequest + PreparedAction queue
+    into an honest, read-only trace of where the plan is in the
+    authority lifecycle.
+
+    This is a SNAPSHOT — not a live trace, not an execution monitor.
+    All execution fields are False. Runner is always closed from UI.
+    Never calls Runner, Police, MachineOperator, or any execution primitive.
+
+    Returns
+    -------
+    dict
+        Plan-correlated trace. Never raises.
+    """
+    # Lazy imports to avoid circular dependencies at module load time
+    from .plan_prepare_status import get_plan_prepare_status
+
+    status = get_plan_prepare_status(plan_id, operator_seat)
+
+    # Plan stage
+    plan_stage: dict[str, Any] = {
+        "exists": status.plan_state is not None,
+        "state": status.plan_state,
+    }
+
+    # ACK stage
+    ack_stage: dict[str, Any] = {
+        "exists": status.ack_status is not None,
+        "ack_status": status.ack_status,
+    }
+
+    # Prepare stage
+    prepare_stage: dict[str, Any] = {
+        "exists": status.prepare_request_id is not None,
+        "status": status.prepare_request_status,
+        "prepare_request_id": status.prepare_request_id,
+    }
+
+    # PreparedAction stage
+    prepared_action_stage: dict[str, Any] = {
+        "exists": status.prepared_action_id is not None,
+        "prepared_action_id": status.prepared_action_id,
+        "queue_status": status.confirm_queue_status,
+    }
+
+    # Runner stage — always closed from UI, always not executed
+    runner_stage: dict[str, Any] = {
+        "closed_from_ui": True,
+        "executed": False,
+        "note": "Runner is unreachable from Mission Control. Execution requires full authority chain.",
+    }
+
+    # Derive next_step
+    stage_next: dict[str, str] = {
+        "no_plan": "Plan does not exist. Create a plan first.",
+        "draft": "Transition plan to 'planning', then to 'mso_review'.",
+        "planning": "Transition plan to 'mso_review'.",
+        "mso_review_ack_pending": "POST /mso/plans/{plan_id}/ack with ack_status=acknowledged.",
+        "mso_review_ack_rejected": "ACK is rejected. Create a new Plan.",
+        "acked_prepare_not_requested": "POST /mso/plans/{plan_id}/prepare with confirmation_acknowledged=true.",
+        "prepared_awaiting_confirmation": "POST /mso/prepared-actions/confirm to advance to authority chain.",
+        "prepare_rejected": "Prepare was rejected. Create a new Plan.",
+        "requires_review": "Governance requires additional operator decision.",
+        "unknown": "Cannot determine next step. Check plan state and system mode.",
+        "operator_seat_mismatch": "Wrong operator seat. Use the correct operator_seat.",
+    }
+    next_step = stage_next.get(status.status, "Check plan state and authority trace.")
+
+    return {
+        "trace_type": "snapshot",
+        "trace_version": TRACE_VERSION,
+        "plan_id": plan_id,
+        "operator_seat": operator_seat,
+        "correlation_id": plan_id,
+        "chain": list(AUTHORITY_CHAIN),
+        "prepare_status": status.status,
+        "authority_stage": status.authority_stage,
+        "plan_stage": plan_stage,
+        "ack_stage": ack_stage,
+        "prepare_stage": prepare_stage,
+        "prepared_action_stage": prepared_action_stage,
+        "runner_stage": runner_stage,
+        "missing_requirements": list(status.missing_requirements),
+        "next_step": next_step,
+        # Safety invariants — always False/True
+        "execution_allowed": False,
+        "used_execution": False,
+        "can_execute_now": False,
+        "runner_closed_from_ui": True,
+    }
