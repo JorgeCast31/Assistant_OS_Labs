@@ -23,6 +23,7 @@ import { MissionControlChainView } from './MissionControlChainView'
 import { OutcomeStatusPanel } from './OutcomeStatusPanel'
 import { PlanStatusIndicator } from './PlanStatusIndicator'
 import { DraftStorePlansPanel } from './DraftStorePlansPanel'
+import { PreparedActionsReviewPanel } from './PreparedActionsReviewPanel'
 import type {
   MissionLifecycleState,
   MissionControlPlan,
@@ -277,6 +278,21 @@ function PlannerSpace() {
         </p>
         <div className="px-3 pb-3">
           <DraftStorePlansPanel />
+        </div>
+      </div>
+
+      {/* ── Prepared Actions Review Queue ──────────────────────────────────── */}
+      <div className="rounded-lg border border-amber-400/20 bg-amber-400/5 p-1">
+        <p className="text-[9px] font-mono text-amber-400 px-3 pt-2 pb-1 uppercase tracking-wider">
+          Prepared Actions Review Queue
+        </p>
+        <p className="text-[9px] font-mono text-tx-muted px-3 pb-2">
+          PreparedActions waiting for human confirmation. Confirming records a human review signal.
+          Confirm does NOT execute. PreparedAction is NOT execution. No authority is granted here.
+          The full authority chain remains required before anything can run.
+        </p>
+        <div className="px-3 pb-3">
+          <PreparedActionsReviewPanel />
         </div>
       </div>
 

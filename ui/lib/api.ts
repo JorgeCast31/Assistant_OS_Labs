@@ -729,7 +729,11 @@ export async function getGovernanceStatus(): Promise<GovernanceStatusResponse> {
 
 import type { CodeReadinessResponse } from './types'
 import type { ConfirmPendingResponse } from './types'
-import type { PreparedActionsQueueResponse } from './types'
+import type {
+  PreparedActionsQueueResponse,
+  ConfirmPreparedActionPayload,
+  ConfirmPreparedActionResult,
+} from './types'
 import type { MSOSeatProviderResponse } from './types'
 import type {
   MissionControlStatusResponse,
@@ -943,6 +947,36 @@ export async function getPreparedActionsPending(): Promise<PreparedActionsQueueR
     return json.ok ? json : { ...PREPARED_ACTIONS_UNAVAILABLE, error: json.error ?? 'unavailable' }
   } catch {
     return PREPARED_ACTIONS_UNAVAILABLE
+  }
+}
+
+/**
+ * POST /api/mso/prepared-actions/confirm — record a human confirmation signal.
+ * Records a HumanConfirmationRecord for the given prepared action entry.
+ * Does NOT execute, approve, issue tokens, create AuthorizedPlan, or call Police.
+ * execution_allowed and can_execute_now remain False always. Never throws.
+ */
+export async function confirmPreparedAction(
+  payload: ConfirmPreparedActionPayload,
+): Promise<ConfirmPreparedActionResult> {
+  const UNAVAILABLE: ConfirmPreparedActionResult = {
+    ok: false,
+    execution_allowed: false,
+    can_execute_now: false,
+    error: 'Confirm backend unavailable',
+  }
+  try {
+    const res = await fetch('/api/mso/prepared-actions/confirm', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    const json = await res.json() as ConfirmPreparedActionResult
+    return json
+  } catch {
+    return UNAVAILABLE
   }
 }
 
