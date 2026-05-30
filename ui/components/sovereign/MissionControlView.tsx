@@ -21,6 +21,7 @@ import {
 } from '@/lib/api'
 import { MissionControlChainView } from './MissionControlChainView'
 import { OutcomeStatusPanel } from './OutcomeStatusPanel'
+import { PlanStatusIndicator } from './PlanStatusIndicator'
 import type {
   MissionLifecycleState,
   MissionControlPlan,
@@ -245,6 +246,10 @@ function PlannerSpace() {
     body: '',
     state: 'draft',
   })
+  // Plan Status Checker — for Draft Store plans with a known plan_id
+  const [checkPlanId, setCheckPlanId] = useState('')
+  const [checkSeat, setCheckSeat] = useState('')
+  const [showChecker, setShowChecker] = useState(false)
   const { setActiveView, setPendingRedirectText } = useSovereignStore()
 
   const canEscalate = plan.title.trim().length > 0 && plan.body.trim().length > 0
@@ -341,6 +346,68 @@ function PlannerSpace() {
           </button>
         </div>
       )}
+
+      {/* ── Draft Store Plan Status Checker ────────────────────────────────── */}
+      {/* Allows checking prepare lifecycle status for any Draft Store plan_id. */}
+      {/* Does NOT execute. Does NOT emit tokens. Does NOT create AuthorityArtifact. */}
+      <div className="rounded-lg border border-os-border bg-os-surface p-3 space-y-3">
+        <button
+          onClick={() => setShowChecker(v => !v)}
+          className="text-[10px] font-mono text-tx-muted hover:text-tx-secondary flex items-center gap-1 transition-colors"
+        >
+          <span>{showChecker ? '▾' : '▸'}</span>
+          Check Draft Store Plan Status
+        </button>
+        {showChecker && (
+          <div className="space-y-3 pl-3 border-l border-os-border">
+            <p className="text-[9px] font-mono text-tx-muted">
+              Enter a Draft Store plan_id and operator_seat to check the prepare lifecycle status.
+              This is read-only observability — no execution is triggered.
+            </p>
+            <div className="space-y-2">
+              <div>
+                <label className="block text-[9px] font-mono text-tx-muted uppercase tracking-wider mb-0.5">
+                  Plan ID
+                </label>
+                <input
+                  type="text"
+                  value={checkPlanId}
+                  onChange={(e) => setCheckPlanId(e.target.value.trim())}
+                  placeholder="plan_<timestamp>_<uid>"
+                  className="w-full bg-os-surface border border-os-border rounded px-2 py-1 text-[10px] font-mono text-tx-primary placeholder-tx-muted focus:outline-none focus:border-violet-400/50"
+                />
+              </div>
+              <div>
+                <label className="block text-[9px] font-mono text-tx-muted uppercase tracking-wider mb-0.5">
+                  Operator Seat
+                </label>
+                <input
+                  type="text"
+                  value={checkSeat}
+                  onChange={(e) => setCheckSeat(e.target.value.trim())}
+                  placeholder="operator_seat_id"
+                  className="w-full bg-os-surface border border-os-border rounded px-2 py-1 text-[10px] font-mono text-tx-primary placeholder-tx-muted focus:outline-none focus:border-violet-400/50"
+                />
+              </div>
+            </div>
+            {checkPlanId && checkSeat ? (
+              <div className="pt-1">
+                <p className="text-[9px] font-mono text-tx-muted mb-2 uppercase tracking-wider">
+                  Prepare Status
+                </p>
+                <PlanStatusIndicator
+                  planId={checkPlanId}
+                  operatorSeat={checkSeat}
+                />
+              </div>
+            ) : (
+              <p className="text-[9px] font-mono text-tx-muted">
+                Enter plan_id and operator_seat to load status.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
