@@ -1185,6 +1185,7 @@ import type {
   PlanAbandonPayload,
   PlanDraftResponse,
   PlanListResponse,
+  PlanPrepareStatusResponse,
   PlanAuditResponse,
   PlanAbandonResponse,
   PlanAckPayload,
@@ -1423,5 +1424,51 @@ export async function preparePlan(
     return json
   } catch {
     return PREPARE_UNAVAILABLE(planId)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Plan Prepare Status — Sprint #231 (S-PREPARE-STATUS-01)
+// ---------------------------------------------------------------------------
+
+const PREPARE_STATUS_UNAVAILABLE = (planId: string): PlanPrepareStatusResponse => ({
+  ok: false,
+  source: 'prepare_status',
+  plan_id: planId,
+  operator_seat: '',
+  correlation_id: null,
+  status: 'unknown',
+  plan_state: null,
+  ack_status: null,
+  prepare_request_id: null,
+  prepare_request_status: null,
+  prepared_action_id: null,
+  confirm_queue_status: null,
+  authority_stage: 'unknown',
+  missing_requirements: [],
+  error: 'Prepare status backend unavailable',
+  execution_allowed: false,
+  used_execution: false,
+  runner_reachable_from_ui: false,
+})
+
+/**
+ * GET /api/mso/plans/[plan_id]/prepare-status?operator_seat=...
+ * Read-only correlated lifecycle status: Plan → ACK → PrepareRequest → PreparedAction.
+ * Never throws. Returns PlanPrepareStatusResponse.
+ */
+export async function getPlanPrepareStatus(
+  planId: string,
+  operatorSeat: string,
+): Promise<PlanPrepareStatusResponse> {
+  try {
+    const res = await fetch(
+      `/api/mso/plans/${encodeURIComponent(planId)}/prepare-status?operator_seat=${encodeURIComponent(operatorSeat)}`,
+      { cache: 'no-store', signal: AbortSignal.timeout(4000) },
+    )
+    const json = await res.json() as PlanPrepareStatusResponse
+    return json
+  } catch {
+    return PREPARE_STATUS_UNAVAILABLE(planId)
   }
 }

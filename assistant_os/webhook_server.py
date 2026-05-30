@@ -2014,6 +2014,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_mso_plan_audit_get(m_audit.group(1))
             return
 
+        # S-PREPARE-STATUS-01: Plan prepare status read-model (read-only, no execution)
+        m_prepare_status = re.match(r"^/mso/plans/([^/]+)/prepare-status$", path)
+        if m_prepare_status:
+            self._handle_mso_plan_prepare_status_get(m_prepare_status.group(1))
+            return
+
         # 405 for everything else
         status, error = _make_json_error(405, "Method not allowed. Use POST.", "MethodNotAllowed")
         self._send_json_response(status, error)
@@ -7080,6 +7086,47 @@ def start_server_thread(host: str = WEBHOOK_HOST, port: int = 0) -> tuple[Webhoo
 
         except Exception as exc:  # noqa: BLE001
             status, error = _make_json_error(500, f"Prepare contract error: {exc}", "InternalError")
+            self._send_json_response(status, error)
+
+    def _handle_mso_plan_prepare_status_get(self, plan_id: str) -> None:
+        """GET /mso/plans/{plan_id}/prepare-status?operator_seat=...
+
+        Read-only correlated status: Plan → ACK → PrepareRequest → PreparedAction.
+        Does NOT execute. Does NOT emit tokens. Does NOT create AuthorityArtifact.
+        Always returns execution_allowed=False, used_execution=False,
+        runner_reachable_from_ui=False.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from urllib.parse import urlparse, parse_qs
+            from .mso.plan_prepare_status import get_plan_prepare_status
+
+            parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            seat_list = params.get("operator_seat", [])
+            if not seat_list or not seat_list[0].strip():
+                status, error = _make_json_error(
+                    400, "operator_seat query parameter is required.", "MissingOperatorSeat"
+                )
+                self._send_json_response(status, error)
+                return
+            operator_seat = seat_list[0].strip()
+
+            result = get_plan_prepare_status(plan_id, operator_seat)
+            http_status = (
+                404 if result.status == "no_plan"
+                else 403 if result.status == "operator_seat_mismatch"
+                else 200
+            )
+            self._send_json_response(http_status, result.to_dict())
+
+        except Exception as exc:  # noqa: BLE001
+            status, error = _make_json_error(500, f"Prepare status error: {exc}", "InternalError")
             self._send_json_response(status, error)
 
 

@@ -1251,3 +1251,49 @@ export interface PrepareContractResponse {
   runner_reachable_from_ui: false
   error?: string
 }
+
+// ---------------------------------------------------------------------------
+// Plan Prepare Status — Sprint #231 (S-PREPARE-STATUS-01)
+// Read-only correlated lifecycle status. No execution.
+// ---------------------------------------------------------------------------
+
+/**
+ * Permitted status values for PlanPrepareStatusResponse.
+ * Never includes execution-implying states.
+ */
+export type PlanPrepareStatusValue =
+  | 'no_plan'
+  | 'draft'
+  | 'planning'
+  | 'mso_review_ack_pending'
+  | 'mso_review_ack_rejected'
+  | 'acked_prepare_not_requested'
+  | 'prepared_awaiting_confirmation'
+  | 'prepare_rejected'
+  | 'requires_review'
+  | 'operator_seat_mismatch'
+  | 'unknown'
+
+/** Response from GET /api/mso/plans/[plan_id]/prepare-status */
+export interface PlanPrepareStatusResponse {
+  ok: boolean
+  source: 'prepare_status'
+  plan_id: string
+  operator_seat: string
+  correlation_id: string | null
+  status: PlanPrepareStatusValue | string
+  plan_state: 'draft' | 'planning' | 'mso_review' | null
+  ack_status: 'acknowledged' | 'rejected_for_review' | null
+  prepare_request_id: string | null
+  prepare_request_status: string | null
+  prepared_action_id: string | null
+  confirm_queue_status: string | null
+  /** Non-execution lifecycle stage label. */
+  authority_stage: string
+  missing_requirements: string[]
+  error?: string | null
+  /** Always false — status is read-only observability, not execution. */
+  execution_allowed: false
+  used_execution: false
+  runner_reachable_from_ui: false
+}
