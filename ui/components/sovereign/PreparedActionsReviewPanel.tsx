@@ -268,7 +268,8 @@ export function PreparedActionsReviewPanel({
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
   const [evaluatingPolicyId, setEvaluatingPolicyId] = useState<string | null>(null)
   const [creatingBindingId, setCreatingBindingId] = useState<string | null>(null)
-  const [confirmError, setConfirmError] = useState<string | null>(null)
+  // actionError covers all three action paths: confirm, policy review, authority binding
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -294,7 +295,7 @@ export function PreparedActionsReviewPanel({
       if (!window.confirm(msg)) return
 
       setConfirmingId(entry.queue_entry_id)
-      setConfirmError(null)
+      setActionError(null)
       const result = await confirmPreparedAction({
         entry_id: entry.queue_entry_id,
         action_id: entry.prepared_action_id,
@@ -302,7 +303,7 @@ export function PreparedActionsReviewPanel({
       })
       setConfirmingId(null)
       if (!result.ok) {
-        setConfirmError(result.error ?? 'Confirm failed')
+        setActionError(result.error ?? 'Confirm failed')
       }
       await load()
     },
@@ -322,14 +323,14 @@ export function PreparedActionsReviewPanel({
       if (!window.confirm(msg)) return
 
       setEvaluatingPolicyId(entry.queue_entry_id)
-      setConfirmError(null)
+      setActionError(null)
       const result = await triggerPolicyReview({
         entry_id: entry.queue_entry_id,
         action_id: entry.prepared_action_id,
       })
       setEvaluatingPolicyId(null)
       if (!result.ok) {
-        setConfirmError(result.error ?? 'Policy evaluation failed')
+        setActionError(result.error ?? 'Policy evaluation failed')
       }
       await load()
     },
@@ -349,14 +350,14 @@ export function PreparedActionsReviewPanel({
       if (!window.confirm(msg)) return
 
       setCreatingBindingId(entry.queue_entry_id)
-      setConfirmError(null)
+      setActionError(null)
       const result = await triggerAuthorityBinding({
         entry_id: entry.queue_entry_id,
         action_id: entry.prepared_action_id,
       })
       setCreatingBindingId(null)
       if (!result.ok) {
-        setConfirmError(result.error ?? 'Authority binding failed')
+        setActionError(result.error ?? 'Authority binding failed')
       }
       await load()
     },
@@ -396,9 +397,9 @@ export function PreparedActionsReviewPanel({
       )}
 
       {/* Error state */}
-      {(hasError || confirmError) && (
+      {(hasError || actionError) && (
         <div className="text-[9px] font-mono text-red-400 px-2 py-1 rounded bg-red-400/5 border border-red-400/20">
-          {confirmError ?? data?.error ?? 'Prepared actions backend unavailable'}
+          {actionError ?? data?.error ?? 'Prepared actions backend unavailable'}
         </div>
       )}
 

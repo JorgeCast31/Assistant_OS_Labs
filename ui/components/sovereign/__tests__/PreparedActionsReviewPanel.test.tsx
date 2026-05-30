@@ -594,6 +594,53 @@ describe('PreparedActionsReviewPanel — error state', () => {
       expect(screen.getByText(/unavailable|error/i)).toBeInTheDocument()
     )
   })
+
+  it('shows error when policy review returns failure', async () => {
+    vi.mocked(triggerPolicyReview).mockResolvedValue({
+      ok: false,
+      execution_allowed: false,
+      can_execute_now: false,
+      error: 'Policy evaluation service unavailable',
+    })
+    const entry = makeEntry({ human_confirmation_status: 'human_confirmed', operation_trace_v0: TRACE_CONFIRMED })
+    vi.mocked(getPreparedActionsPending).mockResolvedValue(makeQueueResponse([entry]))
+    render(<PreparedActionsReviewPanel />)
+    await waitFor(() => screen.getByRole('button', { name: /evaluate policy/i }))
+    fireEvent.click(screen.getByRole('button', { name: /evaluate policy/i }))
+    await waitFor(() =>
+      expect(screen.getByText(/Policy evaluation service unavailable/)).toBeInTheDocument()
+    )
+  })
+
+  it('shows error when authority binding returns failure', async () => {
+    vi.mocked(triggerAuthorityBinding).mockResolvedValue({
+      ok: false,
+      execution_allowed: false,
+      can_execute_now: false,
+      error: 'Authority binding service unavailable',
+    })
+    const entry = makeEntry({
+      human_confirmation_status: 'human_confirmed',
+      policy_review_id: 'prd-test-001',
+      policy_outcome: 'approved',
+      operation_trace_v0: TRACE_POLICY_APPROVED,
+    })
+    vi.mocked(getPreparedActionsPending).mockResolvedValue(makeQueueResponse([entry]))
+    render(<PreparedActionsReviewPanel />)
+    await waitFor(() => screen.getByRole('button', { name: /create authority binding draft/i }))
+    fireEvent.click(screen.getByRole('button', { name: /create authority binding draft/i }))
+    await waitFor(() =>
+      expect(screen.getByText(/Authority binding service unavailable/)).toBeInTheDocument()
+    )
+  })
+
+  it('shows "Loading prepared actions…" on initial fetch', async () => {
+    let resolve: (v: typeof EMPTY_QUEUE) => void
+    vi.mocked(getPreparedActionsPending).mockReturnValue(new Promise(r => { resolve = r }))
+    render(<PreparedActionsReviewPanel />)
+    expect(screen.getByText(/Loading prepared actions/)).toBeInTheDocument()
+    resolve!(EMPTY_QUEUE)
+  })
 })
 
 // ── Forbidden controls ────────────────────────────────────────────────────────
