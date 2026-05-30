@@ -1187,6 +1187,10 @@ import type {
   PlanListResponse,
   PlanAuditResponse,
   PlanAbandonResponse,
+  PlanAckPayload,
+  PlanAckResponse,
+  PlanPreparePayload,
+  PrepareContractResponse,
 } from './types'
 
 const PLAN_LIST_UNAVAILABLE: PlanListResponse = {
@@ -1339,5 +1343,85 @@ export async function getPlanAuditLog(planId: string): Promise<PlanAuditResponse
     return await res.json() as PlanAuditResponse
   } catch {
     return { ok: false, source: 'draft_store', plan_id: planId, count: 0, entries: [], error: 'Audit log unavailable' }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Prepare Contract — Sprint #230 (S-PREPARE-01 / S-PREPARE-02)
+// Pre-authority. No execution. No tokens. No AuthorityArtifact.
+// ---------------------------------------------------------------------------
+
+const ACK_UNAVAILABLE = (planId: string): PlanAckResponse => ({
+  ok: false,
+  source: 'plan_mso_ack',
+  plan_id: planId,
+  ack: null as unknown as PlanAckResponse['ack'],
+  error: 'ACK backend unavailable',
+})
+
+const PREPARE_UNAVAILABLE = (planId: string): PrepareContractResponse => ({
+  ok: false,
+  source: 'prepare_contract',
+  plan_id: planId,
+  prepare_request_id: null,
+  prepared_action_id: null,
+  correlation_id: null,
+  prepare_status: 'rejected',
+  fail_closed_reason: 'Prepare backend unavailable',
+  execution_allowed: false,
+  used_execution: false,
+  runner_reachable_from_ui: false,
+  error: 'Prepare backend unavailable',
+})
+
+/**
+ * POST /api/mso/plans/[plan_id]/ack
+ * Operator-simulated MSO read receipt (D-23 — ALPHA 1).
+ * ACK is a read receipt — NOT authorization, NOT execution, NOT tokens.
+ * Throws on unexpected network error.
+ */
+export async function ackPlan(planId: string, payload: PlanAckPayload): Promise<PlanAckResponse> {
+  try {
+    const res = await fetch(`/api/mso/plans/${encodeURIComponent(planId)}/ack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    const json = await res.json() as PlanAckResponse
+    if (!res.ok || !json.ok) {
+      throw new Error(json.error ?? `ACK plan failed (${res.status})`)
+    }
+    return json
+  } catch (err) {
+    if (err instanceof Error && err.message.includes('ACK plan failed')) throw err
+    return ACK_UNAVAILABLE(planId)
+  }
+}
+
+/**
+ * POST /api/mso/plans/[plan_id]/prepare
+ * Prepare contract — Plan → PrepareRequest → PreparedAction (review-only).
+ * Requires: Plan in mso_review, valid ACK, confirmation_acknowledged=true.
+ * Never executes. Never emits tokens. Never creates AuthorityArtifact from UI.
+ * Returns PrepareContractResponse — check ok and prepare_status, not HTTP status alone.
+ */
+export async function preparePlan(
+  planId: string,
+  payload: PlanPreparePayload,
+): Promise<PrepareContractResponse> {
+  try {
+    const res = await fetch(`/api/mso/plans/${encodeURIComponent(planId)}/prepare`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(8000),
+    })
+    const json = await res.json() as PrepareContractResponse
+    return json
+  } catch {
+    return PREPARE_UNAVAILABLE(planId)
   }
 }

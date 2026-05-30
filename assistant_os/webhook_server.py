@@ -1780,6 +1780,18 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_mso_plan_abandon_post(m_abandon.group(1))
             return
 
+        # S-PREPARE-01: MSO ACK — operator-simulated sovereign read receipt (D-23)
+        m_ack = re.match(r"^/mso/plans/([^/]+)/ack$", path)
+        if m_ack:
+            self._handle_mso_plan_ack_post(m_ack.group(1))
+            return
+
+        # S-PREPARE-02: Prepare contract — Plan → PrepareRequest → PreparedAction (no execution)
+        m_prepare = re.match(r"^/mso/plans/([^/]+)/prepare$", path)
+        if m_prepare:
+            self._handle_mso_plan_prepare_post(m_prepare.group(1))
+            return
+
         m_update = re.match(r"^/mso/plans/([^/]+)$", path)
         if m_update:
             self._handle_mso_plan_update_put(m_update.group(1))
@@ -6945,6 +6957,129 @@ def start_server_thread(host: str = WEBHOOK_HOST, port: int = 0) -> tuple[Webhoo
             })
         except Exception as exc:  # noqa: BLE001
             status, error = _make_json_error(500, f"Audit log error: {exc}", "InternalError")
+            self._send_json_response(status, error)
+
+    def _handle_mso_plan_ack_post(self, plan_id: str) -> None:
+        """POST /mso/plans/{plan_id}/ack — operator-simulated MSO read receipt (D-23).
+
+        Records that MSO has read the Plan. Does not authorize. Does not prepare.
+        Does not execute. Does not emit tokens.
+
+        Body: { operator_seat, acknowledged_by, ack_status, note? }
+        ack_status: "acknowledged" | "rejected_for_review"
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        ok, body = self._read_body_json()
+        if not ok:
+            status, error = _make_json_error(400, "Invalid JSON body", "BadRequest")
+            self._send_json_response(status, error)
+            return
+
+        operator_seat = body.get("operator_seat", "").strip()
+        if not operator_seat:
+            status, error = _make_json_error(400, "operator_seat is required.", "ValidationError")
+            self._send_json_response(status, error)
+            return
+
+        acknowledged_by = body.get("acknowledged_by", "").strip()
+        if not acknowledged_by:
+            status, error = _make_json_error(400, "acknowledged_by is required.", "ValidationError")
+            self._send_json_response(status, error)
+            return
+
+        ack_status = body.get("ack_status", "").strip()
+        if ack_status not in ("acknowledged", "rejected_for_review"):
+            status, error = _make_json_error(
+                400,
+                "ack_status must be 'acknowledged' or 'rejected_for_review'.",
+                "ValidationError",
+            )
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from .mso.plan_ack import PlanMSOAck, create_ack, DuplicatePlanAck, InvalidAckStatus
+
+            ack = PlanMSOAck(
+                plan_id=plan_id,
+                operator_seat=operator_seat,
+                ack_status=ack_status,
+                acknowledged_by=acknowledged_by,
+                note=body.get("note"),
+            )
+            create_ack(ack)
+            self._send_json_response(200, {
+                "ok": True,
+                "source": "plan_mso_ack",
+                "plan_id": plan_id,
+                "ack": ack.to_dict(),
+                "note": (
+                    "ACK recorded. This is a read receipt — not an authorization. "
+                    "ACK does not authorize prepare, execution, or token issuance."
+                ),
+            })
+        except DuplicatePlanAck as exc:
+            status, error = _make_json_error(409, str(exc), "Conflict")
+            self._send_json_response(status, error)
+        except (InvalidAckStatus, ValueError) as exc:
+            status, error = _make_json_error(400, str(exc), "ValidationError")
+            self._send_json_response(status, error)
+        except Exception as exc:  # noqa: BLE001
+            status, error = _make_json_error(500, f"ACK store error: {exc}", "InternalError")
+            self._send_json_response(status, error)
+
+    def _handle_mso_plan_prepare_post(self, plan_id: str) -> None:
+        """POST /mso/plans/{plan_id}/prepare — prepare contract (no execution).
+
+        Requires: Plan in mso_review, valid ACK, confirmation_acknowledged=true.
+        Produces: PrepareRequest (audit) + PreparedAction in confirm queue.
+        Does NOT execute. Does NOT emit tokens. Does NOT create AuthorityArtifact from UI.
+
+        Body: { operator_seat, requested_by, confirmation_acknowledged: true, notes? }
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        ok, body = self._read_body_json()
+        if not ok:
+            status, error = _make_json_error(400, "Invalid JSON body", "BadRequest")
+            self._send_json_response(status, error)
+            return
+
+        operator_seat = body.get("operator_seat", "").strip()
+        if not operator_seat:
+            status, error = _make_json_error(400, "operator_seat is required.", "ValidationError")
+            self._send_json_response(status, error)
+            return
+
+        requested_by = body.get("requested_by", "").strip() or operator_seat
+        confirmation_acknowledged = body.get("confirmation_acknowledged", False)
+        notes = body.get("notes")
+
+        try:
+            from .mso.prepare_contract import prepare_plan
+
+            result = prepare_plan(
+                plan_id=plan_id,
+                operator_seat=operator_seat,
+                requested_by=requested_by,
+                confirmation_acknowledged=bool(confirmation_acknowledged),
+                notes=notes,
+            )
+
+            http_status = 200 if result.ok else 422
+            self._send_json_response(http_status, result.to_dict())
+
+        except Exception as exc:  # noqa: BLE001
+            status, error = _make_json_error(500, f"Prepare contract error: {exc}", "InternalError")
             self._send_json_response(status, error)
 
 

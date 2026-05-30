@@ -1180,3 +1180,74 @@ export interface PlanAbandonResponse {
   note?: string
   error?: string
 }
+
+// ---------------------------------------------------------------------------
+// Prepare Contract — Sprint #230 (S-PREPARE-01 / S-PREPARE-02)
+// Pre-authority. No execution. No tokens. No AuthorityArtifact.
+// ---------------------------------------------------------------------------
+
+/** ack_status permitted values. */
+export type PlanAckStatus = 'acknowledged' | 'rejected_for_review'
+
+/** PlanMSOAck — MSO read receipt. Not an authorization. */
+export interface PlanMSOAck {
+  ack_id: string
+  plan_id: string
+  operator_seat: string
+  ack_status: PlanAckStatus
+  acknowledged_by: string
+  acknowledged_at: string
+  note: string | null
+  source: 'plan_mso_ack'
+  /** Always false — ACK is a read receipt, not an execution authorization. */
+  execution_allowed: false
+  used_execution: false
+  runner_reachable_from_ui: false
+}
+
+/** Payload for POST /api/mso/plans/[plan_id]/ack */
+export interface PlanAckPayload {
+  operator_seat: string
+  acknowledged_by: string
+  ack_status: PlanAckStatus
+  note?: string
+}
+
+/** Response from POST /api/mso/plans/[plan_id]/ack */
+export interface PlanAckResponse {
+  ok: boolean
+  source: 'plan_mso_ack'
+  plan_id: string
+  ack: PlanMSOAck
+  note?: string
+  error?: string
+}
+
+/** prepare_status permitted values (PrepareRequest / PrepareContractResponse). */
+export type PrepareStatus = 'prepared' | 'rejected' | 'requires_review'
+
+/** Payload for POST /api/mso/plans/[plan_id]/prepare */
+export interface PlanPreparePayload {
+  operator_seat: string
+  requested_by?: string
+  /** Must be true — explicit operator confirmation required before prepare. */
+  confirmation_acknowledged: true
+  notes?: string
+}
+
+/** Response from POST /api/mso/plans/[plan_id]/prepare */
+export interface PrepareContractResponse {
+  ok: boolean
+  source: 'prepare_contract'
+  plan_id: string
+  prepare_request_id: string | null
+  prepared_action_id: string | null
+  correlation_id: string | null
+  prepare_status: PrepareStatus | string
+  fail_closed_reason: string | null
+  /** Always false — prepare does not authorize execution. */
+  execution_allowed: false
+  used_execution: false
+  runner_reachable_from_ui: false
+  error?: string
+}
