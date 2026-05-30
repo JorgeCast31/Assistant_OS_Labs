@@ -733,6 +733,8 @@ import type {
   PreparedActionsQueueResponse,
   ConfirmPreparedActionPayload,
   ConfirmPreparedActionResult,
+  MSOPolicyReviewResult,
+  MSOAuthorityBindingResult,
 } from './types'
 import type { MSOSeatProviderResponse } from './types'
 import type {
@@ -974,6 +976,68 @@ export async function confirmPreparedAction(
       signal: AbortSignal.timeout(4000),
     })
     const json = await res.json() as ConfirmPreparedActionResult
+    return json
+  } catch {
+    return UNAVAILABLE
+  }
+}
+
+/**
+ * POST /api/mso/prepared-actions/policy-review — evaluate MSO capability policy.
+ * First authority chain artifact after HumanConfirmationRecord.
+ * Does NOT issue CapabilityToken, create AuthorizedPlan, call PoliceGate, or execute.
+ * execution_allowed and can_execute_now remain False always. Never throws.
+ */
+export async function triggerPolicyReview(payload: {
+  entry_id: string
+  action_id: string
+}): Promise<MSOPolicyReviewResult> {
+  const UNAVAILABLE: MSOPolicyReviewResult = {
+    ok: false,
+    execution_allowed: false,
+    can_execute_now: false,
+    error: 'Policy review backend unavailable',
+  }
+  try {
+    const res = await fetch('/api/mso/prepared-actions/policy-review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    const json = await res.json() as MSOPolicyReviewResult
+    return json
+  } catch {
+    return UNAVAILABLE
+  }
+}
+
+/**
+ * POST /api/mso/prepared-actions/authority-binding — create MSOAuthorityBindingDraft.
+ * Second authority chain artifact after MSOPolicyDecisionDraft.
+ * Does NOT call token_issuer, create OperationBinding/AuthorizedPlan, call PoliceGate, or execute.
+ * execution_allowed and can_execute_now remain False always. Never throws.
+ */
+export async function triggerAuthorityBinding(payload: {
+  entry_id: string
+  action_id: string
+}): Promise<MSOAuthorityBindingResult> {
+  const UNAVAILABLE: MSOAuthorityBindingResult = {
+    ok: false,
+    execution_allowed: false,
+    can_execute_now: false,
+    error: 'Authority binding backend unavailable',
+  }
+  try {
+    const res = await fetch('/api/mso/prepared-actions/authority-binding', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000),
+    })
+    const json = await res.json() as MSOAuthorityBindingResult
     return json
   } catch {
     return UNAVAILABLE

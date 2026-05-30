@@ -6,17 +6,29 @@
  * Design contract:
  *   - Lists PreparedActions pending human review via getPreparedActionsPending().
  *   - Allows human to record explicit confirmation via confirmPreparedAction().
- *   - Confirm records a HumanConfirmationRecord only. Does NOT execute.
+ *   - Allows human to trigger policy evaluation via triggerPolicyReview().
+ *   - Allows human to create authority binding draft via triggerAuthorityBinding().
+ *   - All actions record drafts only. Does NOT execute.
  *   - Does NOT grant execution authority. Does NOT issue tokens. Does NOT call Police.
  *   - execution_allowed and can_execute_now remain False at all times.
  *   - PreparedAction is review-only. Human confirmation is NOT execution.
+ *   - Policy Review is NOT final authorization. Authority Binding Draft is NOT a token.
  *
- * Sprint: #234 — PreparedAction Review Queue UI.
+ * Sprint: #235 — Authority Chain Inline Actions UI.
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { getPreparedActionsPending, confirmPreparedAction } from '@/lib/api'
-import type { PreparedActionQueueEntry, PreparedActionsQueueResponse } from '@/lib/types'
+import {
+  getPreparedActionsPending,
+  confirmPreparedAction,
+  triggerPolicyReview,
+  triggerAuthorityBinding,
+} from '@/lib/api'
+import type {
+  PreparedActionQueueEntry,
+  PreparedActionsQueueResponse,
+  OperationTraceV0,
+} from '@/lib/types'
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
@@ -49,15 +61,68 @@ function StatusChip({ status }: { status: string }) {
   )
 }
 
+// ── Operation trace ───────────────────────────────────────────────────────────
+
+function stepStatusColor(status: string): string {
+  if (status === 'complete') return 'text-green-400'
+  if (status === 'pending') return 'text-amber-400'
+  if (status === 'denied' || status === 'blocked') return 'text-red-400'
+  if (status === 'blocked_by_design') return 'text-red-400/60'
+  if (status === 'draft_complete') return 'text-sky-400'
+  return 'text-tx-muted'
+}
+
+function OperationTraceView({ trace }: { trace: OperationTraceV0 }) {
+  return (
+    <div className="pt-1 border-t border-amber-400/10 space-y-0.5">
+      <div className="text-[7px] font-mono text-tx-secondary uppercase tracking-wider mb-1">
+        operation_trace_v0
+      </div>
+      {trace.steps.map((step) => (
+        <div key={step.step} className="flex items-center gap-1.5 text-[8px] font-mono">
+          <span className={stepStatusColor(step.status)}>
+            [{step.status}]
+          </span>
+          <span className="text-tx-secondary">{step.label}</span>
+        </div>
+      ))}
+      {trace.next_safe_step && (
+        <div className="mt-1 text-[7px] font-mono text-tx-muted">
+          <span className="text-tx-secondary">next_safe_step:</span>{' '}
+          {trace.next_safe_step}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Entry card ────────────────────────────────────────────────────────────────
 
 interface EntryCardProps {
   entry: PreparedActionQueueEntry
   onConfirm: (entry: PreparedActionQueueEntry) => Promise<void>
   confirming: boolean
+  onEvaluatePolicy: (entry: PreparedActionQueueEntry) => Promise<void>
+  evaluatingPolicy: boolean
+  onCreateBinding: (entry: PreparedActionQueueEntry) => Promise<void>
+  creatingBinding: boolean
 }
 
-function EntryCard({ entry, onConfirm, confirming }: EntryCardProps) {
+function EntryCard({
+  entry,
+  onConfirm,
+  confirming,
+  onEvaluatePolicy,
+  evaluatingPolicy,
+  onCreateBinding,
+  creatingBinding,
+}: EntryCardProps) {
+  const showEvaluatePolicy =
+    entry.human_confirmation_status === 'human_confirmed' && !entry.policy_review_id
+  const showCreateBinding =
+    (entry.policy_outcome === 'approved' || entry.policy_outcome === 'approved_confirm_only') &&
+    !entry.authority_binding_id
+
   return (
     <div className="rounded border border-amber-400/20 bg-amber-400/5 p-3 space-y-2 text-[9px] font-mono">
 
@@ -71,17 +136,44 @@ function EntryCard({ entry, onConfirm, confirming }: EntryCardProps) {
           </span>
         </div>
 
-        {/* Confirm button — only for pending_review entries */}
-        {entry.status === 'pending_review' && entry.human_confirmation_status === 'pending' && (
-          <button
-            onClick={() => onConfirm(entry)}
-            disabled={confirming}
-            aria-label="Confirm PreparedAction"
-            className="shrink-0 px-2 py-1 rounded text-[9px] font-mono bg-sky-400/10 border border-sky-400/30 text-sky-400 hover:bg-sky-400/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            {confirming ? 'Recording…' : 'Confirm PreparedAction'}
-          </button>
-        )}
+        {/* Action buttons column */}
+        <div className="flex flex-col gap-1 shrink-0">
+          {/* Confirm button — only for pending_review entries */}
+          {entry.status === 'pending_review' && entry.human_confirmation_status === 'pending' && (
+            <button
+              onClick={() => onConfirm(entry)}
+              disabled={confirming}
+              aria-label="Confirm PreparedAction"
+              className="px-2 py-1 rounded text-[9px] font-mono bg-sky-400/10 border border-sky-400/30 text-sky-400 hover:bg-sky-400/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {confirming ? 'Recording…' : 'Confirm PreparedAction'}
+            </button>
+          )}
+
+          {/* Evaluate Policy — shown after human confirmation, no existing policy review */}
+          {showEvaluatePolicy && (
+            <button
+              onClick={() => onEvaluatePolicy(entry)}
+              disabled={evaluatingPolicy}
+              aria-label="Evaluate Policy"
+              className="px-2 py-1 rounded text-[9px] font-mono bg-violet-400/10 border border-violet-400/30 text-violet-400 hover:bg-violet-400/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {evaluatingPolicy ? 'Evaluating…' : 'Evaluate Policy'}
+            </button>
+          )}
+
+          {/* Create Authority Binding Draft — shown when policy approved, no binding yet */}
+          {showCreateBinding && (
+            <button
+              onClick={() => onCreateBinding(entry)}
+              disabled={creatingBinding}
+              aria-label="Create Authority Binding Draft"
+              className="px-2 py-1 rounded text-[9px] font-mono bg-indigo-400/10 border border-indigo-400/30 text-indigo-400 hover:bg-indigo-400/20 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {creatingBinding ? 'Creating Draft…' : 'Create Authority Binding Draft'}
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Entry metadata */}
@@ -134,6 +226,11 @@ function EntryCard({ entry, onConfirm, confirming }: EntryCardProps) {
         </span>
       </div>
 
+      {/* Operation trace */}
+      {entry.operation_trace_v0 && (
+        <OperationTraceView trace={entry.operation_trace_v0} />
+      )}
+
       {/* Police readiness summary if present */}
       {entry.police_readiness && (
         <div className="pt-1 border-t border-amber-400/10 text-tx-muted space-y-0.5">
@@ -169,7 +266,10 @@ export function PreparedActionsReviewPanel({
   const [data, setData] = useState<PreparedActionsQueueResponse | null>(null)
   const [loading, setLoading] = useState(false)
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
-  const [confirmError, setConfirmError] = useState<string | null>(null)
+  const [evaluatingPolicyId, setEvaluatingPolicyId] = useState<string | null>(null)
+  const [creatingBindingId, setCreatingBindingId] = useState<string | null>(null)
+  // actionError covers all three action paths: confirm, policy review, authority binding
+  const [actionError, setActionError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -195,7 +295,7 @@ export function PreparedActionsReviewPanel({
       if (!window.confirm(msg)) return
 
       setConfirmingId(entry.queue_entry_id)
-      setConfirmError(null)
+      setActionError(null)
       const result = await confirmPreparedAction({
         entry_id: entry.queue_entry_id,
         action_id: entry.prepared_action_id,
@@ -203,7 +303,61 @@ export function PreparedActionsReviewPanel({
       })
       setConfirmingId(null)
       if (!result.ok) {
-        setConfirmError(result.error ?? 'Confirm failed')
+        setActionError(result.error ?? 'Confirm failed')
+      }
+      await load()
+    },
+    [load],
+  )
+
+  const handleEvaluatePolicy = useCallback(
+    async (entry: PreparedActionQueueEntry) => {
+      const msg =
+        `Trigger policy evaluation for this prepared action?\n\n` +
+        `action_id: ${entry.prepared_action_id}\n` +
+        `domain: ${entry.domain}\n` +
+        `action: ${entry.requested_action}\n\n` +
+        `This records a policy decision draft only.\n` +
+        `No execution is triggered. No authority is granted.\n` +
+        `Policy Review — Draft chain only.`
+      if (!window.confirm(msg)) return
+
+      setEvaluatingPolicyId(entry.queue_entry_id)
+      setActionError(null)
+      const result = await triggerPolicyReview({
+        entry_id: entry.queue_entry_id,
+        action_id: entry.prepared_action_id,
+      })
+      setEvaluatingPolicyId(null)
+      if (!result.ok) {
+        setActionError(result.error ?? 'Policy evaluation failed')
+      }
+      await load()
+    },
+    [load],
+  )
+
+  const handleCreateBinding = useCallback(
+    async (entry: PreparedActionQueueEntry) => {
+      const msg =
+        `Create authority binding draft for this prepared action?\n\n` +
+        `action_id: ${entry.prepared_action_id}\n` +
+        `domain: ${entry.domain}\n` +
+        `action: ${entry.requested_action}\n\n` +
+        `This records an authority binding draft only.\n` +
+        `No execution is triggered. No token is issued.\n` +
+        `Authority Binding Draft — MSO draft chain only.`
+      if (!window.confirm(msg)) return
+
+      setCreatingBindingId(entry.queue_entry_id)
+      setActionError(null)
+      const result = await triggerAuthorityBinding({
+        entry_id: entry.queue_entry_id,
+        action_id: entry.prepared_action_id,
+      })
+      setCreatingBindingId(null)
+      if (!result.ok) {
+        setActionError(result.error ?? 'Authority binding failed')
       }
       await load()
     },
@@ -220,10 +374,10 @@ export function PreparedActionsReviewPanel({
       <div className="flex items-center justify-between gap-2">
         <div className="flex flex-col">
           <span className="text-[10px] font-mono text-amber-400 uppercase tracking-wider">
-            Prepared Actions — Review Queue
+            PreparedAction Queue — Review
           </span>
           <span className="text-[8px] font-mono text-tx-muted mt-0.5">
-            Requires Human Confirmation · Review-only · No execution is triggered
+            Operator confirmation required · Review-only · No execution is triggered
           </span>
         </div>
         <button
@@ -243,9 +397,9 @@ export function PreparedActionsReviewPanel({
       )}
 
       {/* Error state */}
-      {(hasError || confirmError) && (
+      {(hasError || actionError) && (
         <div className="text-[9px] font-mono text-red-400 px-2 py-1 rounded bg-red-400/5 border border-red-400/20">
-          {confirmError ?? data?.error ?? 'Prepared actions backend unavailable'}
+          {actionError ?? data?.error ?? 'Prepared actions backend unavailable'}
         </div>
       )}
 
@@ -280,6 +434,10 @@ export function PreparedActionsReviewPanel({
           entry={entry}
           onConfirm={handleConfirm}
           confirming={confirmingId === entry.queue_entry_id}
+          onEvaluatePolicy={handleEvaluatePolicy}
+          evaluatingPolicy={evaluatingPolicyId === entry.queue_entry_id}
+          onCreateBinding={handleCreateBinding}
+          creatingBinding={creatingBindingId === entry.queue_entry_id}
         />
       ))}
 
