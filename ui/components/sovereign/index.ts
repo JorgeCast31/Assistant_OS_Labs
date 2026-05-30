@@ -32,3 +32,5 @@ export { ReadinessPanel } from './ReadinessPanel'
 export { GovernanceRecentPanel } from './GovernanceRecentPanel'
 // S-DRAFT-STORE-01: sovereign Plan state badge (draft/planning/mso_review only)
 export { PlanStateBadge } from './PlanStateBadge'
+// S-PREPARED-ACTIONS-01: PreparedAction review queue UI (review-only, no execution)
+export { PreparedActionsReviewPanel } from './PreparedActionsReviewPanel'

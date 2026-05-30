@@ -32,6 +32,9 @@ vi.mock('@/lib/api', () => ({
   getPlanPrepareStatus: vi.fn().mockResolvedValue({ ok: false, source: 'prepare_status', plan_id: '', operator_seat: '', correlation_id: null, status: 'unknown', plan_state: null, ack_status: null, prepare_request_id: null, prepare_request_status: null, prepared_action_id: null, confirm_queue_status: null, authority_stage: 'unknown', missing_requirements: [], error: 'unavailable', execution_allowed: false, used_execution: false, runner_reachable_from_ui: false }),
   ackPlan:             vi.fn(),
   preparePlan:         vi.fn(),
+  // PreparedAction review queue helpers (Sprint #234)
+  getPreparedActionsPending: vi.fn().mockResolvedValue({ ok: false, source: 'prepared_action_queue', count: 0, items: [], review_only: true, execution_allowed: false, can_execute_now: false, note: 'Prepared action review queue is read-only.', error: 'unavailable' }),
+  confirmPreparedAction: vi.fn(),
 }))
 
 // ── Unavailable fixture constants ─────────────────────────────────────────────
