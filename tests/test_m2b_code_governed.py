@@ -139,7 +139,20 @@ class TestCodePolicyDecision:
 # ---------------------------------------------------------------------------
 
 class TestCodeReadOnlyOrchestratorDispatch:
-    """orchestrator.handle_request dispatches CODE read-only actions via AUTO mode."""
+    """orchestrator.handle_request dispatches CODE read-only actions via AUTO mode.
+
+    P0-1 compliance: registers a fake review executor so tests that assert
+    ok=True exercise the real success path, not the (now removed) silent stub.
+    """
+
+    def setup_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        self._orig_review = cp._review_executor
+        cp._review_executor = lambda inp: {"ok": True, "analysis": "m2b fake review"}
+
+    def teardown_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        cp._review_executor = self._orig_review
 
     def _request(self, text: str) -> dict:
         from assistant_os.contracts import CanonicalRequest
@@ -383,7 +396,20 @@ class TestCodeUIIntentMap:
 # ---------------------------------------------------------------------------
 
 class TestCodeConfirmFlow:
-    """_execute_confirmed_plan routes CODE plans to code_pipeline."""
+    """_execute_confirmed_plan routes CODE plans to code_pipeline.
+
+    P0-1 compliance: registers a fake review executor for tests that exercise
+    the CODE_EXPLAIN success path via orchestrator.
+    """
+
+    def setup_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        self._orig_review = cp._review_executor
+        cp._review_executor = lambda inp: {"ok": True, "analysis": "m2b confirm fake review"}
+
+    def teardown_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        cp._review_executor = self._orig_review
 
     def test_confirmed_code_fix_plan_reaches_pipeline(self):
         """

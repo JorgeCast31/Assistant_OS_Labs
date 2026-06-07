@@ -250,6 +250,20 @@ NOTION_WORK_PROPERTY_MAP: dict[str, str] = {
 NOTION_WORK_ACTIVE_STATUSES: list[str] = ["NEXT", "SCHEDULED", "WAITING", "INBOX"]
 
 # ---------------------------------------------------------------------------
+# CODE Apply — authorized write paths (fail-closed)
+# ---------------------------------------------------------------------------
+# Explicit allowlist of filesystem repo paths where CODE apply (file writes) is
+# authorized.  Empty list = DENY ALL writes (fail-closed for safety).
+# Use absolute paths only.
+# Example .env entry:
+#   CODE_APPLY_ALLOWED_REPO_PATHS=/home/user/myproject,/home/user/otherproject
+CODE_APPLY_ALLOWED_REPO_PATHS: list[str] = [
+    p.strip()
+    for p in os.environ.get("CODE_APPLY_ALLOWED_REPO_PATHS", "").split(",")
+    if p.strip()
+]
+
+# ---------------------------------------------------------------------------
 # CodeOps Configuration
 # ---------------------------------------------------------------------------
 # Allowlist of repositories that CodeOps can operate on.

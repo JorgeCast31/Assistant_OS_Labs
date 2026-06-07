@@ -196,8 +196,9 @@ class TestCodePipelineStubStatus:
         return plan
 
     def test_code_explain_stub_sets_execution_status_stub(self):
+        """P0-1: no executor → execution_status must be 'unavailable', not 'stub'."""
         import assistant_os.pipelines.code_pipeline as cp
-        from assistant_os.contracts import EXECUTION_STATUS_STUB
+        from assistant_os.contracts import EXECUTION_STATUS_UNAVAILABLE
 
         original = cp._review_executor
         try:
@@ -206,9 +207,10 @@ class TestCodePipelineStubStatus:
         finally:
             cp._review_executor = original
 
-        assert result.get("execution_status") == EXECUTION_STATUS_STUB
+        assert result.get("execution_status") == EXECUTION_STATUS_UNAVAILABLE
 
     def test_code_explain_stub_message_has_prefix(self):
+        """P0-1: no executor → message must mention unavailability, not return stub analysis."""
         import assistant_os.pipelines.code_pipeline as cp
 
         original = cp._review_executor
@@ -218,11 +220,14 @@ class TestCodePipelineStubStatus:
         finally:
             cp._review_executor = original
 
-        assert "[STUB — no real execution]" in result.get("message", "")
+        msg = result.get("message", "")
+        assert result["ok"] is False
+        assert "executor" in msg.lower() or "ANTHROPIC_API_KEY" in msg or "configurada" in msg
 
     def test_code_preview_stub_sets_execution_status_stub(self):
+        """P0-1: no executor → execution_status must be 'unavailable', not 'stub'."""
         import assistant_os.pipelines.code_pipeline as cp
-        from assistant_os.contracts import EXECUTION_STATUS_STUB
+        from assistant_os.contracts import EXECUTION_STATUS_UNAVAILABLE
 
         original = cp._propose_executor
         try:
@@ -231,9 +236,10 @@ class TestCodePipelineStubStatus:
         finally:
             cp._propose_executor = original
 
-        assert result.get("execution_status") == EXECUTION_STATUS_STUB
+        assert result.get("execution_status") == EXECUTION_STATUS_UNAVAILABLE
 
     def test_code_preview_stub_message_has_prefix(self):
+        """P0-1: no executor → message must mention unavailability, not return stub proposal."""
         import assistant_os.pipelines.code_pipeline as cp
 
         original = cp._propose_executor
@@ -243,7 +249,9 @@ class TestCodePipelineStubStatus:
         finally:
             cp._propose_executor = original
 
-        assert "[STUB — no real execution]" in result.get("message", "")
+        msg = result.get("message", "")
+        assert result["ok"] is False
+        assert "executor" in msg.lower() or "ANTHROPIC_API_KEY" in msg or "configurada" in msg
 
 
 # ---------------------------------------------------------------------------

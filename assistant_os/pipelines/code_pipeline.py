@@ -329,7 +329,34 @@ def _execute_read_only(plan: dict, context_id: str, result_type: str) -> DomainR
             execution_status=EXECUTION_STATUS_UNAVAILABLE,
         )
 
-    # Pass the registered executor (or None → stub) into the tool
+    # P0-1: Fail visible when executor is not available (no API key configured).
+    # A silent stub that returns fake analysis is not acceptable — the caller
+    # must know that no real analysis was performed.
+    if _review_executor is None:
+        _unavail_msg = (
+            "CODE executor no disponible: ANTHROPIC_API_KEY no está configurada. "
+            "No se realizó ningún análisis real. "
+            "Configura ANTHROPIC_API_KEY en .env para habilitar CODE_EXPLAIN y CODE_REVIEW."
+        )
+        return make_domain_result(
+            ok=False,
+            result_type=result_type,
+            domain="CODE",
+            message=_unavail_msg,
+            data={
+                "type": "executor_unavailable",
+                "action": action,
+                "target_file": payload.get("target_file", ""),
+                "executor_live": False,
+                "analysis_performed": False,
+            },
+            error={"type": "ExecutorUnavailable", "message": _unavail_msg},
+            trace_id=plan.get("trace_id"),
+            plan_id=plan.get("plan_id"),
+            execution_status=EXECUTION_STATUS_UNAVAILABLE,
+        )
+
+    # Executor is guaranteed non-None here — pass it directly, no stub fallback.
     tool_result = ReviewCodeTool(executor=_review_executor).execute({
         "action": action,
         "target_file": payload.get("target_file", ""),
@@ -445,6 +472,32 @@ def _build_code_preview(plan: dict, payload: dict) -> DomainResult:
             error={"type": "WriteOutOfScope", "message": scope_error},
         )
 
+    # P0-1: Fail visible when propose executor is not available (no API key configured).
+    # A silent stub that returns fake proposals is not acceptable.
+    if _propose_executor is None:
+        _unavail_msg = (
+            "CODE executor no disponible: ANTHROPIC_API_KEY no está configurada. "
+            "No se generó ninguna propuesta real. "
+            "Configura ANTHROPIC_API_KEY en .env para habilitar CODE_FIX y CODE_CREATE."
+        )
+        return make_domain_result(
+            ok=False,
+            result_type=RESULT_TYPE_CODE_PREVIEW,
+            domain="CODE",
+            message=_unavail_msg,
+            data={
+                "type": "executor_unavailable",
+                "action": action,
+                "target_file": target_file,
+                "executor_live": False,
+                "propose_executor_live": False,
+                "analysis_performed": False,
+            },
+            error={"type": "ExecutorUnavailable", "message": _unavail_msg},
+            execution_status=EXECUTION_STATUS_UNAVAILABLE,
+        )
+
+    # Executor is guaranteed non-None here — pass it directly, no stub fallback.
     tool_result = ProposeChangeTool(executor=_propose_executor).execute({
         "action": action,
         "target_file": target_file,
@@ -693,11 +746,80 @@ def _check_proposal_applicability(proposal: dict) -> str | None:
     return None
 
 
+def _validate_apply_repo_path(workspace: str) -> str | None:
+    """P0-2: Validate workspace against CODE_APPLY_ALLOWED_REPO_PATHS allowlist.
+
+    Fail-closed: if no allowlist is configured, deny all writes.
+    Uses Path.resolve() for canonical comparison — correct on both
+    case-sensitive (Linux) and case-insensitive (macOS/Windows) filesystems.
+    Symlinks are resolved before comparison.
+
+    Returns None if the workspace is authorized, or an error string if blocked.
+
+    Rules:
+      1. Empty allowlist → deny all (fail-closed).
+      2. workspace empty/blank → deny.
+      3. Path.resolve() failure → deny.
+      4. Writes inside .git → denied explicitly (before allowlist check).
+      5. workspace canonical path not equal to, nor a subpath of, any allowed
+         canonical path → deny.
+      6. Path traversal (../) → denied because resolve() normalises it first.
+    """
+    from pathlib import Path
+    from ..config import CODE_APPLY_ALLOWED_REPO_PATHS
+
+    if not CODE_APPLY_ALLOWED_REPO_PATHS:
+        return (
+            "CODE apply bloqueado: no hay repo paths autorizados configurados "
+            "(CODE_APPLY_ALLOWED_REPO_PATHS está vacío). "
+            "Define CODE_APPLY_ALLOWED_REPO_PATHS en .env para autorizar escrituras."
+        )
+
+    if not workspace or not workspace.strip():
+        return "CODE apply bloqueado: workspace está vacío."
+
+    try:
+        resolved = Path(workspace).resolve()
+    except Exception as exc:
+        return f"CODE apply bloqueado: workspace no se puede resolver: {exc}"
+
+    # Explicit .git check using resolved Path parts — never permit writes inside .git.
+    # Checked against resolved path so symlinks pointing into .git are also blocked.
+    if ".git" in resolved.parts:
+        return (
+            f"CODE apply bloqueado: escrituras dentro de .git no están permitidas: "
+            f"{workspace!r}"
+        )
+
+    # Check against allowlist using canonical Path objects (no .lower()).
+    # Path.resolve() handles symlinks, .., and OS-specific normalisation.
+    # Authorised if: resolved == allowed_root  OR  allowed_root is a parent of resolved.
+    for allowed in CODE_APPLY_ALLOWED_REPO_PATHS:
+        try:
+            allowed_resolved = Path(allowed).resolve()
+        except Exception:
+            continue
+        if resolved == allowed_resolved:
+            return None  # Exact match — authorised.
+        try:
+            resolved.relative_to(allowed_resolved)
+            return None  # resolved is a sub-path of allowed_resolved — authorised.
+        except ValueError:
+            continue  # Not a subpath; try next entry.
+
+    return (
+        f"CODE apply bloqueado: workspace {workspace!r} no está en la lista de paths "
+        "autorizados (CODE_APPLY_ALLOWED_REPO_PATHS). "
+        "Agrega el path al .env para autorizar escrituras en ese directorio."
+    )
+
+
 def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainResult:
     """Apply a confirmed proposal through the exclusive audited runner path.
 
     Execution flow (no fallback, no ApplyChangeTool):
-      single-use check
+      allowlist check (P0-2)
+      → single-use check
       → semantic pre-gate (_check_proposal_applicability)
       → _build_authorized_plan_from_kernel   ← governance binding
       → _build_runner_execution_request      ← pure translation
@@ -727,6 +849,28 @@ def _apply_code_proposal(plan: dict, proposal: dict, payload: dict) -> DomainRes
             message="proposal_id is required",
             data={"action": action},
             error={"type": "ExecutionPlanViolation", "message": "proposal_id is required"},
+        )
+
+    # ------------------------------------------------------------------
+    # Guard 0.5 — Allowlist validation (P0-2: fail-closed repo path check)
+    # Must run before single-use mark so rejected requests can be retried
+    # once the config is fixed.
+    # ------------------------------------------------------------------
+    _workspace = payload.get("workspace", "")
+    _allowlist_error = _validate_apply_repo_path(_workspace)
+    if _allowlist_error:
+        return make_domain_result(
+            ok=False,
+            result_type=RESULT_TYPE_CODE_APPLY,
+            domain="CODE",
+            message=_allowlist_error,
+            data={
+                "proposal_id": proposal_id,
+                "action": action,
+                "guard_failure": "RepoPathNotAuthorized",
+            },
+            error={"type": "RepoPathNotAuthorized", "message": _allowlist_error},
+            execution_status=EXECUTION_STATUS_UNAVAILABLE,
         )
 
     # ------------------------------------------------------------------

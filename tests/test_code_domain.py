@@ -217,7 +217,24 @@ def _make_plan(action: str, raw_text: str = "test", payload: dict | None = None)
 
 
 class TestCodeReadOnly:
-    """CODE_EXPLAIN and CODE_REVIEW return DomainResult without confirmation."""
+    """CODE_EXPLAIN and CODE_REVIEW return DomainResult without confirmation.
+
+    P0-1 compliance: these tests register a fake executor so the pipeline
+    has a real (non-None) executor, which is the required production path.
+    """
+
+    _fake_review_executor = staticmethod(
+        lambda inp: {"ok": True, "analysis": "test analysis from fake executor"}
+    )
+
+    def setup_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        self._orig_review = cp._review_executor
+        cp._review_executor = self._fake_review_executor
+
+    def teardown_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        cp._review_executor = self._orig_review
 
     def test_explain_ok(self):
         plan = _make_plan(ACTION_CODE_EXPLAIN, "explícame este módulo")
@@ -285,7 +302,40 @@ from assistant_os.contracts import RESULT_TYPE_CODE_PREVIEW
 
 
 class TestCodeMutatingPreview:
-    """CODE_FIX / CODE_CREATE preview path returns proposal with requires_confirmation=True."""
+    """CODE_FIX / CODE_CREATE preview path returns proposal with requires_confirmation=True.
+
+    P0-1 compliance: tests register a fake propose executor so the pipeline
+    exercises the real preview path, not the (now removed) silent stub.
+    """
+
+    _fake_propose_response = {
+        "ok": True,
+        "summary": "fix the bug",
+        "affected_files": ["src/foo.py"],
+        "write_intent_summary": "Modify src/foo.py to fix crash",
+        "patch_preview": "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1 +1 @@\n-bug\n+fix\n",
+        "operation_types": ["modify"],
+        "risk_level": "medium",
+        "contract_assumptions": "safe",
+        "caller_risk": "safe",
+        "caller_risk_notes": "no callers",
+    }
+
+    def setup_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        self._orig_propose = cp._propose_executor
+        _base = self._fake_propose_response
+
+        def _dynamic_executor(inp: dict) -> dict:
+            # Use the target_file from the input so affected_files matches the test request
+            target = inp.get("target_file", _base["affected_files"][0])
+            return dict(_base, affected_files=[target])
+
+        cp._propose_executor = _dynamic_executor
+
+    def teardown_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        cp._propose_executor = self._orig_propose
 
     def test_fix_preview_ok(self, tmp_path):
         plan = _make_plan(ACTION_CODE_FIX, "arregla este bug",
@@ -402,7 +452,42 @@ def _make_proposal(
 
 
 class TestApplySafety:
-    """ApplyChangeTool enforces all five safety guards."""
+    """ApplyChangeTool enforces all five safety guards.
+
+    P0-1 compliance: registers a fake propose executor so pipeline tests
+    exercise the real preview path.
+    P0-2 compliance: patches _validate_apply_repo_path so pipeline-level
+    apply tests are not blocked by the allowlist (allowlist is tested
+    separately in TestP02ApplyAllowlist).
+    """
+
+    _fake_propose_response = {
+        "ok": True,
+        "summary": "fix the bug",
+        "affected_files": ["src/foo.py"],
+        "write_intent_summary": "Modify src/foo.py to fix crash",
+        "patch_preview": "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1 +1 @@\n-bug\n+fix\n",
+        "operation_types": ["modify"],
+        "risk_level": "medium",
+        "contract_assumptions": "safe",
+        "caller_risk": "safe",
+        "caller_risk_notes": "no callers",
+    }
+
+    def setup_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        self._orig_propose = cp._propose_executor
+        _resp = self._fake_propose_response
+        cp._propose_executor = lambda inp: _resp
+        # Bypass P0-2 allowlist for apply pipeline tests;
+        # P0-2 is covered in TestP02ApplyAllowlist.
+        self._orig_validate = cp._validate_apply_repo_path
+        cp._validate_apply_repo_path = lambda workspace: None
+
+    def teardown_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        cp._propose_executor = self._orig_propose
+        cp._validate_apply_repo_path = self._orig_validate
 
     # Guard 1: missing proposal_id
     def test_missing_proposal_id_rejected(self):
@@ -783,7 +868,44 @@ class TestSmokeHardening:
     """
     Targeted coverage for the workspace validation and patch truncation
     hardening added before manual smoke testing.
+
+    P0-1 compliance: registers a fake propose executor for tests that
+    exercise the preview path via code_execute.
+    P0-2 compliance: patches _validate_apply_repo_path for tests that
+    reach the apply path (single_use_enforced_after_hardening).
     """
+
+    _fake_propose_response = {
+        "ok": True,
+        "summary": "hardening fix",
+        "affected_files": ["src/foo.py"],
+        "write_intent_summary": "Modify src/foo.py",
+        "patch_preview": "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1 +1 @@\n-old\n+new\n",
+        "operation_types": ["modify"],
+        "risk_level": "medium",
+        "contract_assumptions": "safe",
+        "caller_risk": "safe",
+        "caller_risk_notes": "no callers",
+    }
+
+    def setup_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        self._orig_propose = cp._propose_executor
+        _resp = self._fake_propose_response
+        cp._propose_executor = lambda inp: _resp
+        # Bypass P0-2 allowlist for pipeline apply tests in this class;
+        # P0-2 is covered in TestP02ApplyAllowlist.
+        self._orig_validate = cp._validate_apply_repo_path
+        cp._validate_apply_repo_path = lambda workspace: None
+        # Also register a fake review executor for read-only tests
+        self._orig_review = cp._review_executor
+        cp._review_executor = lambda inp: {"ok": True, "analysis": "smoke review"}
+
+    def teardown_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        cp._propose_executor = self._orig_propose
+        cp._validate_apply_repo_path = self._orig_validate
+        cp._review_executor = self._orig_review
 
     # ------------------------------------------------------------------
     # Workspace validation — pipeline entry guard
@@ -989,7 +1111,37 @@ class TestSmokeHardening:
 # ---------------------------------------------------------------------------
 
 class TestObservabilityFields:
-    """Preview and apply responses expose all fields needed for UI smoke inspection."""
+    """Preview and apply responses expose all fields needed for UI smoke inspection.
+
+    P0-1 compliance: registers a fake propose executor.
+    P0-2 compliance: patches _validate_apply_repo_path for apply path tests.
+    """
+
+    _fake_propose_response = {
+        "ok": True,
+        "summary": "observability fix",
+        "affected_files": ["f.py"],
+        "write_intent_summary": "Modify f.py",
+        "patch_preview": "--- a/f.py\n+++ b/f.py\n@@ -1 +1 @@\n-x\n+y\n",
+        "operation_types": ["modify"],
+        "risk_level": "low",
+        "contract_assumptions": "safe",
+        "caller_risk": "safe",
+        "caller_risk_notes": "no callers",
+    }
+
+    def setup_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        self._orig_propose = cp._propose_executor
+        _resp = self._fake_propose_response
+        cp._propose_executor = lambda inp: _resp
+        self._orig_validate = cp._validate_apply_repo_path
+        cp._validate_apply_repo_path = lambda workspace: None
+
+    def teardown_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        cp._propose_executor = self._orig_propose
+        cp._validate_apply_repo_path = self._orig_validate
 
     def test_preview_has_preview_ready_flag(self, tmp_path):
         plan = _make_plan(ACTION_CODE_FIX, payload={"target_file": "src/foo.py", "workspace": str(tmp_path)})
@@ -1135,11 +1287,22 @@ class TestObservabilityFields:
             cp._applied_proposals = original_set
 
     def test_read_only_exposes_executor_live_false_by_default(self):
-        """executor_live=False when no real executor is registered."""
-        plan = _make_plan(ACTION_CODE_EXPLAIN)
-        result = code_execute(plan, "ctx-obs-13")
-        assert result["ok"]
-        assert result["data"]["executor_live"] is False
+        """P0-1: when no executor is registered, pipeline returns ok=False with executor_live=False.
+
+        Pre-P0-1, this returned ok=True with executor_live=False (silent stub).
+        Post-P0-1, it must fail visible so callers cannot mistake stub output for real analysis.
+        """
+        import assistant_os.pipelines.code_pipeline as cp
+        orig = cp._review_executor
+        cp._review_executor = None  # explicit None — no executor
+        try:
+            plan = _make_plan(ACTION_CODE_EXPLAIN)
+            result = code_execute(plan, "ctx-obs-13")
+            assert result["ok"] is False, "P0-1: must fail, not return stub analysis"
+            assert result["data"]["executor_live"] is False
+            assert result["data"]["type"] == "executor_unavailable"
+        finally:
+            cp._review_executor = orig
 
 
 # ---------------------------------------------------------------------------
@@ -2040,7 +2203,11 @@ class TestReadOnlyExecutorRegistry:
             cp.register_review_executor(original)
 
     def test_register_none_reverts_to_stub(self):
-        """register_review_executor(None) restores stub behaviour."""
+        """P0-1: register_review_executor(None) → pipeline returns ok=False (executor_unavailable).
+
+        Pre-P0-1: returned ok=True with '[stub]' in analysis.
+        Post-P0-1: must fail visible — no silent stubs allowed.
+        """
         import assistant_os.pipelines.code_pipeline as cp
         original = self._register_and_restore(
             lambda inp: {"ok": True, "analysis": "real"}
@@ -2049,10 +2216,9 @@ class TestReadOnlyExecutorRegistry:
             cp.register_review_executor(None)
             plan = _make_plan(ACTION_CODE_EXPLAIN)
             result = code_execute(plan, "ctx-reg-04")
-            assert result["ok"]
-            # Stub output contains "[stub]"
-            assert "[stub]" in result["data"]["analysis"]
+            assert result["ok"] is False, "P0-1: None executor must return ok=False"
             assert result["data"]["executor_live"] is False
+            assert result["data"]["type"] == "executor_unavailable"
         finally:
             cp.register_review_executor(original)
 
@@ -2082,13 +2248,17 @@ class TestProposeExecutorRegistry:
         return original
 
     def test_propose_executor_live_false_by_default(self, tmp_path):
-        """With no executor registered, propose_executor_live is False in preview data."""
+        """P0-1: with no executor registered, pipeline returns ok=False (executor_unavailable).
+
+        propose_executor_live=False is reported in the error data.
+        """
         import assistant_os.pipelines.code_pipeline as cp
         original = cp._propose_executor
         cp.register_propose_executor(None)
         try:
             plan = _make_plan(ACTION_CODE_FIX, payload={"target_file": "f.py", "workspace": str(tmp_path)})
             result = code_execute(plan, "ctx-preg-01")
+            assert result["ok"] is False, "P0-1: None executor must return ok=False"
             assert result["data"]["propose_executor_live"] is False
         finally:
             cp.register_propose_executor(original)
@@ -2132,7 +2302,10 @@ class TestProposeExecutorRegistry:
             cp.register_propose_executor(original)
 
     def test_register_none_reverts_to_stub(self, tmp_path):
-        """register_propose_executor(None) restores stub — propose_executor_live is False."""
+        """P0-1: register_propose_executor(None) → pipeline returns ok=False (executor_unavailable).
+
+        propose_executor_live=False is reported in the error data.
+        """
         import assistant_os.pipelines.code_pipeline as cp
         fake = lambda inp: {
             "ok": True, "summary": "s", "affected_files": [], "write_intent_summary": "",
@@ -2143,7 +2316,7 @@ class TestProposeExecutorRegistry:
             cp.register_propose_executor(None)
             plan = _make_plan(ACTION_CODE_FIX, payload={"target_file": "f.py", "workspace": str(tmp_path)})
             result = code_execute(plan, "ctx-preg-04")
-            assert result["ok"]
+            assert result["ok"] is False, "P0-1: None executor must return ok=False"
             assert result["data"]["propose_executor_live"] is False
         finally:
             cp.register_propose_executor(original)
@@ -2187,6 +2360,9 @@ class TestApplyContractHardening:
     """
     Formalised apply preconditions, enriched result shape, and semantic pre-gate.
 
+    P0-1 compliance: registers a fake propose executor.
+    P0-2 compliance: patches _validate_apply_repo_path for apply path tests.
+
     Coverage matrix:
       1. Stub mode — apply_mode == "stub" in result data
       2. Empty patch_preview → NotApplicable (pre-gate, not mechanical guard)
@@ -2198,6 +2374,32 @@ class TestApplyContractHardening:
       8. apply result has audit_summary with expected keys
       9. No side effects — stub mode confirmed via apply_mode field
     """
+
+    _fake_propose_response = {
+        "ok": True,
+        "summary": "hardening fix",
+        "affected_files": ["src/foo.py"],
+        "write_intent_summary": "Modify src/foo.py",
+        "patch_preview": "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1 +1 @@\n-old\n+new\n",
+        "operation_types": ["modify"],
+        "risk_level": "medium",
+        "contract_assumptions": "safe",
+        "caller_risk": "safe",
+        "caller_risk_notes": "no callers",
+    }
+
+    def setup_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        self._orig_propose = cp._propose_executor
+        _resp = self._fake_propose_response
+        cp._propose_executor = lambda inp: _resp
+        self._orig_validate = cp._validate_apply_repo_path
+        cp._validate_apply_repo_path = lambda workspace: None
+
+    def teardown_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        cp._propose_executor = self._orig_propose
+        cp._validate_apply_repo_path = self._orig_validate
 
     # ------------------------------------------------------------------
     # Helper: run full preview→apply via pipeline in an isolated applied set

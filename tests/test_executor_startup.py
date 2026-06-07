@@ -250,7 +250,11 @@ class TestStartupToExecution:
 
     @_isolate
     def test_stub_used_when_no_key(self, monkeypatch):
-        """With no API key, CODE_EXPLAIN returns stub analysis (contains '[stub]')."""
+        """P0-1: With no API key, CODE_EXPLAIN must return executor_unavailable, not stub analysis.
+
+        Silent stubs that return fake analysis are not acceptable.
+        The caller must know that no real analysis was performed.
+        """
         import assistant_os.config as cfg
         monkeypatch.setattr(cfg, "ANTHROPIC_API_KEY", None)
 
@@ -267,6 +271,9 @@ class TestStartupToExecution:
             "plan_id": "p2",
         }
         result = code_execute(plan, "ctx-startup-02")
-        assert result["ok"] is True
-        assert "[stub]" in result["data"]["analysis"]
+        # P0-1: must fail visible — not a silent stub
+        assert result["ok"] is False
         assert result["data"]["executor_live"] is False
+        assert result["data"]["analysis_performed"] is False
+        assert result["data"]["type"] == "executor_unavailable"
+        assert "ANTHROPIC_API_KEY" in result["message"] or "executor" in result["message"].lower()
