@@ -360,15 +360,21 @@ class TestExecutorPipelineIntegration:
             cp.register_review_executor(original)
 
     def test_executor_live_false_when_unregistered(self):
+        """P0-1: when executor is None, pipeline must return ok=False (executor_unavailable).
+
+        Silent stubs are not acceptable — the caller must know no real analysis occurred.
+        """
         import assistant_os.pipelines.code_pipeline as cp
         from assistant_os.pipelines.code_pipeline import execute as code_execute
 
         original = cp._review_executor
-        cp.register_review_executor(None)  # ensure stub
+        cp.register_review_executor(None)
         try:
             plan = self._make_plan("CODE_EXPLAIN")
             result = code_execute(plan, "ctx-integ-03")
-            assert result["ok"] is True
+            # P0-1: must fail visible — not ok=True with stub analysis
+            assert result["ok"] is False
             assert result["data"]["executor_live"] is False
+            assert result["data"]["type"] == "executor_unavailable"
         finally:
             cp.register_review_executor(original)

@@ -255,10 +255,17 @@ def _make_valid_stub_agent(entrypoint_fn) -> dict:
 
 
 class TestCodePipelineViaAgent:
-    """Verify the pipeline still dispatches correctly after agent integration."""
+    """Verify the pipeline still dispatches correctly after agent integration.
 
-    def test_code_pipeline_apply_uses_agent(self, tmp_path):
+    P0-2 compliance: each test configures CODE_APPLY_ALLOWED_REPO_PATHS to
+    include the test's tmp_path, so Guard 0.5 allows the apply path through.
+    """
+
+    def test_code_pipeline_apply_uses_agent(self, tmp_path, monkeypatch):
         """Mock the agent entrypoint to verify the pipeline calls it."""
+        import assistant_os.config as cfg
+        monkeypatch.setattr(cfg, "CODE_APPLY_ALLOWED_REPO_PATHS", [str(tmp_path)])
+
         from unittest.mock import MagicMock, patch
         from assistant_os.runners.runner_models import RunnerExecutionRequest
 
@@ -313,8 +320,11 @@ class TestCodePipelineViaAgent:
         assert result["ok"] is True
         assert result["domain"] == "CODE"
 
-    def test_agent_invocation_metadata_in_domain_result(self, tmp_path):
+    def test_agent_invocation_metadata_in_domain_result(self, tmp_path, monkeypatch):
         """audit_summary in DomainResult must include agent_invocation metadata."""
+        import assistant_os.config as cfg
+        monkeypatch.setattr(cfg, "CODE_APPLY_ALLOWED_REPO_PATHS", [str(tmp_path)])
+
         from unittest.mock import MagicMock, patch
         from assistant_os.runners.runner_models import RunnerExecutionRequest
 
@@ -370,12 +380,15 @@ class TestCodePipelineViaAgent:
         assert inv["agent_requires_review"]  == stub_agent["requires_review"]
         assert inv["agent_capability_scope"] == stub_agent["capability_scope"]
 
-    def test_agent_invocation_values_match_registry(self, tmp_path):
+    def test_agent_invocation_values_match_registry(self, tmp_path, monkeypatch):
         """agent_invocation values must match the real AGENT_REGISTRY entry.
 
         Uses the real registry (no stub) and patches only RunnerBackedExecutor.execute
         so we verify that the pipeline reads from AGENT_REGISTRY correctly.
         """
+        import assistant_os.config as cfg
+        monkeypatch.setattr(cfg, "CODE_APPLY_ALLOWED_REPO_PATHS", [str(tmp_path)])
+
         from unittest.mock import MagicMock, patch
 
         mock_result = MagicMock()
@@ -466,6 +479,9 @@ class TestKernelPathMetadataPersistence:
 
     def test_kernel_path_persists_agent_invocation(self, tmp_path, monkeypatch):
         """After code_pipeline.execute (apply), metadata.json must contain agent_invocation."""
+        import assistant_os.config as cfg
+        monkeypatch.setattr(cfg, "CODE_APPLY_ALLOWED_REPO_PATHS", [str(tmp_path)])
+
         from unittest.mock import MagicMock, patch
         import assistant_os.runners.metadata_utils as mu
 
@@ -512,6 +528,9 @@ class TestKernelPathMetadataPersistence:
 
     def test_kernel_path_agent_invocation_fields_correct(self, tmp_path, monkeypatch):
         """The four fields written by PATH A must match the AGENT_REGISTRY entry."""
+        import assistant_os.config as cfg
+        monkeypatch.setattr(cfg, "CODE_APPLY_ALLOWED_REPO_PATHS", [str(tmp_path)])
+
         from unittest.mock import MagicMock, patch
         import assistant_os.runners.metadata_utils as mu
 
@@ -556,6 +575,9 @@ class TestKernelPathMetadataPersistence:
 
     def test_kernel_path_preserves_existing_metadata_fields(self, tmp_path, monkeypatch):
         """patch_execution_metadata must not destroy pre-existing metadata fields."""
+        import assistant_os.config as cfg
+        monkeypatch.setattr(cfg, "CODE_APPLY_ALLOWED_REPO_PATHS", [str(tmp_path)])
+
         from unittest.mock import MagicMock, patch
         import assistant_os.runners.metadata_utils as mu
 
@@ -635,7 +657,10 @@ class TestKernelPathSnapshotPersistence:
         }
 
     def _run_pipeline(self, tmp_path, monkeypatch, eid: str, proposal_id: str):
-        """Shared fixture: patch runner + EXECUTIONS_ROOT, run pipeline, return metadata."""
+        """Shared fixture: patch runner + EXECUTIONS_ROOT + allowlist, run pipeline, return metadata."""
+        import assistant_os.config as cfg
+        monkeypatch.setattr(cfg, "CODE_APPLY_ALLOWED_REPO_PATHS", [str(tmp_path)])
+
         from unittest.mock import MagicMock, patch
         import assistant_os.runners.metadata_utils as mu
 

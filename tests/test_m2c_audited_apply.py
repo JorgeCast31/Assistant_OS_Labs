@@ -78,7 +78,31 @@ RUNNER_PATCH = "assistant_os.executors.runner_backed_executor.RunnerBackedExecut
 # ---------------------------------------------------------------------------
 
 class TestConfirmRunnerExecutes:
-    """After confirmation, apply MUST route through RunnerBackedExecutor."""
+    """After confirmation, apply MUST route through RunnerBackedExecutor.
+
+    P0-1 compliance: registers a fake propose executor.
+    P0-2 compliance: patches _validate_apply_repo_path.
+    """
+
+    _fake_propose_response = {
+        "ok": True, "summary": "fix", "affected_files": ["src/foo.py"],
+        "write_intent_summary": "Modify src/foo.py",
+        "patch_preview": "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1 +1 @@\n-old\n+new\n",
+        "operation_types": ["modify"], "risk_level": "medium",
+    }
+
+    def setup_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        self._orig_propose = cp._propose_executor
+        _resp = self._fake_propose_response
+        cp._propose_executor = lambda inp: _resp
+        self._orig_validate = cp._validate_apply_repo_path
+        cp._validate_apply_repo_path = lambda workspace: None
+
+    def teardown_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        cp._propose_executor = self._orig_propose
+        cp._validate_apply_repo_path = self._orig_validate
 
     def test_apply_calls_runner_backed_executor(self, tmp_path):
         """RunnerBackedExecutor.execute is called exactly once on apply."""
@@ -166,7 +190,30 @@ class TestConfirmRunnerExecutes:
 # ---------------------------------------------------------------------------
 
 class TestPreviewDoesNotCallRunner:
-    """Preview (phase != 'apply') must never invoke RunnerBackedExecutor."""
+    """Preview (phase != 'apply') must never invoke RunnerBackedExecutor.
+
+    P0-1 compliance: registers fake propose and review executors.
+    """
+
+    _fake_propose_response = {
+        "ok": True, "summary": "fix", "affected_files": ["src/foo.py"],
+        "write_intent_summary": "Modify src/foo.py",
+        "patch_preview": "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1 +1 @@\n-old\n+new\n",
+        "operation_types": ["modify"], "risk_level": "medium",
+    }
+
+    def setup_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        self._orig_propose = cp._propose_executor
+        _resp = self._fake_propose_response
+        cp._propose_executor = lambda inp: _resp
+        self._orig_review = cp._review_executor
+        cp._review_executor = lambda inp: {"ok": True, "analysis": "review"}
+
+    def teardown_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        cp._propose_executor = self._orig_propose
+        cp._review_executor = self._orig_review
 
     def test_preview_never_calls_runner(self, tmp_path):
         """ProposeChangeTool path — runner is not touched during preview."""
@@ -209,7 +256,30 @@ class TestPreviewDoesNotCallRunner:
 # ---------------------------------------------------------------------------
 
 class TestNoConfirmBlockedAtOrchestrator:
-    """CODE_FIX / CODE_CREATE must require confirmation at the policy level."""
+    """CODE_FIX / CODE_CREATE must require confirmation at the policy level.
+
+    P0-1 compliance: registers a fake propose executor for tests that call code_execute.
+    """
+
+    _fake_propose_response = {
+        "ok": True, "summary": "fix", "affected_files": ["src/foo.py"],
+        "write_intent_summary": "Modify src/foo.py",
+        "patch_preview": "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1 +1 @@\n-old\n+new\n",
+        "operation_types": ["modify"], "risk_level": "medium",
+    }
+
+    def setup_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        self._orig_propose = cp._propose_executor
+        _resp = self._fake_propose_response
+        cp._propose_executor = lambda inp: _resp
+        self._orig_validate = cp._validate_apply_repo_path
+        cp._validate_apply_repo_path = lambda workspace: None
+
+    def teardown_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        cp._propose_executor = self._orig_propose
+        cp._validate_apply_repo_path = self._orig_validate
 
     def test_code_fix_execution_mode_is_confirm(self):
         """determine_execution_mode returns CONFIRM for CODE_FIX with requires_confirmation."""
@@ -264,7 +334,31 @@ class TestNoConfirmBlockedAtOrchestrator:
 # ---------------------------------------------------------------------------
 
 class TestExecutionIdEqualsPlanId:
-    """The AuthorizedPlan binds execution_id to plan_id from the kernel plan."""
+    """The AuthorizedPlan binds execution_id to plan_id from the kernel plan.
+
+    P0-1 compliance: registers a fake propose executor.
+    P0-2 compliance: patches _validate_apply_repo_path.
+    """
+
+    _fake_propose_response = {
+        "ok": True, "summary": "fix", "affected_files": ["src/foo.py"],
+        "write_intent_summary": "Modify src/foo.py",
+        "patch_preview": "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1 +1 @@\n-old\n+new\n",
+        "operation_types": ["modify"], "risk_level": "medium",
+    }
+
+    def setup_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        self._orig_propose = cp._propose_executor
+        _resp = self._fake_propose_response
+        cp._propose_executor = lambda inp: _resp
+        self._orig_validate = cp._validate_apply_repo_path
+        cp._validate_apply_repo_path = lambda workspace: None
+
+    def teardown_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        cp._propose_executor = self._orig_propose
+        cp._validate_apply_repo_path = self._orig_validate
 
     def test_authorized_plan_built_with_execution_id_eq_plan_id(self, tmp_path):
         """_build_authorized_plan_from_kernel sets execution_id == plan_id."""
@@ -323,6 +417,27 @@ class TestExecutionIdEqualsPlanId:
 # ---------------------------------------------------------------------------
 
 class TestRunnerFailureStructuredError:
+
+    _fake_propose_response = {
+        "ok": True, "summary": "fix", "affected_files": ["src/foo.py"],
+        "write_intent_summary": "Modify src/foo.py",
+        "patch_preview": "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1 +1 @@\n-old\n+new\n",
+        "operation_types": ["modify"], "risk_level": "medium",
+    }
+
+    def setup_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        self._orig_propose = cp._propose_executor
+        _resp = self._fake_propose_response
+        cp._propose_executor = lambda inp: _resp
+        self._orig_validate = cp._validate_apply_repo_path
+        cp._validate_apply_repo_path = lambda workspace: None
+
+    def teardown_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        cp._propose_executor = self._orig_propose
+        cp._validate_apply_repo_path = self._orig_validate
+
     """On runner failure the apply result must be a structured error — no fallback."""
 
     def test_runner_failed_status_returns_structured_error(self, tmp_path):
@@ -450,10 +565,41 @@ class TestDispatchHardening:
     """
     Contract: every implicit dispatch behaviour is replaced by an explicit error.
 
+    P0-1 compliance: registers a fake propose executor for tests that call
+    code_execute to build a proposal before testing apply-path behavior.
+    P0-2 compliance: patches _validate_apply_repo_path for tests that
+    proceed to the apply path.
+
     1. plan without plan_id → ExecutionPlanViolation
     2. phase='apply' without proposal → ExecutionPlanViolation
     3. proposal.changes present but all entries invalid → InvalidChanges
     """
+
+    _fake_propose_response = {
+        "ok": True,
+        "summary": "fix the bug",
+        "affected_files": ["src/foo.py"],
+        "write_intent_summary": "Modify src/foo.py",
+        "patch_preview": "--- a/src/foo.py\n+++ b/src/foo.py\n@@ -1 +1 @@\n-old\n+new\n",
+        "operation_types": ["modify"],
+        "risk_level": "medium",
+        "contract_assumptions": "safe",
+        "caller_risk": "safe",
+        "caller_risk_notes": "no callers",
+    }
+
+    def setup_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        self._orig_propose = cp._propose_executor
+        _resp = self._fake_propose_response
+        cp._propose_executor = lambda inp: _resp
+        self._orig_validate = cp._validate_apply_repo_path
+        cp._validate_apply_repo_path = lambda workspace: None
+
+    def teardown_method(self):
+        import assistant_os.pipelines.code_pipeline as cp
+        cp._propose_executor = self._orig_propose
+        cp._validate_apply_repo_path = self._orig_validate
 
     def test_missing_plan_id_returns_execution_plan_violation(self, tmp_path):
         """execute() with no plan_id must return ExecutionPlanViolation immediately."""
