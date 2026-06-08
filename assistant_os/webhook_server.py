@@ -57,7 +57,6 @@ from .contracts import (
 )
 from .summary import summarize
 from .context_store import store_pending_plan, get_pending_plan, remove_pending_plan
-from .chat_core import process_chat_input
 from .chat_renderer import render_chat_response
 from . import chat_db
 from .classifier import (
