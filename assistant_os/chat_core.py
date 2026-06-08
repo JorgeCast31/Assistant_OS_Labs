@@ -485,6 +485,17 @@ def _execute_fin_item(
     Applies canonicalization (responsable, categoria, moneda defaults)
     before calling append_expense_row so callers don't need to pre-normalise.
     """
+    # SC-02a: Legacy ungoverned path disabled. Use the MSO governed path.
+    return (
+        False,
+        "Legacy ungoverned execution path is disabled. Use the MSO governed path.",
+        {
+            "blocked": True,
+            "reason": "ungoverned_legacy_path_disabled",
+            "required_path": "PolicyDecision -> CapabilityToken -> PoliceGate -> AuthorizedPlan",
+        },
+    )
+
     from datetime import date as _date
     from .integrations.sheets import append_expense_row, check_sheets_available
 
@@ -597,6 +608,17 @@ def _execute_work_delete(
     Queries all active tasks, filters by keyword(s) in-memory, then archives.
     Returns (ok, message, metadata).
     """
+    # SC-02a: Legacy ungoverned path disabled. Use the MSO governed path.
+    return (
+        False,
+        "Legacy ungoverned execution path is disabled. Use the MSO governed path.",
+        {
+            "blocked": True,
+            "reason": "ungoverned_legacy_path_disabled",
+            "required_path": "PolicyDecision -> CapabilityToken -> PoliceGate -> AuthorizedPlan",
+        },
+    )
+
     from .integrations.notion import query_work_db, archive_pages, check_notion_available
 
     if not check_notion_available():
@@ -643,6 +665,17 @@ def _execute_work_item(
     - ok=True  → item created; metadata has page_id and url
     - ok=False → creation failed; message explains why
     """
+    # SC-02a: Legacy ungoverned path disabled. Use the MSO governed path.
+    return (
+        False,
+        "Legacy ungoverned execution path is disabled. Use the MSO governed path.",
+        {
+            "blocked": True,
+            "reason": "ungoverned_legacy_path_disabled",
+            "required_path": "PolicyDecision -> CapabilityToken -> PoliceGate -> AuthorizedPlan",
+        },
+    )
+
     from .integrations.notion import create_work_item, check_notion_available, WorkCreateRequest
 
     if not check_notion_available():
