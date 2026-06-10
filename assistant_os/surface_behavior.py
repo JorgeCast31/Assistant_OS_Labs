@@ -897,13 +897,33 @@ def _build_plan_request_authority_data(user_intent: str) -> dict:
         from .mso.authority_preparation import prepare_authority_from_proposal
         from .mso.confirmable_prepared_action import build_confirmable_from_preparation
         from .mso.prepared_action_queue import enqueue_confirmable_prepared_action
+        from .mso.governed_confirmation_bridge import classify_repo_review_intent
+
+        # SC-03: deterministic (NON-LLM) classification of a natural repo-review
+        # intent into a governed CODE mission candidate. Falls back to the
+        # existing ASSISTANT / PLAN_REVIEW preparation for all other intents.
+        # (no parallel path; reuses existing make_orchestration_proposal machinery)
+        _classification = classify_repo_review_intent(user_intent)
+        if _classification is not None:
+            _domain = _classification["domain"]
+            _requested_action = _classification["requested_action"]
+            _capability_name = _classification["capability_name"]
+            _capability_scope = _classification["capability_scope"]
+            _resource = _classification["resource"]
+        else:
+            _domain = "ASSISTANT"
+            _requested_action = "PLAN_REVIEW"
+            _capability_name = "plan_review"
+            _capability_scope = ("plan_review",)
+            _resource = None
 
         proposal = make_orchestration_proposal(
             user_intent=user_intent,
-            domain="ASSISTANT",
-            requested_action="PLAN_REVIEW",
-            capability_name="plan_review",
-            capability_scope=("plan_review",),
+            domain=_domain,
+            requested_action=_requested_action,
+            resource=_resource,
+            capability_name=_capability_name,
+            capability_scope=_capability_scope,
         )
         preparation = prepare_authority_from_proposal(proposal)
         confirmable = build_confirmable_from_preparation(

@@ -151,6 +151,10 @@ class MSOExecutionProposal:
     domain: str = "UNKNOWN"
     requested_action: str = ""
 
+    # Resource (optional governed target, e.g. repo URL). Backward compatible.
+    # (SC-03: persisted resource through the preparation chain)
+    resource: Optional[str] = None
+
     # Capability declaration
     capability_name: str = ""
     capability_scope: tuple[str, ...] = field(default_factory=tuple)
@@ -209,6 +213,7 @@ class MSOExecutionProposal:
             "user_intent": self.user_intent,
             "domain": self.domain,
             "requested_action": self.requested_action,
+            "resource": self.resource,
             "capability_name": self.capability_name,
             "capability_scope": list(self.capability_scope),
             "risk_level": self.risk_level,
@@ -235,6 +240,7 @@ def build_execution_proposal(
     user_intent: str,
     domain: str = "UNKNOWN",
     requested_action: str = "",
+    resource: Optional[str] = None,
     capability_name: str = "",
     capability_scope: tuple[str, ...] = (),
     risk_level: str = "unknown",
@@ -287,6 +293,7 @@ def build_execution_proposal(
         user_intent=user_intent,
         domain=domain,
         requested_action=requested_action,
+        resource=resource,
         capability_name=capability_name,
         capability_scope=capability_scope,
         risk_level=risk_level,

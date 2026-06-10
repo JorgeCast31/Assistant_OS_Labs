@@ -159,6 +159,9 @@ class ConfirmablePreparedAction:
     domain: str = "UNKNOWN"
     requested_action: str = ""
 
+    # Resource (optional governed target, e.g. repo URL). Backward compatible.
+    resource: Optional[str] = None
+
     # Capability (copied from preparation)
     capability_name: str = ""
     capability_scope: tuple[str, ...] = field(default_factory=tuple)
@@ -235,6 +238,7 @@ class ConfirmablePreparedAction:
             "user_intent": self.user_intent,
             "domain": self.domain,
             "requested_action": self.requested_action,
+            "resource": self.resource,
             "capability_name": self.capability_name,
             "capability_scope": list(self.capability_scope),
             "plan_steps": list(self.plan_steps),
@@ -336,6 +340,7 @@ def build_confirmable_from_preparation(
         user_intent=preparation.user_intent,
         domain=preparation.domain,
         requested_action=preparation.requested_action,
+        resource=preparation.resource,
         capability_name=preparation.capability_name,
         capability_scope=preparation.capability_scope,
         plan_steps=plan_steps,

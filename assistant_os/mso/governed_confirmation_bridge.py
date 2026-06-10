@@ -98,6 +98,93 @@ _GOVERNED_BRIDGE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ---------------------------------------------------------------------------
+# Repo-review intent (SC-03) — deterministic classification, NO LLM
+# ---------------------------------------------------------------------------
+#
+# A natural repo-review phrase ("Revisa este repo: <url>") must be classified
+# deterministically as a CODE / CODE_REVIEW governed preparation that carries
+# the extracted repo resource. This is intent classification only — it issues
+# no authority, calls no Runner/Police, and never uses an LLM.
+
+# Repo-review verb + object phrasing (English + Spanish). Both "repo" and the
+# full "repositorio"/"repository" forms are listed because a \b after "repo"
+# would not match inside "repositorio".
+_REPO_REVIEW_RE = re.compile(
+    r"(?:"
+    r"\brevisa (?:este|el) repo\b"
+    r"|\brevisa (?:este|el) repositorio\b"
+    r"|\banaliza (?:este|el) repo\b"
+    r"|\banaliza (?:este|el) repositorio\b"
+    r"|\breview this repo\b"
+    r"|\breview this repository\b"
+    r"|\banalyze this repo\b"
+    r"|\banalyze this repository\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# Deterministic repo resource extraction: http(s) URL or scp-like git@ remote.
+_REPO_RESOURCE_RE = re.compile(
+    r"(?:https?://[^\s<>\"')]+|git@[^\s<>\"')]+)",
+    re.IGNORECASE,
+)
+
+# Canonical CODE review classification constants (mirror capability_registry).
+# SC-03 repo-review on-ramp (deterministic).
+REPO_REVIEW_DOMAIN = "CODE"
+REPO_REVIEW_ACTION = "CODE_REVIEW"
+REPO_REVIEW_CAPABILITY = "code_review"
+
+
+def extract_repo_resource(text: str) -> str | None:
+    """Deterministically extract a repo URL / remote from text. No LLM.
+
+    Returns the first http(s) URL or git@ remote found, with trailing
+    sentence punctuation stripped. Returns None if no resource is present.
+    """
+    if not isinstance(text, str) or not text.strip():
+        return None
+    match = _REPO_RESOURCE_RE.search(text)
+    if not match:
+        return None
+    return match.group(0).rstrip(".,;:!?)¡¿")
+
+
+def is_repo_review_intent(text: str) -> bool:
+    """True if text expresses a repo-review intent (deterministic phrasing)."""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    return bool(_REPO_REVIEW_RE.search(_normalize_for_detection(text)))
+
+
+def classify_repo_review_intent(text: str) -> dict | None:
+    """Classify a repo-review intent into a governed CODE mission candidate.
+
+    Pure, deterministic, no LLM, no side effects. Returns None when the text is
+    not a repo-review intent, so callers fall back to their existing routing.
+
+    Returns
+    -------
+    dict | None
+        {
+          "domain": "CODE",
+          "requested_action": "CODE_REVIEW",
+          "capability_name": "code_review",
+          "capability_scope": ("code_review",),
+          "resource": <repo url/remote or None>,
+        }
+    """
+    if not is_repo_review_intent(text):
+        return None
+    return {
+        "domain": REPO_REVIEW_DOMAIN,
+        "requested_action": REPO_REVIEW_ACTION,
+        "capability_name": REPO_REVIEW_CAPABILITY,
+        "capability_scope": (REPO_REVIEW_CAPABILITY,),
+        "resource": extract_repo_resource(text),
+    }
+
 
 def _normalize_for_detection(text: str) -> str:
     """Normalize text for phrase matching: lowercase, strip accents, strip punctuation."""
@@ -124,7 +211,10 @@ def is_governed_preparation_prompt(text: str) -> bool:
     if not isinstance(text, str) or not text.strip():
         return False
     normalized = _normalize_for_detection(text)
-    return bool(_GOVERNED_BRIDGE_RE.search(normalized))
+    return bool(
+        _GOVERNED_BRIDGE_RE.search(normalized)
+        or _REPO_REVIEW_RE.search(normalized)
+    )
 
 
 # ---------------------------------------------------------------------------
