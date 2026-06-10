@@ -256,6 +256,7 @@ def make_orchestration_proposal(
     user_intent: str,
     domain: str = "UNKNOWN",
     requested_action: str = "",
+    resource: Optional[str] = None,
     capability_name: str = "",
     capability_scope: tuple[str, ...] = (),
     risk_level: str = "unknown",
@@ -314,6 +315,12 @@ def make_orchestration_proposal(
         return build_safe_fallback_proposal(
             user_intent=user_intent,
             reason="No cognitive provider is currently seated/configured.",
+            domain=domain,
+            requested_action=requested_action,
+            resource=resource,
+            capability_name=capability_name,
+            capability_scope=capability_scope,
+            risk_level=risk_level,
             delegated_seat_ref=delegated_seat_ref,
         )
 
@@ -321,6 +328,12 @@ def make_orchestration_proposal(
         return build_safe_fallback_proposal(
             user_intent=user_intent,
             reason=f"Provider {provider.provider_name.value!r} is {provider.availability}.",
+            domain=domain,
+            requested_action=requested_action,
+            resource=resource,
+            capability_name=capability_name,
+            capability_scope=capability_scope,
+            risk_level=risk_level,
             delegated_seat_ref=delegated_seat_ref,
         )
 
@@ -346,6 +359,7 @@ def make_orchestration_proposal(
         user_intent=user_intent,
         domain=domain,
         requested_action=requested_action,
+        resource=resource,
         capability_name=capability_name,
         capability_scope=capability_scope,
         risk_level=risk_level,

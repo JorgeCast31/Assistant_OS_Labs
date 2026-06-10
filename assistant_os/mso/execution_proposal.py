@@ -151,6 +151,10 @@ class MSOExecutionProposal:
     domain: str = "UNKNOWN"
     requested_action: str = ""
 
+    # Resource (optional governed target, e.g. repo URL). Backward compatible.
+    # (SC-03: persisted resource through the preparation chain)
+    resource: Optional[str] = None
+
     # Capability declaration
     capability_name: str = ""
     capability_scope: tuple[str, ...] = field(default_factory=tuple)
@@ -209,6 +213,7 @@ class MSOExecutionProposal:
             "user_intent": self.user_intent,
             "domain": self.domain,
             "requested_action": self.requested_action,
+            "resource": self.resource,
             "capability_name": self.capability_name,
             "capability_scope": list(self.capability_scope),
             "risk_level": self.risk_level,
@@ -235,6 +240,7 @@ def build_execution_proposal(
     user_intent: str,
     domain: str = "UNKNOWN",
     requested_action: str = "",
+    resource: Optional[str] = None,
     capability_name: str = "",
     capability_scope: tuple[str, ...] = (),
     risk_level: str = "unknown",
@@ -287,6 +293,7 @@ def build_execution_proposal(
         user_intent=user_intent,
         domain=domain,
         requested_action=requested_action,
+        resource=resource,
         capability_name=capability_name,
         capability_scope=capability_scope,
         risk_level=risk_level,
@@ -307,13 +314,26 @@ def build_safe_fallback_proposal(
     *,
     user_intent: str,
     reason: str = "provider not available",
+    domain: str = "UNKNOWN",
+    requested_action: str = "",
+    resource: Optional[str] = None,
+    capability_name: str = "",
+    capability_scope: tuple[str, ...] = (),
+    risk_level: str = "unknown",
     delegated_seat_ref: Optional[str] = None,
 ) -> MSOExecutionProposal:
     """
-    Build a safe deterministic fallback proposal when provider is unavailable.
+    Build a safe fallback proposal when the cognitive provider is unavailable.
 
     This is always returned instead of raising an exception. Fail-safe: the
     proposal is valid, cognitive_only, and declares the authority chain.
+
+    Deterministic classification (domain/action/resource/capability) made BEFORE
+    the provider call is PRESERVED here. The cognitive provider being absent only
+    means no cognitive analysis text was produced — it must NOT discard a
+    classification that was derived deterministically (non-LLM). This keeps a
+    repo-review intent classified as CODE/CODE_REVIEW with its resource even when
+    the provider is down (e.g. in CI), without fabricating analysis/outcome/trace.
 
     Parameters
     ----------
@@ -321,30 +341,61 @@ def build_safe_fallback_proposal(
         The original user request.
     reason : str
         Reason for fallback (e.g., "provider not configured").
+    domain : str
+        Deterministically classified domain, if any (e.g. "CODE"). Defaults to
+        "UNKNOWN" when no classification was available.
+    requested_action : str
+        Deterministically classified action (e.g. "CODE_REVIEW"). Empty if none.
+    resource : Optional[str]
+        Deterministically extracted resource (e.g. repo URL). None if none.
+    capability_name : str
+        Required capability name (e.g. "code_review"). Empty if none.
+    capability_scope : tuple[str, ...]
+        Required capability scope (e.g. ("code_review",)). Empty if none.
+    risk_level : str
+        Assessed risk level. "unknown" if not assessed.
     delegated_seat_ref : Optional[str]
         Seat reference for traceability.
 
     Returns
     -------
     MSOExecutionProposal
-        Safe fallback proposal with unknown domain and full authority chain.
+        Safe fallback proposal preserving any deterministic classification, with
+        the full authority chain still required before any execution.
     """
+    if domain and domain != "UNKNOWN":
+        plan_steps = (
+            "Cognitive provider unavailable — deterministic fallback proposal.",
+            "No cognitive analysis was produced.",
+            f"Deterministic classification preserved: domain={domain}, "
+            f"action={requested_action or '(unspecified)'}.",
+            "Any execution still requires PolicyDecision → CapabilityToken → "
+            "OperationBinding → AuthorizedPlan → PoliceGate.",
+        )
+    else:
+        plan_steps = (
+            "Cognitive provider unavailable — deterministic fallback proposal.",
+            "No cognitive analysis was produced and no deterministic "
+            "classification was available.",
+            "To proceed: configure MSO_SEAT_PROVIDER and ensure the provider is "
+            "reachable, or provide a classifiable intent.",
+            "Any execution still requires PolicyDecision → CapabilityToken → "
+            "OperationBinding → AuthorizedPlan → PoliceGate.",
+        )
+
     return MSOExecutionProposal(
         user_intent=user_intent,
-        domain="UNKNOWN",
-        requested_action="",
-        capability_name="",
-        capability_scope=(),
-        risk_level="unknown",
+        domain=domain,
+        requested_action=requested_action,
+        resource=resource,
+        capability_name=capability_name,
+        capability_scope=capability_scope,
+        risk_level=risk_level,
         requires_human_confirmation=True,
         delegated_seat_ref=delegated_seat_ref,
         provider_name=None,
         model_name=None,
-        plan_steps=(
-            "Cognitive provider unavailable — deterministic fallback proposal.",
-            "No action can be proposed without a configured seat provider.",
-            "To proceed: configure MSO_SEAT_PROVIDER and ensure provider is reachable.",
-        ),
+        plan_steps=plan_steps,
         execution_allowed=False,
         used_execution=False,
         cognitive_only=True,

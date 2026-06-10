@@ -171,6 +171,9 @@ class AuthorityPreparationRequest:
     domain: str = "UNKNOWN"
     requested_action: str = ""
 
+    # Resource (optional governed target, e.g. repo URL). Backward compatible.
+    resource: Optional[str] = None
+
     # Capability (copied from proposal)
     capability_name: str = ""
     capability_scope: tuple[str, ...] = field(default_factory=tuple)
@@ -257,6 +260,7 @@ class AuthorityPreparationRequest:
             "user_intent": self.user_intent,
             "domain": self.domain,
             "requested_action": self.requested_action,
+            "resource": self.resource,
             "capability_name": self.capability_name,
             "capability_scope": list(self.capability_scope),
             "delegated_seat_ref": self.delegated_seat_ref,
@@ -347,6 +351,7 @@ def prepare_authority_from_proposal(
         user_intent=proposal.user_intent,
         domain=proposal.domain,
         requested_action=proposal.requested_action,
+        resource=proposal.resource,
         capability_name=proposal.capability_name,
         capability_scope=proposal.capability_scope,
         delegated_seat_ref=proposal.delegated_seat_ref,

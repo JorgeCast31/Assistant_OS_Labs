@@ -159,6 +159,9 @@ class ConfirmablePreparedActionQueueEntry:
     domain: str = "UNKNOWN"
     requested_action: str = ""
 
+    # Resource (optional governed target, e.g. repo URL). Backward compatible.
+    resource: Optional[str] = None
+
     # Capability (copied from prepared action)
     capability_name: str = ""
     capability_scope: tuple[str, ...] = field(default_factory=tuple)
@@ -217,6 +220,7 @@ class ConfirmablePreparedActionQueueEntry:
             "user_intent": self.user_intent,
             "domain": self.domain,
             "requested_action": self.requested_action,
+            "resource": self.resource,
             "capability_name": self.capability_name,
             "capability_scope": list(self.capability_scope),
             "delegated_seat_ref": self.delegated_seat_ref,
@@ -295,6 +299,7 @@ def enqueue_confirmable_prepared_action(
         user_intent=action.user_intent,
         domain=action.domain,
         requested_action=action.requested_action,
+        resource=action.resource,
         capability_name=action.capability_name,
         capability_scope=action.capability_scope,
         delegated_seat_ref=action.delegated_seat_ref,
