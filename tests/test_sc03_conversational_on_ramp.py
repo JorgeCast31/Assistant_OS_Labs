@@ -135,6 +135,48 @@ def test_t2_provider_failure_does_not_fabricate(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# T2b — Provider UNAVAILABLE still preserves deterministic CODE classification.
+# ---------------------------------------------------------------------------
+def test_t2b_provider_unavailable_preserves_code_classification(monkeypatch):
+    """With NO cognitive provider seated (the CI condition), the deterministic
+    repo-review classification must be preserved end-to-end.
+
+    Regression guard for the CI failure: make_orchestration_proposal() must not
+    fall back to domain=UNKNOWN and discard the resource. Provider absence means
+    no cognitive analysis — it must NOT erase a non-LLM classification, and must
+    never fabricate outcome/trace/execution.
+    """
+    import assistant_os.mso.seat_model_provider_registry as seat_registry
+
+    # Force the provider path to "absent" (provider is None) — the CI condition.
+    monkeypatch.setattr(seat_registry, "get_seated_provider", lambda: None)
+
+    data = _prepare(REPO_REVIEW_TEXT)
+    confirmable = data.get("confirmable_action") or {}
+    queued = data.get("queued_prepared_action") or {}
+
+    # Deterministic classification preserved despite absent provider.
+    assert confirmable.get("domain") == "CODE"
+    assert confirmable.get("requested_action") == "CODE_REVIEW"
+    assert confirmable.get("resource") == REPO_URL
+
+    # Fail-closed invariants intact (no execution, no execution claim).
+    assert confirmable.get("execution_allowed") is False
+    assert confirmable.get("used_execution") is False
+    assert confirmable.get("cognitive_only") is True
+
+    # No fabricated cognitive result.
+    assert "outcome" not in confirmable
+    assert "trace" not in confirmable
+
+    # Same truth surfaces in the queue (Mission Control read surface).
+    assert queued.get("domain") == "CODE"
+    assert queued.get("resource") == REPO_URL
+    assert queued.get("execution_allowed") is False
+    assert queued.get("can_execute_now") is False
+
+
+# ---------------------------------------------------------------------------
 # T3 — Chat preparation can never execute directly.
 # ---------------------------------------------------------------------------
 def test_t3_chat_preparation_never_executes_directly():
