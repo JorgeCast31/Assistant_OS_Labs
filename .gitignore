@@ -129,7 +129,7 @@ FINAL_REPORT.md
 PHASE1_BASELINE.md
 TASK_*.md
 WORKLOG.md
-agent_contract.md
+/agent_contract.md
 
 # accidental root files
 chat_core.py
