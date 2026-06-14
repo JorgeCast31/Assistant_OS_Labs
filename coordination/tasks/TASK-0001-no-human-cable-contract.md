@@ -27,12 +27,17 @@ permissions:
 risks:
   - Riesgo de tratar el contrato como autonomía antes de validarlo manualmente (teatro).
   - Riesgo de estado duplicado si algún artefacto redefine status fuera de TASK.md.
-evidence: []
-files_touched: []
-proposed_decision: null
-blocked: false
-blocked_reason: null
-next_action: "Jorge revisa el contrato; si lo aprueba, mueve esta tarea a READY para que Claude ejecute el ciclo de prueba."
+evidence:
+  - coordination/worklogs/TASK-0001-no-human-cable-contract-WORKLOG.md
+  - coordination/reports/TASK-0001-no-human-cable-contract-FINAL_REPORT.md
+files_touched:
+  - coordination/worklogs/TASK-0001-no-human-cable-contract-WORKLOG.md
+  - coordination/reports/TASK-0001-no-human-cable-contract-FINAL_REPORT.md
+  - coordination/tasks/TASK-0001-no-human-cable-contract.md
+proposed_decision: NEEDS_CHANGES
+blocked: true
+blocked_reason: "TASK was still DRAFT in repo. Executor cannot move DRAFT->READY; chat authorization is out-of-band and violates no-human-cable dogfood criteria. Evidence preserved as failed dogfood attempt."
+next_action: "MSO/Police clasifico TASK-0001 como 'dogfood failed usefully'. status revertido a DRAFT (enum no tiene BLOCKED ni NEEDS_CHANGES; bloqueo se expresa via blocked=true). Codex emite REVIEW DE FALLO (no de aprobacion): confirmar F1, confirmar que el ejecutor violo la maquina de estados al terminar en EVIDENCE_READY, revisar F2, y recomendar parche minimo para que la autorizacion de Jorge quede in-file antes de ejecucion. Sin human_final, sin DECISION. NO automatizar. Repetir TASK-0001 limpio solo tras corregir F1/F2."
 created_at: 2026-06-13
 updated_at: 2026-06-13
 ---
