@@ -1,12 +1,24 @@
-# AGENT_CONTRACT — coordination/ — **v2**
+# AGENT_CONTRACT — coordination/ — **v3**
 
 Contrato de los colaboradores acotados (*bounded collaborators*) del plano de coordinación.
 
 ## Principio
 
-Claude y Codex son **bounded collaborators**: pueden proponer y revisar, nunca decidir ni ejecutar. La única autoridad humana es Jorge. La única autoridad de ejecución es MSO.
+Claude y Codex son **bounded collaborators**: pueden proponer, redactar candidatos y revisar, nunca decidir ni ejecutar. La única autoridad humana es Jorge. La única autoridad de ejecución es MSO.
 
-**Principio rector v2:** `main` es la única fuente autoritativa de estado. Las ramas proponen. El chat nunca es autoridad. **"Si no está commiteado, no pasó."**
+**Principio rector v2 (vigente):** `main` es la única fuente autoritativa de estado. Las ramas proponen. El chat nunca es autoridad. **"Si no está commiteado, no pasó."**
+
+**Principio v3 (Human Approval Model — activo desde PR #246):**
+
+```text
+Authorship != Authority
+
+Agent-generated decision candidates are allowed.
+Agent-approved human_final decisions are invalid.
+Human approval is a verifiable event, not physical authorship.
+```
+
+Un agente puede **redactar** un `DECISION_CANDIDATE` (en `coordination/candidates/`, `effective_authority: none`). La autoridad humana (`human_final`) se materializa **solo** por un **evento verificable de Jorge** (merge/aprobación de PR, commit firmado, o UI auditable), nunca por escribir el markdown. Detalle: `schemas/DECISION.schema.md` (v3).
 
 ## Modelo de autoridad (normativo)
 
@@ -31,7 +43,7 @@ Igual que `human_final`, `READY` **solo es real cuando existe en `main`**, y a `
 
 ## Naming y rama (v2)
 
-- Artefactos: `TASK-NNNN.md`, `TASK-NNNN.WORKLOG.md`, `TASK-NNNN.FINAL_REPORT.md`, `TASK-NNNN.REVIEW.md`, `TASK-NNNN.DECISION.md`. El slug vive en el `id` del front-matter, no en el nombre de archivo.
+- Artefactos: `TASK-NNNN.md`, `TASK-NNNN.WORKLOG.md`, `TASK-NNNN.FINAL_REPORT.md`, `TASK-NNNN.REVIEW.md`, `TASK-NNNN.DECISION_CANDIDATE.md` (v3, en `candidates/`), `TASK-NNNN.DECISION.md` (en `decisions/`). El slug vive en el `id` del front-matter, no en el nombre de archivo.
 - Rama de trabajo: `coordination/task-NNNN`. Nunca `main`.
 
 ## Contrato por agente
@@ -43,17 +55,19 @@ role_default: executor
 may_write:
   - worklogs/TASK-NNNN.WORKLOG.md
   - reports/TASK-NNNN.FINAL_REPORT.md
+  - candidates/TASK-NNNN.DECISION_CANDIDATE.md   # v3: solo estado CANDIDATE (effective_authority: none)
   - TASK.status(IN_PROGRESS|EVIDENCE_READY)
   - TASK.status(BLOCKED)            # solo su propio tramo; recuperable
   - evidence, files_touched, proposed_decision
   - blocked, blocked_reason, last_legit_status, next_action
-may_emit_authority: [proposed]
+may_emit_authority: [proposed]      # NUNCA human_final; candidato lleva effective_authority: none
 branch: coordination/task-NNNN     # nunca main
 forbidden_write:
   - TASK.status(READY)              # READY es de Jorge, in-file en main
-  - decisions/                      # decisión final es de Jorge
+  - decisions/                      # decisión final es de Jorge (candidatos van en candidates/)
   - TASK.status(HUMAN_DECISION|HANDOFF_TO_MSO|CLOSED_REJECTED|ABORTED)
   - authority(human_final|jorge|approved_by_jorge|mso_executable)
+  - candidate approval fields: approved_by, approval_method, approved_at, effective_authority(human_final), decided_by(jorge)  # v3: solo el evento de Jorge los materializa
   - assistant_os/mso, assistant_os/police, assistant_os/policy, auth, .env, secrets, .github/workflows
   - merge, push:main, approve_pr, create_token
 ```
@@ -64,10 +78,11 @@ agent: codex
 role_default: reviewer
 may_write:
   - reviews/TASK-NNNN.REVIEW.md
+  - candidates/TASK-NNNN.DECISION_CANDIDATE.md   # v3: solo si actúa como generador y ≠ revisor de ese candidato; estado CANDIDATE
   - TASK.status(IN_REVIEW|CHANGES_REQUESTED|DECISION_PROPOSED)
   - TASK.status(BLOCKED)            # solo su propio tramo; recuperable
   - proposed_decision
-may_emit_authority: [proposed]
+may_emit_authority: [proposed]      # NUNCA human_final
 branch: coordination/task-NNNN
 forbidden_write:
   - TASK.status(READY)
@@ -75,6 +90,8 @@ forbidden_write:
   - TASK.status(IN_PROGRESS|EVIDENCE_READY)   # son del ejecutor
   - TASK.status(HUMAN_DECISION|HANDOFF_TO_MSO|CLOSED_REJECTED|ABORTED)
   - authority(human_final|jorge|approved_by_jorge|mso_executable)
+  - candidate approval fields: approved_by, approval_method, approved_at, effective_authority(human_final), decided_by(jorge)
+  - approve/promote a candidate it generated (no auto-review)   # generador ≠ revisor del mismo candidato
   - assistant_os/mso, assistant_os/police, assistant_os/policy, auth, .env, secrets, .github/workflows
   - merge, push:main, approve_pr, create_token
   - overwrite executor's WORKLOG/FINAL_REPORT
@@ -95,12 +112,14 @@ constraints:
 ```yaml
 actor: jorge
 role: human_authority
-may_write: [tasks/, decisions/, TASK.status(any)]
+may_write: [tasks/, decisions/, candidates/, TASK.status(any)]
 may_emit_authority: [human_final]
 exclusive_powers:
   - set READY (in-file en main)
   - approve_pr, merge, close_task
   - set HUMAN_DECISION / CLOSED_REJECTED / ABORTED
+  - materialize a DECISION_CANDIDATE into human_final via verifiable event (merge/approval/signed commit/auditable UI)
+note: La autoridad de Jorge es la APROBACIÓN verificable, no la autoría material. Puede aprobar un candidato redactado por un agente sin teclear el markdown.
 ```
 
 ### mso
@@ -125,3 +144,5 @@ note: nada en coordination/ invoca ni ejecuta MSO; recibe la tarea por el flujo 
 8. No se borra evidencia: el fallo se retracta y se preserva (WORKLOG append-only).
 9. Fail-closed ante ambigüedad: bloquear y reportar, nunca inventar.
 10. El incumplimiento de cualquier cláusula invalida el artefacto producido (no se acepta evidencia fuera de contrato).
+11. **(v3) Candidato ≠ decisión.** Un agente puede redactar un `DECISION_CANDIDATE` en `candidates/` con `effective_authority: none`, pero **nunca** escribe los campos de aprobación (`approved_by`, `approval_method`, `approved_at`, `effective_authority: human_final`, `decided_by: jorge`). Un candidato con esos campos, o una `human_final` producida por un agente, es **inválida y nula**. `generated_by != approved_by` siempre.
+12. **(v3) Runner no promueve.** Un Runner futuro puede *detectar y notificar* candidatos, pero **no** puede promoverlos a `human_final` ni mergear/aprobar. Solo el evento verificable de Jorge materializa la autoridad.

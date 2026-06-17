@@ -1,8 +1,16 @@
-# coordination/ — Plano de coordinación multiagente (Claude ↔ Codex) — **v2**
+# coordination/ — Plano de coordinación multiagente (Claude ↔ Codex) — **v3**
 
-> **Estado:** propuesta documental (v2). **No ejecuta nada.** No automatizado. No hay Runner.
+> **Estado:** contrato documental (v3, *Human Approval Model* activo). **No ejecuta nada.** No automatizado. No hay Runner.
 > Este directorio es el **bus de coordinación versionado** entre agentes acotados (Claude, Codex) bajo autoridad final humana (Jorge) y autoridad de ejecución soberana (MSO).
-> **Diseño completo de v2:** ver [`proposals/COORDINATION_FLOW_V2_PROPOSAL.md`](proposals/COORDINATION_FLOW_V2_PROPOSAL.md).
+> **Diseño v2 (vigente como base):** ver [`proposals/COORDINATION_FLOW_V2_PROPOSAL.md`](proposals/COORDINATION_FLOW_V2_PROPOSAL.md).
+> **Diseño v3 (Human Approval Model, aprobado en PR #246):** ver [`proposals/HUMAN_APPROVAL_MODEL_V3.md`](proposals/HUMAN_APPROVAL_MODEL_V3.md).
+>
+> **Principio v3:** `authorship != authority`. Un agente puede **redactar** un `DECISION_CANDIDATE`; la autoridad humana (`human_final`) la materializa **solo** un **evento verificable de Jorge** (merge/aprobación de PR, commit firmado, o UI auditable), nunca la autoría material del archivo.
+> ```text
+> Agent-generated decision candidates are allowed.
+> Agent-approved human_final decisions are invalid.
+> Human approval is a verifiable event, not physical authorship.
+> ```
 
 ## Qué es y qué NO es
 
@@ -30,12 +38,13 @@ coordination/
     WORKLOG.schema.md
     FINAL_REPORT.schema.md
     REVIEW.schema.md
-    DECISION.schema.md
+    DECISION.schema.md          # v3: cubre DECISION_CANDIDATE (agente) y DECISION (Jorge)
   tasks/        TASK-NNNN.md               # TASK canónica (front-matter = estado único)
   worklogs/     TASK-NNNN.WORKLOG.md        # bitácora append-only del ejecutor
   reports/      TASK-NNNN.FINAL_REPORT.md
   reviews/      TASK-NNNN.REVIEW.md         # veredicto del revisor
-  decisions/    TASK-NNNN.DECISION.md       # decisión final humana (solo Jorge)
+  candidates/   TASK-NNNN.DECISION_CANDIDATE.md  # v3: candidato redactado por agente (effective_authority: none)
+  decisions/    TASK-NNNN.DECISION.md       # decisión final humana (materializada por evento verificable de Jorge)
 ```
 
 - `NNNN` = correlativo cero-rellenado (`0001`, `0002`, …).
@@ -96,12 +105,14 @@ Detalle: propuesta v2 §6.
 | Nivel | Quién | Ejecuta |
 |---|---|---|
 | `authority=proposed` | Claude, Codex | No |
-| `authority=human_final` | **Solo Jorge** | No directamente; **autoriza** entrada al flujo soberano vía aprobación/merge de PR |
+| `DECISION_CANDIDATE` (`effective_authority: none`) | Claude, Codex (redacta) | No — candidato sin autoridad, pendiente de aprobación de Jorge |
+| `authority=human_final` / `effective_authority=human_final` | **Solo Jorge** (vía evento verificable) | No directamente; **autoriza** entrada al flujo soberano vía aprobación/merge de PR |
 | `mso_executable` (implícito) | **Solo MSO** | Sí, vía Police→Pipeline |
 
 - **MSO is the only source of executable authority.**
-- Ningún agente puede escribir `authority=jorge`, `authority=human_final`, `approved_by_jorge`, `decided_by: jorge` ni equivalente.
-- `human_final` se **materializa** por una acción humana verificable: la aprobación/merge del PR por Jorge (control de acceso del repo, no honor-system).
+- Ningún agente puede escribir `authority=jorge`, `authority=human_final`, `effective_authority=human_final`, `approved_by`/`approved_by_jorge`, `approval_method`, `approved_at`, `decided_by: jorge` ni equivalente.
+- **(v3)** Un agente **puede redactar** un `DECISION_CANDIDATE` en `candidates/` (`generated_by`, `effective_authority: none`). Eso **no** es autoridad. `generated_by != approved_by`.
+- `human_final` se **materializa** por una acción humana verificable de Jorge: aprobación/merge del PR, commit firmado, o UI auditable (control de acceso del repo, no honor-system). Si un agente mergea o escribe campos de aprobación sin ese evento, el artefacto es **inválido y nulo**.
 - `mso_executable` **nunca** aparece como valor otorgable en este plano.
 
 ## Reviewer independiente (v2)
@@ -109,17 +120,19 @@ Detalle: propuesta v2 §6.
 - `reviewer` (o `reviewer_delegate` si existe) **nunca** coincide con `assigned_agent` (no auto-review).
 - Si el revisor no está disponible, se registra **in-file** un `reviewer_delegate` con `reviewer_delegate_reason`, **antes** del REVIEW. Sin ese registro en repo, el REVIEW es inválido.
 
-## Flujo Claude ↔ Codex sin cable humano
+## Flujo Claude ↔ Codex sin cable humano (v3)
 
 ```
-TASK(READY en main) → [Claude] ejecuta en rama, deja WORKLOG+FINAL_REPORT → EVIDENCE_READY
-                     → [Codex] lee evidencia SIN Jorge, emite REVIEW         → IN_REVIEW
-                     → reviewer converge                                      → DECISION_PROPOSED
-                     → [Jorge] aprueba/rechaza (merge/PR)                     → HUMAN_DECISION
-                     → si APPROVED: PR entra a MSO/Police                     → HANDOFF_TO_MSO
+TASK(READY en main) → [Claude] ejecuta en rama, deja WORKLOG+FINAL_REPORT      → EVIDENCE_READY
+                     → [Codex] lee evidencia SIN Jorge, emite REVIEW            → IN_REVIEW
+                     → reviewer converge                                        → DECISION_PROPOSED
+                     → [agente] redacta candidates/TASK-NNNN.DECISION_CANDIDATE.md (effective_authority: none)
+                     → [Codex] revisa el candidato (≠ generador)
+                     → [Jorge] aprueba/mergea (evento verificable) → materializa decisions/...DECISION.md → HUMAN_DECISION
+                     → si APPROVED: PR entra a MSO/Police                        → HANDOFF_TO_MSO
 ```
 
-Jorge solo participa en `DRAFT→READY` (autorización in-file) y en `HUMAN_DECISION`. El contexto vive en el repo; cada agente lo lee directo. Jorge no transporta contexto.
+Jorge solo participa en `DRAFT→READY` (autorización in-file) y en la **aprobación** del candidato (`HUMAN_DECISION`). **(v3)** Jorge ya **no necesita teclear el markdown** de la decisión: un agente lo redacta como candidato y Jorge lo aprueba responsablemente por evento verificable. El contexto vive en el repo; cada agente lo lee directo. Jorge no transporta contexto.
 
 ## Límites de este tramo (Police)
 
