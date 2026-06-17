@@ -1,4 +1,4 @@
-# RULES_OF_ENGAGEMENT — coordination/ — **v3**
+# RULES_OF_ENGAGEMENT — coordination/ — **v3.1**
 
 > Reglas de quién puede escribir qué y cuándo. **Fail-closed:** ante ambigüedad, campo faltante o transición no permitida, la tarea se **bloquea**; no se avanza ni se asume comportamiento.
 > **Principio rector v2 (vigente):** `main` es la única fuente autoritativa. Las ramas proponen. El chat nunca es autoridad. **"Si no está commiteado, no pasó."**
@@ -39,6 +39,8 @@ Ejecutor y revisor (y `reviewer_delegate`) deben ser agentes **distintos** en un
 
 **Invariante:** un rol no puede mover una tarea a un estado cuya propiedad es de otro rol. Un agente que detecta que debería avanzar a un estado ajeno **se detiene** y deja `next_action`.
 
+> **Aclaración v3.1.** "Lo fija" significa **hacer efectivo** el estado (en `main`, por acto del rol propietario). Para estados de propiedad de Jorge (`READY`, `HUMAN_DECISION`), un agente puede **proponer** la transición **en una rama** vía PR, pero **no la hace efectiva**: solo el **merge verificable de Jorge** la materializa. Proponer-en-rama ≠ fijar. El control de acceso (el agente no mergea) garantiza la invariante.
+
 ## Transiciones permitidas
 
 | Transición | La ejecuta |
@@ -77,7 +79,7 @@ Estados activos desde los que se puede `BLOCKED`: `READY`, `IN_PROGRESS`, `EVIDE
 
 ### Claude (ejecutor)
 - **Puede:** `worklogs/TASK-NNNN.WORKLOG.md` (append-only), `reports/TASK-NNNN.FINAL_REPORT.md`, **(v3)** `candidates/TASK-NNNN.DECISION_CANDIDATE.md` (solo estado `CANDIDATE`, `effective_authority: none`), campos del TASK: `status ∈ {IN_PROGRESS, EVIDENCE_READY}` (y, en retracción de su propio tramo, `status=BLOCKED` o volver a `last_legit_status`), `evidence`, `files_touched`, `proposed_decision`, `blocked`, `blocked_reason`, `last_legit_status`, `next_action`. Diffs en **rama de trabajo** (`coordination/task-NNNN`), nunca en `main`.
-- **No puede:** fijar `READY`; escribir `DECISION.md` ni nada en `decisions/`; **(v3)** escribir campos de aprobación en un candidato (`approved_by`, `approval_method`, `approved_at`, `effective_authority=human_final`, `decided_by=jorge`); fijar `status=HUMAN_DECISION/HANDOFF_TO_MSO/CLOSED_REJECTED`; decidir `ABORTED` final; escribir `authority=human_final`/`jorge`/`approved_by_jorge`; tocar `assistant_os/mso`, `police`, `policy`, auth, `.env`, `secrets`, `.github/workflows`; mergear/pushear a `main`; aprobar PR; crear tokens.
+- **No puede:** fijar `READY`; **mergear/hacer efectivo** nada en `decisions/` ni escribir directamente en `decisions/` en `main` (**(v3.1)** sí puede **proponer en rama** una `DECISION` condicional derivada de un candidato aprobado, §B.0 del schema); escribir campos de aprobación en un **candidato** (`approved_by`, `approval_method`, `approved_at`, `effective_authority=human_final`, `decided_by=jorge`); **hacer efectivo** `status=HUMAN_DECISION` (puede **proponerlo en rama**; lo materializa el merge de Jorge) ni fijar `HANDOFF_TO_MSO/CLOSED_REJECTED`; decidir `ABORTED` final; hacer efectivo `authority=human_final`; tocar `assistant_os/mso`, `police`, `policy`, auth, `.env`, `secrets`, `.github/workflows`; **mergear/pushear a `main`; aprobar PR**; crear tokens.
 
 ### Codex (revisor)
 - **Puede:** `reviews/TASK-NNNN.REVIEW.md`, `status ∈ {IN_REVIEW, CHANGES_REQUESTED, DECISION_PROPOSED}`, `proposed_decision ∈ {GO, NO-GO, NEEDS_CHANGES}` (authority=proposed), objeciones técnicas verificables, contrapropuestas en rama. **(v3)** puede redactar un `candidates/TASK-NNNN.DECISION_CANDIDATE.md` **solo** cuando actúe como generador y **no** sea el revisor de ese mismo candidato (no auto-review). En retracción de su propio tramo: `status=BLOCKED`.
@@ -94,8 +96,15 @@ Estados activos desde los que se puede `BLOCKED`: `READY`, `IN_PROGRESS`, `EVIDE
 - Un `DECISION_CANDIDATE` lo **redacta un agente** (ejecutor/generador) y vive en `coordination/candidates/`. Lleva `generated_by`, `effective_authority: none`, `requires_human_approval: true`. **No tiene autoridad.**
 - **No auto-aprobación / no auto-review:** el agente que genera un candidato **no** lo revisa ni lo aprueba. El revisor (Codex por defecto) verifica el candidato según `schemas/DECISION.schema.md §E`.
 - **`generated_by != approved_by`.** La aprobación nunca borra `generated_by`.
-- **Si un agente mergea, aprueba o escribe campos de aprobación** (`approved_by`, `effective_authority=human_final`, etc.) **sin evento verificable de Jorge**, el artefacto es **inválido y nulo** (fail-closed). El enforcement primario es control de acceso; el secundario, verificabilidad contra el historial.
+- **Si un agente mergea, aprueba o hace efectivos campos de aprobación** (`approved_by`, `effective_authority=human_final`, etc.) **sin evento verificable de Jorge**, el artefacto es **inválido y nulo** (fail-closed). El enforcement primario es control de acceso; el secundario, verificabilidad contra el historial.
 - **Runner futuro:** puede *detectar y notificar* candidatos, **nunca** promoverlos a `human_final` ni mergear/aprobar.
+
+### Propuesta condicional en rama (v3.1)
+- Un agente (≠ revisor) **puede redactar en una rama**, vía PR, el artefacto `DECISION` (`coordination/decisions/TASK-NNNN.DECISION.md`) **derivado de un candidato ya aprobado en `main`**, y proponer en el **mismo PR** la transición del TASK a `status: HUMAN_DECISION`. Ambos son **propuestas condicionales**: no tienen efecto mientras vivan en la rama.
+- La propuesta **debe** llevar `requires_verifiable_human_approval: true` y la **nota de no-efectividad** (`schemas/DECISION.schema.md §B.3`): *"This DECISION is not effective until Jorge merges this PR. If merged or approved by an agent, it is invalid/null."*
+- **Solo el merge verificable de Jorge** de ese PR materializa la `DECISION` (`human_final`) y la transición a `HUMAN_DECISION`. El agente **no** puede mergear, aprobar el PR, ni hacer efectivo el artefacto. Si lo hace un agente ⇒ **inválido y nulo**.
+- `HANDOFF_TO_MSO` **nunca** lo fija una `DECISION` ni un agente: es paso posterior y exclusivo de MSO.
+- El borrador de trabajo libre del agente sigue siendo el **candidato** en `candidates/`; la propuesta en `decisions/` solo se prepara cuando ya existe un candidato aprobado en `main`.
 
 ### MSO / Police
 - Fuera de este plano. Reciben la tarea aprobada vía el flujo soberano normal (PR → revisión → ejecución gobernada). Solo MSO fija `HANDOFF_TO_MSO`. Nada en `coordination/` los invoca ni los ejecuta.
