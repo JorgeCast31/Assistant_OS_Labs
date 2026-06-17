@@ -192,3 +192,76 @@ v3 es un **superconjunto disciplinado** de v2; no relaja nada:
 - No modifica MSO/Police/Policy/Auth.
 - No cambia los schemas/contratos vigentes (v2 sigue rigiendo hasta aprobación humana de v3).
 - No confiere ninguna autoridad a ningún agente.
+
+---
+
+## 11. Operational Adoption Plan After Human Approval
+
+If Jorge merges this PR, that merge means:
+
+- Jorge accepts the V3 principle: human authority is accountable approval, not physical authorship.
+- This PR remains documentation/proposal only.
+- V2 remains the effective contract until a follow-up implementation PR updates the active coordination contract files.
+- No Runner is authorized.
+- TASK-0002 is not closed by this PR.
+
+### Next PR after this merge
+
+After PR #246 is merged by Jorge, Claude may prepare a follow-up PR titled:
+
+`docs(coordination): adopt human approval model v3`
+
+Allowed files for that follow-up PR:
+
+- `coordination/README.md`
+- `coordination/RULES_OF_ENGAGEMENT.md`
+- `coordination/AGENT_CONTRACT.md`
+- `coordination/schemas/DECISION.schema.md`
+- `coordination/schemas/TASK.schema.md` only if needed
+- optional: `coordination/candidates/.gitkeep` if the model chooses a dedicated candidate directory
+
+Forbidden in that follow-up PR:
+
+- no Runner
+- no workflows
+- no code execution
+- no MSO/Police/Policy/Auth changes
+- no secrets
+- no TASK-0002 closure
+- no `coordination/decisions/TASK-0002.DECISION.md`
+
+### Acceptance criteria for the follow-up adoption PR
+
+The adoption PR must:
+
+1. Make V3 active in the contract, not merely proposed.
+2. Define where `DECISION_CANDIDATE` artifacts live.
+3. Define the valid frontmatter for candidate artifacts.
+4. Define how approval by Jorge is verified.
+5. Define what happens if an agent merges or attempts to self-approve.
+6. Preserve `generated_by != approved_by`.
+7. Preserve fail-closed behavior.
+8. Preserve that Runner cannot promote candidates to `human_final`.
+9. Explain how Codex reviews candidates.
+10. Explain how TASK-0002 can be closed under V3 in a later PR.
+
+### Codex review for this PR
+
+Before Jorge merges PR #246, Codex should review only:
+
+- whether this proposal is internally consistent;
+- whether it preserves V2 invariants;
+- whether it avoids authorizing Runner;
+- whether the follow-up adoption plan is safe and bounded.
+
+### TASK-0002 closure path after V3 adoption
+
+TASK-0002 must not be closed directly by PR #246.
+
+After V3 is adopted by a later human-approved contract PR:
+
+1. Claude prepares a `DECISION_CANDIDATE` for TASK-0002.
+2. Codex reviews it.
+3. Jorge approves/merges it in GitHub.
+4. Only then can TASK-0002 transition to `HUMAN_DECISION`.
+5. Runner Design Review starts only after TASK-0002 is closed.
