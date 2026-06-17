@@ -1,8 +1,10 @@
-# TASK.schema — coordination/tasks/TASK-NNNN.md — **v2**
+# TASK.schema — coordination/tasks/TASK-NNNN.md — **v3**
 
 La `TASK` es el **único portador del estado canónico**. Vive en `coordination/tasks/TASK-NNNN.md`.
 Formato: front-matter YAML (campos normativos) + cuerpo Markdown (contexto legible).
 El **nombre de archivo** es solo `TASK-NNNN.md`; el slug descriptivo vive en `id`.
+
+> **Nota v3 (Human Approval Model).** El estado de la `TASK` y su máquina de estados **no cambian** respecto a v2. v3 solo añade un artefacto separado para la fase de decisión: el `DECISION_CANDIDATE` (redactado por un agente, sin autoridad), definido en `schemas/DECISION.schema.md`. La `TASK` sigue rigiéndose por `authority ∈ {proposed, human_final}`, donde un agente **solo** puede emitir `proposed`. Principio: `authorship != authority` — un agente puede redactar candidatos; la autoridad humana se materializa por un **evento verificable de Jorge**, nunca por la autoría material del archivo.
 
 **Estado autoritativo = `status` en `main`.** Una rama solo *propone* un cambio de estado.
 
