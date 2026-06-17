@@ -1,4 +1,4 @@
-# AGENT_CONTRACT — coordination/ — **v3**
+# AGENT_CONTRACT — coordination/ — **v3.1**
 
 Contrato de los colaboradores acotados (*bounded collaborators*) del plano de coordinación.
 
@@ -19,6 +19,8 @@ Human approval is a verifiable event, not physical authorship.
 ```
 
 Un agente puede **redactar** un `DECISION_CANDIDATE` (en `coordination/candidates/`, `effective_authority: none`). La autoridad humana (`human_final`) se materializa **solo** por un **evento verificable de Jorge** (merge/aprobación de PR, commit firmado, o UI auditable), nunca por escribir el markdown. Detalle: `schemas/DECISION.schema.md` (v3).
+
+**Enmienda v3.1:** un agente también puede **redactar en rama** el artefacto `DECISION` (en `coordination/decisions/`) como **propuesta condicional** derivada de un candidato aprobado, y proponer en el mismo PR `status: HUMAN_DECISION`. Nada de eso es efectivo hasta el **merge verificable de Jorge** del PR; el agente no mergea. La invariante de seguridad no cambia: el efecto siempre lo produce Jorge. Detalle: `schemas/DECISION.schema.md §B.0/§C.bis` (v3.1).
 
 ## Modelo de autoridad (normativo)
 
@@ -56,18 +58,20 @@ may_write:
   - worklogs/TASK-NNNN.WORKLOG.md
   - reports/TASK-NNNN.FINAL_REPORT.md
   - candidates/TASK-NNNN.DECISION_CANDIDATE.md   # v3: solo estado CANDIDATE (effective_authority: none)
+  - decisions/TASK-NNNN.DECISION.md              # v3.1: SOLO como PROPUESTA en rama, derivada de un candidato aprobado en main, con requires_verifiable_human_approval: true + nota §B.3. NO efectiva hasta merge de Jorge
   - TASK.status(IN_PROGRESS|EVIDENCE_READY)
+  - TASK.status(HUMAN_DECISION)                  # v3.1: SOLO propuesto en rama en el mismo PR de la DECISION; lo materializa el merge de Jorge
   - TASK.status(BLOCKED)            # solo su propio tramo; recuperable
   - evidence, files_touched, proposed_decision
   - blocked, blocked_reason, last_legit_status, next_action
-may_emit_authority: [proposed]      # NUNCA human_final; candidato lleva effective_authority: none
+may_emit_authority: [proposed]      # NUNCA hace efectivo human_final; en rama solo propone (lo materializa el merge de Jorge)
 branch: coordination/task-NNNN     # nunca main
 forbidden_write:
-  - TASK.status(READY)              # READY es de Jorge, in-file en main
-  - decisions/                      # decisión final es de Jorge (candidatos van en candidates/)
-  - TASK.status(HUMAN_DECISION|HANDOFF_TO_MSO|CLOSED_REJECTED|ABORTED)
-  - authority(human_final|jorge|approved_by_jorge|mso_executable)
-  - candidate approval fields: approved_by, approval_method, approved_at, effective_authority(human_final), decided_by(jorge)  # v3: solo el evento de Jorge los materializa
+  - TASK.status(READY)              # READY es de Jorge, in-file en main (agente puede proponerlo en rama, no fijarlo)
+  - merge/efectivo en decisions/ en main         # v3.1: el agente NO mergea ni hace efectiva la DECISION; solo propone en rama
+  - hacer efectivo TASK.status(HUMAN_DECISION); fijar TASK.status(HANDOFF_TO_MSO|CLOSED_REJECTED|ABORTED)
+  - authority(human_final|jorge|approved_by_jorge|mso_executable) EFECTIVO en main sin merge de Jorge
+  - candidate approval fields en un CANDIDATO (approved_by, approval_method, approved_at, effective_authority(human_final), decided_by(jorge))  # esos campos solo en una propuesta DECISION condicional, nunca en el candidato
   - assistant_os/mso, assistant_os/police, assistant_os/policy, auth, .env, secrets, .github/workflows
   - merge, push:main, approve_pr, create_token
 ```
@@ -86,11 +90,11 @@ may_emit_authority: [proposed]      # NUNCA human_final
 branch: coordination/task-NNNN
 forbidden_write:
   - TASK.status(READY)
-  - decisions/
+  - merge/efectivo en decisions/ en main          # v3.1: puede proponer en rama una DECISION condicional SOLO si es el generador y ≠ revisor de ese PR; nunca mergea ni la hace efectiva
   - TASK.status(IN_PROGRESS|EVIDENCE_READY)   # son del ejecutor
-  - TASK.status(HUMAN_DECISION|HANDOFF_TO_MSO|CLOSED_REJECTED|ABORTED)
-  - authority(human_final|jorge|approved_by_jorge|mso_executable)
-  - candidate approval fields: approved_by, approval_method, approved_at, effective_authority(human_final), decided_by(jorge)
+  - hacer efectivo TASK.status(HUMAN_DECISION); fijar TASK.status(HANDOFF_TO_MSO|CLOSED_REJECTED|ABORTED)
+  - authority(human_final|jorge|approved_by_jorge|mso_executable) EFECTIVO en main sin merge de Jorge
+  - candidate approval fields en un CANDIDATO: approved_by, approval_method, approved_at, effective_authority(human_final), decided_by(jorge)
   - approve/promote a candidate it generated (no auto-review)   # generador ≠ revisor del mismo candidato
   - assistant_os/mso, assistant_os/police, assistant_os/policy, auth, .env, secrets, .github/workflows
   - merge, push:main, approve_pr, create_token
@@ -144,5 +148,6 @@ note: nada en coordination/ invoca ni ejecuta MSO; recibe la tarea por el flujo 
 8. No se borra evidencia: el fallo se retracta y se preserva (WORKLOG append-only).
 9. Fail-closed ante ambigüedad: bloquear y reportar, nunca inventar.
 10. El incumplimiento de cualquier cláusula invalida el artefacto producido (no se acepta evidencia fuera de contrato).
-11. **(v3) Candidato ≠ decisión.** Un agente puede redactar un `DECISION_CANDIDATE` en `candidates/` con `effective_authority: none`, pero **nunca** escribe los campos de aprobación (`approved_by`, `approval_method`, `approved_at`, `effective_authority: human_final`, `decided_by: jorge`). Un candidato con esos campos, o una `human_final` producida por un agente, es **inválida y nula**. `generated_by != approved_by` siempre.
+11. **(v3) Candidato ≠ decisión.** Un agente puede redactar un `DECISION_CANDIDATE` en `candidates/` con `effective_authority: none`, pero **nunca** escribe los campos de aprobación en el candidato. `generated_by != approved_by` siempre.
+11.1 **(v3.1) Propuesta de decisión condicional.** Un agente puede redactar **en rama** el artefacto `DECISION` (en `decisions/`) como **propuesta condicional** derivada de un candidato aprobado en `main`, con `requires_verifiable_human_approval: true` y la nota de no-efectividad (§B.3). Esa propuesta **no es efectiva**: solo el **merge verificable de Jorge** la materializa como `human_final`. Si un agente mergea, aprueba el PR, o hace efectivos esos campos en `main` sin merge de Jorge, el artefacto es **inválido y nulo**. El agente nunca mergea.
 12. **(v3) Runner no promueve.** Un Runner futuro puede *detectar y notificar* candidatos, pero **no** puede promoverlos a `human_final` ni mergear/aprobar. Solo el evento verificable de Jorge materializa la autoridad.

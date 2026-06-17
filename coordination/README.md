@@ -1,6 +1,7 @@
-# coordination/ — Plano de coordinación multiagente (Claude ↔ Codex) — **v3**
+# coordination/ — Plano de coordinación multiagente (Claude ↔ Codex) — **v3.1**
 
-> **Estado:** contrato documental (v3, *Human Approval Model* activo). **No ejecuta nada.** No automatizado. No hay Runner.
+> **Estado:** contrato documental (v3.1, *Human Approval Model* activo). **No ejecuta nada.** No automatizado. No hay Runner.
+> **Enmienda v3.1:** un agente puede **redactar en rama** el artefacto `DECISION` como **propuesta condicional** (derivada de un candidato aprobado), materializada **solo** por el merge verificable de Jorge. Ver `schemas/DECISION.schema.md §B.0/§C.bis`.
 > Este directorio es el **bus de coordinación versionado** entre agentes acotados (Claude, Codex) bajo autoridad final humana (Jorge) y autoridad de ejecución soberana (MSO).
 > **Diseño v2 (vigente como base):** ver [`proposals/COORDINATION_FLOW_V2_PROPOSAL.md`](proposals/COORDINATION_FLOW_V2_PROPOSAL.md).
 > **Diseño v3 (Human Approval Model, aprobado en PR #246):** ver [`proposals/HUMAN_APPROVAL_MODEL_V3.md`](proposals/HUMAN_APPROVAL_MODEL_V3.md).
@@ -112,7 +113,7 @@ Detalle: propuesta v2 §6.
 - **MSO is the only source of executable authority.**
 - Ningún agente puede escribir `authority=jorge`, `authority=human_final`, `effective_authority=human_final`, `approved_by`/`approved_by_jorge`, `approval_method`, `approved_at`, `decided_by: jorge` ni equivalente.
 - **(v3)** Un agente **puede redactar** un `DECISION_CANDIDATE` en `candidates/` (`generated_by`, `effective_authority: none`). Eso **no** es autoridad. `generated_by != approved_by`.
-- `human_final` se **materializa** por una acción humana verificable de Jorge: aprobación/merge del PR, commit firmado, o UI auditable (control de acceso del repo, no honor-system). Si un agente mergea o escribe campos de aprobación sin ese evento, el artefacto es **inválido y nulo**.
+- `human_final` se **materializa** por una acción humana verificable de Jorge: aprobación/merge del PR, commit firmado, o UI auditable (control de acceso del repo, no honor-system). **(v3.1)** Un agente puede **redactar en rama** la `DECISION` como propuesta condicional (`requires_verifiable_human_approval: true` + nota de no-efectividad); **no es efectiva** hasta el merge de Jorge. Si un agente mergea, o hace efectivos los campos de aprobación en `main` sin ese evento, el artefacto es **inválido y nulo**.
 - `mso_executable` **nunca** aparece como valor otorgable en este plano.
 
 ## Reviewer independiente (v2)
