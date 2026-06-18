@@ -333,6 +333,19 @@ def classify(rec: TaskRecord) -> None:
         rec.notes = "; ".join(notes) or "legacy/ambiguo: observar, no avanzar"
         return
 
+    # C2b (fail-closed) — falta CUALQUIER otro campo required en tarea no-legacy
+    # ⇒ observación segura. Una tarea con front-matter incompleto NUNCA puede
+    # convertirse en READY_FOR_EXECUTOR/READY_FOR_REVIEWER. (El caso de
+    # last_legit_status ausente ya retornó por C2 como LEGACY_AMBIGUOUS.)
+    if rec.missing_required:
+        rec.classification = BLOCKED_OBS
+        rec.role_destination = JORGE
+        rec.next_legal_action = None
+        shown = ", ".join(rec.missing_required[:5])
+        extra = "" if len(rec.missing_required) <= 5 else f" (+{len(rec.missing_required) - 5})"
+        rec.notes = f"missing required: {shown}{extra}"
+        return
+
     # C3 — estados terminales ⇒ no-op.
     if status in TERMINAL_STATUSES:
         rec.classification = NO_OP_TERMINAL

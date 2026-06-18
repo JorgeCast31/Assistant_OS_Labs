@@ -42,9 +42,13 @@ def _write_task(coord: Path, filename: str, frontmatter: str, body: str = "cuerp
     return path
 
 
-def _fm(**overrides) -> str:
-    """Front-matter v3 mínimo válido; overrides sustituyen/añaden claves."""
-    base = {
+def _fm(omit=(), **overrides) -> str:
+    """Front-matter v3 COMPLETO y válido (todos los required).
+
+    ``omit`` elimina campos required concretos para probar el fail-closed.
+    ``overrides`` sustituye escalares.
+    """
+    scalars = {
         "id": "TASK-0042-sample",
         "title": "Sample task",
         "author": "claude",
@@ -58,13 +62,24 @@ def _fm(**overrides) -> str:
         "created_at": "2026-06-18",
         "updated_at": "2026-06-18",
     }
-    base.update(overrides)
-    return "\n".join(f"{k}: {v}" for k, v in base.items())
+    scalars.update(overrides)
+    blocks = {
+        "scope": "scope:\n  - coordination/",
+        "permissions": "permissions:\n  read:\n    - coordination/",
+        "risks": "risks:\n  - none",
+        "evidence": "evidence: []",
+        "files_touched": "files_touched: []",
+        "proposed_decision": "proposed_decision: null",
+    }
+    omit = set(omit)
+    lines = [f"{k}: {v}" for k, v in scalars.items() if k not in omit]
+    lines += [block for key, block in blocks.items() if key not in omit]
+    return "\n".join(lines)
 
 
-def _record_by_status(tmp_path: Path, **fm_over):
+def _record_by_status(tmp_path: Path, omit=(), **fm_over):
     coord = _coord(tmp_path)
-    _write_task(coord, "TASK-0042.md", _fm(**fm_over))
+    _write_task(coord, "TASK-0042.md", _fm(omit=omit, **fm_over))
     records = reporter.build_records(tmp_path)
     assert len(records) == 1
     return records[0]
@@ -254,6 +269,44 @@ def test_empty_frontmatter_blocked_obs(tmp_path):
     rec = reporter.build_records(tmp_path)[0]
     assert rec.status is None
     assert rec.classification == reporter.BLOCKED_OBS
+
+
+# --------------------------------------------------------------------------- #
+# Required fields fail-closed (Codex #256): un campo required ausente NUNCA
+# puede convertir una tarea en accionable por agente.
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "missing", ["reviewer", "permissions", "scope", "assigned_agent", "next_action", "risks"]
+)
+def test_ready_missing_required_field_is_not_actionable(tmp_path, missing):
+    # READY válido salvo por UN campo required ausente.
+    rec = _record_by_status(tmp_path, omit=[missing], status="READY")
+    assert rec.classification == reporter.BLOCKED_OBS
+    assert rec.classification not in (
+        reporter.READY_FOR_EXECUTOR,
+        reporter.READY_FOR_REVIEWER,
+    )
+    assert rec.next_legal_action is None
+    assert rec.role_destination == reporter.JORGE
+    assert missing in rec.notes
+
+
+def test_evidence_ready_missing_required_not_routed_to_reviewer(tmp_path):
+    # EVIDENCE_READY con artefactos presentes pero a la que le falta un required:
+    # tampoco debe enrutarse al revisor (fail-closed antes de C6).
+    coord = _coord(tmp_path)
+    _write_task(coord, "TASK-0042.md", _fm(omit=["scope"], status="EVIDENCE_READY"))
+    (coord / "reports" / "TASK-0042.FINAL_REPORT.md").write_text("r", encoding="utf-8")
+    (coord / "worklogs" / "TASK-0042.WORKLOG.md").write_text("w", encoding="utf-8")
+    rec = reporter.build_records(tmp_path)[0]
+    assert rec.classification == reporter.BLOCKED_OBS
+    assert rec.classification != reporter.READY_FOR_REVIEWER
+
+
+def test_complete_frontmatter_still_actionable(tmp_path):
+    # Control: con TODOS los required presentes, READY sí es accionable.
+    rec = _record_by_status(tmp_path, status="READY")
+    assert rec.classification == reporter.READY_FOR_EXECUTOR
 
 
 # --------------------------------------------------------------------------- #
