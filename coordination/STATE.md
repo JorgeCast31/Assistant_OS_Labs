@@ -22,23 +22,45 @@ The TASK-0002 closure exercised and hardened the human-approval model end to end
 
 Key invariant confirmed in practice: a decision drafted by an agent is only a proposal until Jorge's verifiable merge; the merge is what conferred `human_final`. No agent merged, self-approved, or fabricated human authority. `HANDOFF_TO_MSO` was NOT set by this decision (it is MSO-only).
 
+## Reporter MVP pipeline (read-only) — designed → authorized → implemented → merged
+
+The Read-Only Queue Reporter pipeline ran end to end as **design → review → authorization → implementation**, with the Reporter/Runner never granted authority:
+
+- **PR #252 (merged):** Runner Design Review — Runner defined as a mechanical, read-only coordinator over `main`; never merges/approves/promotes/executes.
+- **PR #253 (merged):** Runner Manual Dry-Run — by hand, no code; confirmed the protocol is operable without authority; surfaced frictions F1–F4.
+- **PR #254 (merged):** Reporter MVP Spec — `proposals/READ_ONLY_QUEUE_REPORTER_MVP.md` + acceptance tests.
+- **PR #255 (merged by Jorge):** Implementation Authorization (scope-lock, TASK-0007) — authorized ONLY a minimal, future, read-only implementation.
+- **PR #256 (merged by Jorge):** Reporter MVP Implementation (TASK-0008) — `scripts/coordination_queue_reporter.py` + `tests/test_coordination_queue_reporter.py` (33 tests).
+
+**Reporter properties (invariant):**
+
+- Manual, read-only, no-authority. It reads `coordination/tasks/*.md`, detects sibling-artifact presence, classifies (F1–F4), and prints a queue to stdout.
+- Does **not** run headless (no cron/daemon/Actions/Docker/tunnel/VPS).
+- Does **not** write state (output is ephemeral stdout; it never mutates the repo).
+- Does **not** decide authority (output is observational; Jorge decides; `exit code` is informative, never authoritative).
+- Running the script manually is permitted only by the TASK-0007 authorization / Jorge's merge of #255; this does NOT generalize to open permission to execute arbitrary `scripts/*`.
+
+**Post-#256 dogfood (TASK-0009):** the merged Reporter was run on `main` (8 tasks) and the test suite passed (33). It wrote nothing (`git status` clean). Notable observation for Jorge (not a Reporter bug): TASK-0007 still shows `status: READY` in `main`, so the Reporter classifies it `READY_FOR_EXECUTOR`; that authorization was already consumed by TASK-0008, so it is a candidate for Jorge to close — the Reporter faithfully reports `main` and does not auto-resolve it.
+
 ## Next cycle
 
-- **Runner Design Review** — a separate design/review step (NOT implementation). It must produce a reviewable proposal under the existing contract; it does not build, schedule, or run anything.
-- `HANDOFF_TO_MSO` for TASK-0002 is not set and is not part of this cycle; it remains exclusive to MSO via the sovereign flow.
+- The next cycle is **NOT** implementation of a real Runner by default. The Reporter being merged does not authorize building the Runner.
+- Any next Runner layer requires its **own separate design/authorization decision** under the existing contract (a reviewable proposal + a verifiable human authorization by Jorge), exactly as the Reporter pipeline did.
+- `HANDOFF_TO_MSO` for TASK-0002 is not set and is not part of any cycle; it remains exclusive to MSO via the sovereign flow.
 
 ## Runner status
 
-Runner remains **blocked**.
+Runner remains **blocked**. The merged Reporter is an inert observer, not a Runner; no executing Runner exists.
 
-Preconditions now met:
+Preconditions met so far:
 
 1. TASK-0002 decision is completed. ✅ (PR #250, HUMAN_DECISION effective)
 2. The manual v2/v3.1 dogfood is declared closed. ✅
+3. Reporter MVP designed, authorized, implemented, merged (#252–#256). ✅ — read-only tool only; confers no Runner authority.
 
-Still required before any Runner work:
+Still required before any Runner-as-executor work:
 
-3. A separate Runner Design Review step authorizes the work — and even then, it authorizes design/review, not implementation. No headless execution, cron, workflows, Docker, tunnel/VPS.
+4. A **separate** design/authorization decision (not implied by the Reporter merge) authorizes the work — and even then, design/review first, not implementation. No headless execution, cron, workflows, Docker, tunnel/VPS.
 
 ## Safety constraints
 
