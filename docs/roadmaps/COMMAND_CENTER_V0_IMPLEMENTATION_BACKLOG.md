@@ -103,13 +103,27 @@
 - **Objective:** *discovery only* — document what a real provider channel to Claude/Codex would require,
   without building any adapter.
 - **Scope:** a discovery document + read-only display labeling seat/provider data as "metadata, not a
-  channel".
+  channel". The discovery document **must** specify a **non-authoritative dispatch contract** (delivery
+  plane, architecture §9.1), covering:
+  - **Non-authoritative dispatch contract** — dispatch directs attention only; never authorizes work or
+    changes `TASK.status`.
+  - **Minimum dispatch format** — the smallest payload a delivery carries.
+  - **Correlation** — TASK-ID / baseline SHA / PR / target agent must be correlatable.
+  - **Receipt validation** — how the recipient confirms it verified against `main` (TASK-ID, SHA,
+    `READY`, `assigned_agent`, scope/forbidden, no stop condition) before acting.
+  - **Context-retention limits** — what a delivery may carry and for how long; delivery is not durable
+    authority.
+  - **Proof that delivery ≠ authorization** — an explicit invariant + test criteria.
+  - **Anti-fiction criteria** — rules that prevent provider metadata from being presented as a real
+    channel when none is configured.
 - **No-scope:** no adapter, no network calls to providers, no credentials, no real integration; not a
   channel.
 - **Estimated modules:** 0 code modules (documentation + label-only UI copy).
 - **Dependencies:** Increments 1–2 (to label existing seat/provider panels).
-- **Definition of Done:** discovery doc enumerates requirements/risks; UI explicitly labels provider data
-  as metadata; no integration code added.
+- **Definition of Done:** discovery doc enumerates requirements/risks **and the full non-authoritative
+  dispatch contract** (format, correlation, receipt validation, retention limits, delivery≠authorization
+  proof, anti-fiction criteria); UI explicitly labels provider data as metadata; no integration code
+  added.
 - **Tests:** UI test that provider panels carry the "metadata, not a channel" label.
 - **Risk:** Medium (risk of overreach into real integration — explicitly forbidden here).
 - **Stop condition:** any move from discovery to implementation ⇒ stop; that is a separate authorization.

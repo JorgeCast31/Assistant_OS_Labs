@@ -113,6 +113,22 @@ A compact strip (reuse `MSOInvariantStrip.tsx` styling) showing, per actor:
 - The execution-closed indicator is **always present** and reflects `execution_allowed = can_execute_now
   = False`.
 
+### 6.1 Model delivery state (no live agent channel in v0)
+
+Command Center v0 **must not invent or infer model delivery states** (e.g., "Claude received the task",
+"Codex notified", "delivered ✓"). Delivery lives in the **non-authoritative delivery/attention plane**
+(architecture §9.1), and v0 has **no verifiable source** for it.
+
+- Until a verifiable delivery source exists, the UI must render an explicit statement equivalent to:
+
+  > **"Model delivery occurs outside the authority plane. No live agent channel is configured."**
+
+- When a future safe delivery source exists, delivery states must be rendered as **explicitly
+  non-authoritative** and **must never alter `TASK.status`** or any authority-plane value. A delivery
+  signal directs attention only; the recipient still verifies against `main` (§9.1).
+- Provider/seat metadata is **not** a delivery channel; it stays labeled "metadata, not a channel to a
+  model" (AC-V4).
+
 ---
 
 ## 7. Allowed vs not-allowed actions in the UI
@@ -152,6 +168,9 @@ A compact strip (reuse `MSOInvariantStrip.tsx` styling) showing, per actor:
 - [ ] **AC-V8.** Empty/error/unavailable states are explicit and never rendered as live/success.
 - [ ] **AC-V9.** The Command Center is additive: existing Mission Control spaces still work unchanged.
 - [ ] **AC-V10.** Source-of-truth indicator shows the `main` SHA the projection was computed from.
+- [ ] **AC-V11.** With no verifiable delivery source, the UI shows "Model delivery occurs outside the
+  authority plane. No live agent channel is configured."; no invented/inferred delivery state appears,
+  and no delivery signal alters `TASK.status` (§6.1).
 
 ---
 
