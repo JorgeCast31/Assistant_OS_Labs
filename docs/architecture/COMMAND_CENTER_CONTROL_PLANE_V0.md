@@ -277,21 +277,46 @@ Only the **authority plane** authorizes work; the other two **never** confer aut
 | Delivery / attention | chat msg, TASK/PR link, provider notification, manual invocation | No | No |
 | Evidence | branch, PR, WORKLOG, FINAL_REPORT, REVIEW, checks | No | No |
 
-### 9.2 Artifact channel (authority plane)
+### 9.2 Artifact contract across authority and evidence planes
 
-Within the **authority/evidence** planes, models coordinate **only** through committed artifacts in
-`main`, never through chat:
+Models coordinate through **committed artifacts**, never through chat. **Crucially, an artifact existing
+in a branch/PR does NOT make it authoritative.** Most artifacts in the flow below are **evidence or
+proposals** that originate in a branch/PR (evidence plane); they become **effective** only when they
+reach `main` through **Jorge's verifiable event (merge)**. Only `main` holds effective state.
 
-- **Jorge → MSO/Claude:** a `READY` TASK in `main` (the authorization).
-- **MSO → Claude:** the bounded Work Package (scope/permissions on the TASK).
-- **Claude → Codex:** `WORKLOG` + `FINAL_REPORT` + PR diff (the Evidence Bundle).
-- **Codex → Jorge:** `REVIEW` + `proposed_decision` (and optionally a `DECISION_CANDIDATE`).
-- **Jorge → MSO:** the verifiable merge → `HUMAN_DECISION` (then MSO, and only MSO, may set
-  `HANDOFF_TO_MSO`).
+The exchange (each arrow is a *proposed/evidence* exchange unless it names an effective-in-`main` state):
 
-Invariant: **"If it isn't committed, it didn't happen."** The Command Center renders these planes; it
-does not replace the authority plane with a side-channel, and it never promotes a delivery/attention
-signal into authority.
+- **Jorge → MSO/Claude:** a `READY` TASK **effective in `main`** = the authorization (**authority
+  plane**; only Jorge sets it).
+- **MSO → Claude:** the bounded Work Package (scope/permissions on the `READY` TASK in `main`).
+- **Claude → Codex:** `WORKLOG` + `FINAL_REPORT` + PR diff — **proposed evidence in branch/PR**, not
+  authority.
+- **Codex → Jorge:** `REVIEW` + `proposed_decision` (+ optional `DECISION_CANDIDATE`) — **proposed
+  review in branch/PR**, not an effective decision.
+- **Jorge → MSO:** the **verifiable merge** materializes `human_final` → `HUMAN_DECISION` **in `main`**
+  (then MSO, and only MSO, may set `HANDOFF_TO_MSO`).
+
+#### Location and effect of each artifact
+
+| Artifact | May live initially in branch/PR | Effect while NOT in `main` |
+|---|---|---|
+| TASK `status` / `READY` | Yes, as a **proposal** | **Not effective** (READY is real only in `main`, set by Jorge) |
+| `WORKLOG` / `FINAL_REPORT` | Yes | **Proposed evidence, not authority** |
+| `REVIEW` / `proposed_decision` | Yes | **Proposed review, not an effective decision** |
+| PR diff / checks | Yes | **Technical evidence, not authority** |
+| `DECISION` / `HUMAN_DECISION` | Yes, **conditional** | **Not effective until Jorge's verifiable merge** |
+
+How the Command Center must render this (mirrors the UI spec):
+
+- Evidence/proposals that live outside `main` are shown as **proposed / not effective / reviewable / not
+  authorizing**. They let Codex review and Jorge decide; they **never** change `TASK.status`, **never**
+  authorize work, and **never** equal `human_final`.
+- Only state **effective in `main`** is rendered as authoritative.
+
+Invariant: **"If it isn't committed [to `main`], it didn't happen."** The Command Center renders these
+planes; it does not replace the authority plane with a side-channel, it does not promote a
+delivery/attention signal into authority, and it does not promote branch/PR evidence into authority —
+only Jorge's verifiable merge into `main` does that.
 
 ---
 
