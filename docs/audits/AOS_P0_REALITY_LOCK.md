@@ -50,7 +50,23 @@ This document records the AOS-P0 cleanroom reality lock: a characterization-only
 | Context/enrichment | `assistant_os/identity_guard.py`, `assistant_os/cognition/context_resolver.py`, `assistant_os/core/enrichment.py` | Various | Stamps `guard_decision`, `action_type`, `subject_state` onto requests |
 | Enforcement gate | `assistant_os/police/enforcement.py` | `check(request)` | Token-bound gate, V1–V5 structural validation |
 | Legacy/compat path | `assistant_os/policy_engine.py` (root level) | `evaluate_policy(...)` | Called from identity_guard; separate from `policy/policy_engine.py` |
-| Direct-call compat | `assistant_os/agents/registry.py:162,219` | Direct agent execution | `policy_decision_ref=None` in comments; no Police gate in this path |
+| Direct-call path | `assistant_os/agents/registry.py:130–243` | `_host_launcher_entrypoint`, `_machine_operator_entrypoint` | BOTH build `PoliceGateRequest` with `token_ref=None` and call `check()`. Police V1 (TOKEN_MISSING) denies immediately. Fail-closed by design. Historical bypass concern is REMEDIATED in canonical main — see Finding A.1 below. |
+
+### Finding A.1 — Registry Direct-Call Path: Fail-Closed (Not Bypassed)
+
+**Files:** `assistant_os/agents/registry.py:130–243`  
+**Functions:** `_host_launcher_entrypoint` (line 130), `_machine_operator_entrypoint` (line 181)
+
+Both entrypoints:
+1. Build a `PoliceGateRequest` with all authority refs set to `None` (`token_ref=None`, `binding_ref=None`, `authorized_plan_ref=None`, `governance_ref=None`, `policy_decision_ref=None`).
+2. Call `check(police_request)` unconditionally before any delegation.
+3. Check `if police_decision.outcome != PoliceOutcome.PERMITTED` → return error result without executing.
+
+**Result in canonical main:** Police V1 (`if not request.token_ref`) denies immediately with `TOKEN_MISSING`. Neither `execute_host_action` nor `_mo_execute` is ever reached via this path.
+
+**Historical bypass concern (from prior audits):** Any claim that the direct-call registry path bypasses Police is a characterization of a historical state. In canonical main at SHA `b2fa39b9`, the bypass is REMEDIATED. The path does invoke `check()` and fails closed.
+
+**Limitation:** This is a static code observation from canonical main. Whether any prior version of these entrypoints lacked the Police call, and what the quarantined local checkout contains, is not verifiable within the AOS-P0 cleanroom scope.
 
 ---
 
@@ -77,7 +93,7 @@ Emitted for N0 (read-only, `approval_mode=none`) MACHINE_OPERATOR browser capabi
 - **Police V3** (`enforcement.py:145`): `if not request.policy_decision_ref` — presence-only. Accepts any non-empty string including `"auto:..."`.
 - **OpenClaw server** (`server.py:204`): `_REF_ID_RE.fullmatch(policy_decision_ref.strip())` where `_REF_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{5,127}$")` — format-only (6–128 chars, alnum/._:-). Does NOT verify semantic provenance.
 
-**Can it reach execution:** YES — `"auto:<intent_id>"` is the standard ref stamped for N0 read-only executions; these pass through the sovereign gate at `server.py:441`.
+**Downstream path (static call-chain only):** `"auto:<intent_id>"` is the standard ref stamped for N0 read-only executions in the webhook N0 path. Static call-chain analysis shows it is passed downstream toward the sovereign gate at `server.py:441`. End-to-end runtime reachability and execution are UNVERIFIED in AOS-P0 — no runtime trace was captured, no N0 execution was observed, and whether the server is enabled or reachable is unknown from code alone.
 
 **Semantic provenance verified:** NO — neither Police V3 nor the OpenClaw server verifies that this ref was produced by a real policy evaluation. The ref is synthetic: constructed from a locally generated UUID at the webhook server, not returned from `evaluate_policy()`.
 
@@ -99,7 +115,7 @@ Emitted in the N0 compatibility path when `approval_mode=none` and no explicit a
 - The compatibility path in `machine_operator_adapter.py` accepts it by construction; no Police gate validation applies to this ref as a token.
 - It is NOT a Police `token_ref` — it is an `approval_id` in a compatibility artifact.
 
-**Can it reach execution:** YES for N0 flows (`approval_mode=none`).
+**Downstream path (static call-chain only):** `"approval:auto:<intent_id>"` is used as the `approval_id` in the synthetic N0 artifact returned by the compat path. Static call-chain analysis indicates it is passed downstream in N0 flows. End-to-end runtime reachability and execution are UNVERIFIED in AOS-P0 — no runtime trace was captured, no N0 execution was observed.
 
 **Semantic provenance:** Synthetic by construction. Created by the adapter itself, not produced by a prior authority decision.
 
@@ -165,12 +181,20 @@ An actor with **direct Python process access** (not HTTP) could call `execute()`
 
 ## Characterization Tests
 
-See `tests/test_aos_p0_characterization.py` for targeted tests that prove:
-- Finding B.1: Police V3 accepts `"auto:<intent_id>"` (presence-only validation)
-- Finding B.2: The `approval:auto:` pattern is produced by the N0 compatibility path
-- Finding A: Police V3 rejects empty/None `policy_decision_ref`
+`tests/test_aos_p0_characterization.py` — 7 targeted non-productive tests.
 
-Test commands and raw results are recorded in `coordination/reports/TASK-0012.FINAL_REPORT.md`.
+**What the tests prove:**
+- Finding B.1: Police V3 accepts `"auto:<intent_id>"` when all other bindings are structurally valid (presence-only validation confirmed).
+- Finding B.1: Police V3 denies `None` and empty-string `policy_decision_ref` (structural rejection confirmed).
+- Finding B.2: The `approval:auto:` pattern is produced by the N0 compat path of `machine_operator_adapter._build_authority_artifact_policy_payload()`.
+- Finding B.3: `"auto:<id>"` and `"approval:auto:<id>"` are distinct (different fields, different code paths).
+
+**What the tests do NOT prove (code inspection only):**
+- Police `check()` does not invoke `evaluate_policy()` or `evaluate_governance()`. This claim is based on direct code inspection of `enforcement.py:85–264`: none of those calls appear in the function body. The tests prove structural acceptance/rejection of `policy_decision_ref` values, not the absence of all possible evaluation calls via runtime instrumentation.
+- End-to-end runtime reachability of N0 flows (not tested, not proven).
+- Registry direct-call fail-closed behavior (Finding A.1) is code inspection only; no characterization test was added for it in this audit.
+
+Test commands and raw results: `coordination/reports/TASK-0012.FINAL_REPORT.md`.
 
 ---
 

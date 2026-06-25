@@ -4,10 +4,15 @@ These tests prove specific structural properties of the authority surface
 as observed in canonical main (b2fa39b9). They are non-productive: no
 executions, no services, no credentials, no external calls.
 
-Findings proved:
+Findings proved by tests (7 tests total):
   A. Police V3 (policy_decision_ref) is a presence-only check — accepts "auto:<id>"
   B. Police V3 rejects None and empty-string policy_decision_ref
   C. Machine operator adapter N0 compat path produces "approval:auto:<intent_id>"
+
+Police does not invoke policy/governance evaluation according to direct code
+inspection of enforcement.check() (enforcement.py:85-264). These tests prove
+structural acceptance/rejection of policy_decision_ref, not absence of all
+possible evaluation calls via monkey-patching.
 
 These tests do not validate the full suite. They are narrowly scoped to AOS-P0.
 """
@@ -124,20 +129,6 @@ class TestPolicePolicyDecisionRefIsStructuralOnly:
         assert decision.outcome == PoliceOutcome.DENIED
         assert decision.reason == PoliceReason.POLICY_DECISION_REF_MISSING
         assert decision.permitted is False
-
-    def test_v3_does_not_call_evaluate_policy(self):
-        """Indirect proof: Police check() passes with no policy/governance engine called.
-
-        If Police called evaluate_policy(), it would need the PolicyContext and
-        grant_store — which are not provided in PoliceGateRequest. The fact that
-        PERMITTED is returned without those inputs proves no policy evaluation occurs.
-        """
-        _register_p0_fixtures()
-        request = _base_request(policy_decision_ref="auto:no-policy-engine-called")
-        decision = check(request)
-        # If evaluate_policy() had been called, it would fail or return DENIED
-        # because no PolicyContext is in scope. PERMITTED proves it was not called.
-        assert decision.permitted is True
 
 
 # ---------------------------------------------------------------------------

@@ -97,12 +97,46 @@ Webhook Server (N0 path)
 
 ## Reference Families — Where Emitted, Where Consumed, What Validates
 
-| Reference | Format | Emitted at | Consumed at | Validated by | Provenance |
-|---|---|---|---|---|---|
-| `policy_decision_ref = "auto:<intent_id>"` | `auto:<uuid4>` | `webhook_server.py:6448` | Police V3, OpenClaw server | Police: non-empty check; OpenClaw: regex format | SYNTHETIC — no `evaluate_policy()` call |
-| `approval:auto:<intent_id>` | `approval:auto:<str>` | `machine_operator_adapter.py:1852` | N0 downstream flows as `approval_id` | N0 compat path accepts by construction | SYNTHETIC — created by adapter, not by authority decision |
-| `policy_decision_ref = "decision:<plan_id>"` | `decision:<str>` | `core/orchestrator.py:179,486` | Police V3, downstream consumers | Police: non-empty; downstream: format varies | Derived from plan_id; still not a Police-verified policy artifact ref |
-| `governance_ref = "governance:<ts>:<action>"` | `governance:...:...` | `mso/governance_engine.py:69,95,...` | Police V2, authority context | Police: non-empty only | Produced by governance engine; provenance = governance decision |
+| Reference | Format | Emitted at | Consumed at | Validated by | Provenance | Runtime reachability |
+|---|---|---|---|---|---|---|
+| `policy_decision_ref = "auto:<intent_id>"` | `auto:<uuid4>` | `webhook_server.py:6448` | Police V3, OpenClaw server | Police: non-empty check; OpenClaw: regex format | SYNTHETIC — no `evaluate_policy()` call | UNVERIFIED — static call-chain only |
+| `approval:auto:<intent_id>` | `approval:auto:<str>` | `machine_operator_adapter.py:1852` | N0 downstream flows as `approval_id` | N0 compat path accepts by construction | SYNTHETIC — created by adapter, not by authority decision | UNVERIFIED — static call-chain only |
+| `policy_decision_ref = "decision:<plan_id>"` | `decision:<str>` | `core/orchestrator.py:179,486` | Police V3, downstream consumers | Police: non-empty; downstream: format varies | Derived from plan_id; Police-unverified semantic provenance | UNVERIFIED |
+| `governance_ref = "governance:<ts>:<action>"` | `governance:...:...` | `mso/governance_engine.py:69,95,...` | Police V2, authority context | Police: non-empty only | Produced by governance engine; provenance = governance decision | UNVERIFIED |
+
+---
+
+## Direct-Call Registry Path — Fail-Closed (Canonical Main)
+
+**File:** `assistant_os/agents/registry.py:130–243`
+
+Historical audits may describe a direct-call bypass through the agent registry. In canonical main at SHA `b2fa39b9` this concern is REMEDIATED:
+
+```
+Direct call → _host_launcher_entrypoint (registry.py:130)
+               or _machine_operator_entrypoint (registry.py:181)
+     │
+     ▼
+Build PoliceGateRequest(
+    token_ref=None,
+    binding_ref=None,
+    authorized_plan_ref=None,
+    governance_ref=None,
+    policy_decision_ref=None,
+    ...
+)
+     │
+     ▼
+check(police_request)                              ← Police V1
+     │  token_ref is None → TOKEN_MISSING → DENIED
+     ▼
+if decision.outcome != PERMITTED → return error    ← fail-closed
+     │
+     ▼
+(execute_host_action / _mo_execute never reached)
+```
+
+Both entrypoints call `check()` unconditionally before delegating. Any direct-call request has no authorization context and is denied at V1. This is the canonical main behavior. Whether prior versions or the quarantined checkout had a different structure is not characterizable within AOS-P0 cleanroom scope.
 
 ---
 
