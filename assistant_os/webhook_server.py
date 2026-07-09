@@ -1919,6 +1919,10 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._handle_mso_outcome_status_get()
             return
 
+        if path == "/system/authority-health":
+            self._handle_system_authority_health_get()
+            return
+
         if path == "/system-assistant/state":
             self._handle_system_assistant_state_get()
             return
@@ -2266,6 +2270,42 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 "error": "governance status unavailable",
                 "ephemeral": True,
             })
+
+    def _handle_system_authority_health_get(self) -> None:
+        """GET /system/authority-health -- read-only Authority/Health Surface v0.
+
+        Observational only. Grants no authority and executes nothing. Always
+        reports can_execute_now=false. Fail-soft: never raises.
+        """
+        auth_error = self._check_auth()
+        if auth_error:
+            status, error = auth_error
+            self._send_json_response(status, error)
+            return
+
+        try:
+            from .mso.authority_health import get_authority_health_snapshot
+            snapshot = get_authority_health_snapshot()
+            self._send_json_response(200, {"ok": True, **snapshot})
+        except Exception as exc:  # noqa: BLE001 -- fail-soft read-only surface
+            self._send_json_response(
+                200,
+                {
+                    "ok": False,
+                    "surface": "authority_health",
+                    "version": "v0",
+                    "overall": "NO_VERIFICADO",
+                    "authority_granted": False,
+                    "execution_allowed": False,
+                    "can_execute_now": False,
+                    "read_only": True,
+                    "observer": True,
+                    "checks": [],
+                    "blockers": [],
+                    "warnings": [],
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
 
     def _handle_mso_authority_status_get(self) -> None:
         """GET /mso/authority/status — read-only authority posture matrix summary."""
