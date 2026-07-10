@@ -4,6 +4,7 @@ import { useUIStore } from '@/stores/ui-store'
 import { useSystemPolling } from '@/hooks/use-system-polling'
 import { ExecutionNotOpenPanel } from './ExecutionNotOpenPanel'
 import { ConfirmFlowQueuePanel } from './ConfirmFlowQueuePanel'
+import { AuthorityHealthPanel } from './AuthorityHealthPanel'
 import { OutcomeStatusPanel } from './OutcomeStatusPanel'
 import type { SystemEvent } from '@/lib/types'
 
@@ -213,6 +214,15 @@ export function SovereignStatusView() {
               <OutcomeStatusPanel />
               <ConfirmFlowQueuePanel />
             </div>
+          </section>
+        )}
+
+        {!isInitializing && (
+          <section>
+            <p className="text-[10px] font-mono font-medium text-tx-muted uppercase tracking-widest mb-3">
+              Authority / Health
+            </p>
+            <AuthorityHealthPanel />
           </section>
         )}
 
