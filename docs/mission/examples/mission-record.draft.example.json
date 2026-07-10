@@ -1,0 +1,19 @@
+{
+  "mission_id": "EXAMPLE-DRAFT-0001",
+  "created_at": "2026-07-09T00:00:00+00:00",
+  "created_by": "example-operator",
+  "objective": "EXAMPLE ONLY — demonstrate the mission record file shape.",
+  "reason": "Illustrative draft for documentation and validation tests.",
+  "scope": "example:none (fictitious; not a real authorization)",
+  "allowed_operations": ["read_docs"],
+  "forbidden_operations": ["write", "deploy", "execute"],
+  "required_human_confirmations": [],
+  "authority_level": "NONE",
+  "status": "DRAFT",
+  "expires_at": null,
+  "linked_evidence": ["docs/mission/mission-record-file-v0.md"],
+  "risk_flags": ["example", "non-authoritative"],
+  "capability_requirements": [],
+  "execution_policy": "NO_EXECUTION",
+  "audit_notes": "This is a fictitious DRAFT example. It grants nothing and executes nothing."
+}
