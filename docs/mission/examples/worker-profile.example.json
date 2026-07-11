@@ -1,0 +1,23 @@
+{
+  "worker_id": "EXAMPLE-LOCAL-0001",
+  "display_name": "Example Local Model (DRAFT)",
+  "worker_type": "LOCAL_MODEL",
+  "provider": "example-local-runtime",
+  "model_family": "example-family",
+  "model_name": "example-7b",
+  "capabilities": ["summarization", "classification (descriptive only, not permissions)"],
+  "preferred_task_types": ["SUMMARIZATION", "CLASSIFICATION"],
+  "forbidden_task_types": ["CODE_PATCH"],
+  "max_risk_level": "DOCS_ONLY",
+  "supported_cost_tiers": ["LOCAL_PREFERRED", "LOW"],
+  "default_cost_tier": "LOCAL_PREFERRED",
+  "context_window_class": "MEDIUM",
+  "privacy_class": "LOCAL_ONLY",
+  "tool_access": [],
+  "requires_human_supervision": true,
+  "can_execute": false,
+  "can_write_external": false,
+  "can_access_secrets": false,
+  "status": "DRAFT",
+  "audit_notes": "Fictitious DRAFT worker profile. Not production config. Grants nothing."
+}
