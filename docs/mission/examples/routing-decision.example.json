@@ -1,0 +1,18 @@
+{
+  "decision_id": "routing-EXAMPLE00000000",
+  "packet_id": "EXAMPLE-PACKET-0001",
+  "mission_id": "EXAMPLE-DRAFT-0001",
+  "routing_status": "RECOMMENDED",
+  "recommended_worker_id": "EXAMPLE-LOCAL-0001",
+  "recommended_worker_type": "LOCAL_MODEL",
+  "recommended_model_preference": "example-7b (preference only, not authorization)",
+  "reasons": ["worker EXAMPLE-LOCAL-0001 eligible for SUMMARIZATION"],
+  "warnings": [],
+  "blockers": [],
+  "cost_tier": "LOCAL_PREFERRED",
+  "risk_level": "READ_ONLY",
+  "requires_human_review": true,
+  "can_execute": false,
+  "created_at": "2026-07-09T00:00:00+00:00",
+  "audit_notes": "Fictitious routing RECOMMENDATION, not an action taken. Grants nothing."
+}
