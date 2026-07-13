@@ -1,0 +1,28 @@
+{
+  "preview_id": "preview-EXAMPLE00000",
+  "mission_id": "EXAMPLE-DRAFT-0001",
+  "packet_id": "EXAMPLE-PACKET-0001",
+  "routing_decision_id": "routing-EXAMPLE00000000",
+  "preview_status": "READY_FOR_REVIEW",
+  "handoff_id": "handoff-EXAMPLE0000",
+  "selected_worker_id": "EXAMPLE-LOCAL-0001",
+  "selected_worker_type": "LOCAL_MODEL",
+  "steps": [
+    "routing: RECOMMENDED",
+    "eligible worker: EXAMPLE-LOCAL-0001",
+    "handoff envelope: built (DRAFT)",
+    "human review: required",
+    "dispatch: NOT enabled (can_dispatch=false)",
+    "execution: NOT enabled (can_execute=false)"
+  ],
+  "reasons": ["worker EXAMPLE-LOCAL-0001 eligible for SUMMARIZATION"],
+  "warnings": [],
+  "blockers": [],
+  "requires_human_review": true,
+  "created_at": "2026-07-09T00:00:00+00:00",
+  "expires_at": null,
+  "evidence_refs": ["docs/mission/orchestration-preview-v0.md"],
+  "audit_notes": "Fictitious dry-run PREVIEW, not an action taken. Dispatches nothing.",
+  "can_dispatch": false,
+  "can_execute": false
+}
