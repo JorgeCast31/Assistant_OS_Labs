@@ -3,6 +3,7 @@ Configuración central de Assistant OS.
 Constantes: workspace root, comandos permitidos, timeouts, límites.
 """
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -10,6 +11,18 @@ from dotenv import load_dotenv
 # Cargar variables de entorno desde .env en la raíz del proyecto
 # override=True asegura que siempre se lee el .env aunque existan vars de entorno previas
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[1] / ".env", override=True)
+
+
+def _config_log(message: str) -> None:
+    """Emit a config diagnostic to STDERR, only when ASSISTANT_OS_CONFIG_DEBUG is set.
+
+    Output hygiene (PR #270): imports must not write to stdout so JSON CLIs
+    (e.g. ``python -m assistant_os.mso.orchestration_preview_io``) can emit pure
+    JSON. This never writes to stdout and never prints full sensitive values.
+    """
+    flag = os.environ.get("ASSISTANT_OS_CONFIG_DEBUG", "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        print(message, file=sys.stderr, flush=True)
 
 # Raíz del workspace (directorio del repo, padre del paquete)
 WORKSPACE_ROOT: Path = Path(__file__).parent.parent.resolve()
@@ -43,23 +56,21 @@ WEBHOOK_ADMIN_TOKEN: str | None = os.environ.get("WEBHOOK_ADMIN_TOKEN") or None
 # Startup security logging — emitted at import time so the operator sees the
 # state before any request is accepted.
 if not WEBHOOK_TOKEN:
-    print(
+    _config_log(
         "[CONFIG] [CRITICAL] WEBHOOK_TOKEN not set — "
         "server will reject ALL requests (fail-closed). "
-        "Set WEBHOOK_TOKEN before starting.",
-        flush=True,
+        "Set WEBHOOK_TOKEN before starting."
     )
 else:
-    print("[CONFIG] WEBHOOK_TOKEN: configured.", flush=True)
+    _config_log("[CONFIG] WEBHOOK_TOKEN: configured.")
 
 if not WEBHOOK_ADMIN_TOKEN:
-    print(
+    _config_log(
         "[CONFIG] [WARNING] WEBHOOK_ADMIN_TOKEN not set — "
-        "admin endpoints will reject all requests.",
-        flush=True,
+        "admin endpoints will reject all requests."
     )
 else:
-    print("[CONFIG] WEBHOOK_ADMIN_TOKEN: configured.", flush=True)
+    _config_log("[CONFIG] WEBHOOK_ADMIN_TOKEN: configured.")
 WEBHOOK_HOST: str = os.environ.get("WEBHOOK_HOST", "0.0.0.0")
 WEBHOOK_PORT: int = int(os.environ.get("WEBHOOK_PORT", "8787"))
 CONTROL_PLANE_HOST: str = os.environ.get("CONTROL_PLANE_HOST", "127.0.0.1")
@@ -207,7 +218,7 @@ NOTION_TOKEN: str | None = os.environ.get("NOTION_TOKEN")
 # Notion WORK database ID (from .env, required)
 NOTION_WORK_DB_ID: str | None = os.environ.get("NOTION_WORK_DB_ID")
 
-print("[CONFIG] NOTION_WORK_DB_ID =", NOTION_WORK_DB_ID, flush=True)
+_config_log("[CONFIG] NOTION_WORK_DB_ID = " + ("<set>" if NOTION_WORK_DB_ID else "<unset>"))
 
 # ---------------------------------------------------------------------------
 # Validación de variables de entorno requeridas
