@@ -1,0 +1,41 @@
+{
+  "bundle_id": "EXAMPLE-INBOX-0001",
+  "created_at": "2026-07-09T00:00:00+00:00",
+  "created_by": "example-operator",
+  "requested_preview_id": "",
+  "audit_notes": "Fictitious inbox bundle for a read-only preview index. Not an action taken.",
+  "delegation_packet": {
+    "packet_id": "EXAMPLE-PACKET-0001",
+    "mission_id": "EXAMPLE-DRAFT-0001",
+    "created_at": "2026-07-09T00:00:00+00:00",
+    "created_by": "example-operator",
+    "objective": "EXAMPLE ONLY — summarize docs/mission for review.",
+    "task_type": "SUMMARIZATION",
+    "cost_tier": "LOCAL_PREFERRED",
+    "risk_level": "READ_ONLY",
+    "allowed_operations": ["read_docs"],
+    "forbidden_operations": ["write", "deploy", "execute"],
+    "allowed_inputs": ["repo:docs/mission"],
+    "forbidden_inputs": ["env", "secrets"],
+    "expected_outputs": ["short summary (ref)"],
+    "verification_plan": ["human compares to source docs"],
+    "acceptance_criteria": ["accurate and cites sources"],
+    "linked_evidence": ["docs/mission/mission-inbox-preview-index-v0.md"]
+  },
+  "workers": [
+    {
+      "worker_id": "EXAMPLE-LOCAL-0001",
+      "display_name": "Example Local Model (DRAFT)",
+      "worker_type": "LOCAL_MODEL",
+      "status": "AVAILABLE",
+      "supported_cost_tiers": ["LOCAL_PREFERRED", "LOW"],
+      "default_cost_tier": "LOCAL_PREFERRED",
+      "max_risk_level": "DOCS_ONLY",
+      "preferred_task_types": ["SUMMARIZATION"],
+      "privacy_class": "LOCAL_ONLY",
+      "can_execute": false,
+      "can_access_secrets": false,
+      "audit_notes": "Fictitious worker profile. Grants nothing."
+    }
+  ]
+}
