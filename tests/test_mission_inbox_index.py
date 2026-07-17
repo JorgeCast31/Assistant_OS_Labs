@@ -76,6 +76,21 @@ def test_empty_workers_no_unsafe_fallback(tmp_path):
     assert idx.records[0].status == InboxRecordStatus.NO_ELIGIBLE_WORKER
     assert idx.records[0].recommended_worker_id == ""
 
+def test_explicit_target_reaches_inbox_without_cross_worker_fallback(tmp_path):
+    packet = _packet(target_worker="CLAUDE_CODE")
+    codex = _worker(worker_id="A-CODEX", worker_type="CODEX")
+    claude = _worker(worker_id="Z-CLAUDE", worker_type="CLAUDE_CODE")
+    _write(tmp_path, "a.preview-bundle.json", _bundle(
+        delegation_packet=packet, workers=[codex, claude]))
+    idx = scan_inbox(str(tmp_path))
+    assert idx.records[0].recommended_worker_id == "Z-CLAUDE"
+
+    _write(tmp_path, "a.preview-bundle.json", _bundle(
+        delegation_packet=packet, workers=[codex]))
+    idx = scan_inbox(str(tmp_path))
+    assert idx.records[0].status == InboxRecordStatus.NO_ELIGIBLE_WORKER
+    assert idx.records[0].recommended_worker_id == ""
+
 def test_invalid_worker_not_eligible(tmp_path):
     _write(tmp_path, "a.preview-bundle.json", _bundle(workers=[_worker(status="DISABLED")]))
     idx = scan_inbox(str(tmp_path))

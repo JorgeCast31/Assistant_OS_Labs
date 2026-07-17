@@ -21,6 +21,8 @@ BLOCKED_BY_COST, BLOCKED_BY_STATUS, NEEDS_HUMAN_REVIEW, INVALID_INPUT.
 
 ## Heuristics (v0)
 - Worker must be `is_assignable()` (AVAILABLE) — DRAFT/DISABLED/BLOCKED/DEPRECATED excluded.
+- When `target_worker` is not `UNASSIGNED`, only a matching `worker_type` is eligible. The target is
+  a routing constraint, not authority, dispatch, or execution permission.
 - `forbidden_task_types` wins over `preferred_task_types`.
 - packet `cost_tier` must be in worker `supported_cost_tiers`.
 - packet `risk_level` rank must be ≤ worker `max_risk_level` rank; `BLOCKED` risk blocks globally.
@@ -38,7 +40,7 @@ workers never recommended. 6. Secret-incompatible worker blocked when packet nee
 7. forbidden beats preferred. 8. cost must be supported. 9. PREMIUM ⇒ human review. 10. risk BLOCKED blocks.
 11. external-write-confirmation ⇒ human review. 12. local preference favors local. 13. capabilities are
 descriptive. 14. no unsafe fallback. 15. no secrets in output. 16. stable JSON. 17. deterministic.
-18. no token/capability minting.
+18. no token/capability minting. 19. an explicit target worker type never falls back to a different type.
 
 ## Future connection
 A later governed step (NOT here) could take a `RECOMMENDED`/`NEEDS_HUMAN_REVIEW` recommendation into a

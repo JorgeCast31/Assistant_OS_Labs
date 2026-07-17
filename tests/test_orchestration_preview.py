@@ -1,7 +1,7 @@
 """Tests for Orchestration Preview / Dry-Run v0. No execution, no dispatch."""
 import json, os, copy
 from assistant_os.mso.delegation_packet import (
-    DelegationWorkPacket, CostTier, RiskLevel, TaskType, now_iso)
+    DelegationWorkPacket, CostTier, RiskLevel, TaskType, TargetWorker, now_iso)
 from assistant_os.mso.worker_registry import (
     WorkerProfile, WorkerType, WorkerStatus, PrivacyClass)
 from assistant_os.mso.handoff_envelope import HandoffEnvelope
@@ -78,6 +78,21 @@ def test_handoff_built_keeps_flags_false():
     assert isinstance(env, HandoffEnvelope)
     assert env.can_dispatch is False and env.can_execute is False
     assert p.handoff_id == env.handoff_id
+
+def test_explicit_target_propagates_to_preview_and_handoff_without_fallback():
+    codex = wkr(worker_id="A-CODEX", worker_type=WorkerType.CODEX)
+    claude = wkr(worker_id="Z-CLAUDE", worker_type=WorkerType.CLAUDE_CODE)
+    rec, env, preview = preview_handoff(
+        pkt(target_worker=TargetWorker.CLAUDE_CODE), [codex, claude])
+    assert rec.recommended_worker_id == "Z-CLAUDE"
+    assert preview.selected_worker_id == "Z-CLAUDE"
+    assert env is not None and env.target_worker_id == "Z-CLAUDE"
+    assert env.can_dispatch is False and env.can_execute is False
+
+    rec, env, preview = preview_handoff(
+        pkt(target_worker=TargetWorker.CLAUDE_CODE), [codex])
+    assert preview.preview_status == PreviewStatus.NO_ELIGIBLE_WORKER
+    assert env is None and preview.selected_worker_id == ""
 
 def test_no_handoff_if_no_eligible_worker():
     rec, env, p = preview_handoff(pkt(), [wkr(status=WorkerStatus.BLOCKED)])

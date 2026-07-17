@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from .delegation_packet import DelegationWorkPacket, CostTier, RiskLevel
+from .delegation_packet import DelegationWorkPacket, CostTier, RiskLevel, TargetWorker
 from .worker_registry import WorkerProfile, WorkerType, PrivacyClass
 
 
@@ -44,7 +44,7 @@ _RISK_RANK = {
 }
 
 # Mismatch reason -> RoutingStatus category (for single-cause aggregation).
-_STATUS = "status"; _COST = "cost"; _RISK = "risk"; _PRIVACY = "privacy"; _TASK = "task"
+_STATUS = "status"; _COST = "cost"; _RISK = "risk"; _PRIVACY = "privacy"; _TASK = "task"; _TARGET = "target"
 
 
 def _now_iso() -> str:
@@ -102,6 +102,12 @@ def explain_worker_mismatch(packet: DelegationWorkPacket, worker: WorkerProfile)
     reasons: list[str] = []
     if not worker.is_assignable():
         reasons.append(f"{_STATUS}: worker not assignable (status {worker.status.value})")
+    if (packet.target_worker != TargetWorker.UNASSIGNED
+            and worker.worker_type.value != packet.target_worker.value):
+        reasons.append(
+            f"{_TARGET}: packet targets {packet.target_worker.value}; "
+            f"worker type is {worker.worker_type.value}"
+        )
     if packet.task_type.value in worker.forbidden_task_types:
         reasons.append(f"{_TASK}: task_type {packet.task_type.value} is forbidden by worker")
     if packet.cost_tier.value not in worker.supported_cost_tiers:
