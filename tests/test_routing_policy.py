@@ -1,7 +1,7 @@
 """Tests for Model / Worker Routing Policy v0. Recommendation only; no execution."""
 import json, os
 from assistant_os.mso.delegation_packet import (
-    DelegationWorkPacket, CostTier, RiskLevel, TaskType, now_iso)
+    DelegationWorkPacket, CostTier, RiskLevel, TaskType, TargetWorker, now_iso)
 from assistant_os.mso.worker_registry import (
     WorkerProfile, WorkerType, WorkerStatus, PrivacyClass)
 from assistant_os.mso.routing_policy import (
@@ -89,6 +89,27 @@ def test_local_preferred_favors_local():
     r = recommend_worker(pkt(cost_tier=CostTier.LOCAL_PREFERRED), [cloud, local])
     assert r.recommended_worker_type == WorkerType.LOCAL_MODEL.value
 
+def test_explicit_target_worker_type_is_respected():
+    codex = wkr(worker_id="A-CODEX", worker_type=WorkerType.CODEX)
+    claude = wkr(worker_id="Z-CLAUDE", worker_type=WorkerType.CLAUDE_CODE)
+    r = recommend_worker(pkt(target_worker=TargetWorker.CLAUDE_CODE), [codex, claude])
+    assert r.routing_status == RoutingStatus.RECOMMENDED
+    assert r.recommended_worker_id == "Z-CLAUDE"
+    assert r.recommended_worker_type == WorkerType.CLAUDE_CODE.value
+
+def test_explicit_target_never_falls_back_to_different_worker_type():
+    codex = wkr(worker_id="A-CODEX", worker_type=WorkerType.CODEX)
+    r = recommend_worker(pkt(target_worker=TargetWorker.CLAUDE_CODE), [codex])
+    assert r.routing_status == RoutingStatus.NO_ELIGIBLE_WORKER
+    assert r.recommended_worker_id == ""
+    assert any("packet targets CLAUDE_CODE" in blocker for blocker in r.blockers)
+
+def test_unassigned_target_preserves_deterministic_selection():
+    first = wkr(worker_id="A", worker_type=WorkerType.CODEX)
+    second = wkr(worker_id="B", worker_type=WorkerType.CLAUDE_CODE)
+    r = recommend_worker(pkt(target_worker=TargetWorker.UNASSIGNED), [second, first])
+    assert r.recommended_worker_id == "A"
+
 def test_local_only_blocks_non_local():
     p = pkt(forbidden_inputs=["cloud"])
     w = wkr(worker_type=WorkerType.CODEX, privacy_class=PrivacyClass.INTERNAL_ONLY)
@@ -103,8 +124,9 @@ def test_secret_privacy_incompatible_blocks():
 
 def test_deterministic_ordering():
     a = wkr(worker_id="A"); b = wkr(worker_id="B")
-    assert [w.worker_id for w in eligible_workers(pkt(), [b, a])] == \
-           [w.worker_id for w in eligible_workers(pkt(), [b, a])]
+    forward = [w.worker_id for w in eligible_workers(pkt(), [a, b])]
+    reverse = [w.worker_id for w in eligible_workers(pkt(), [b, a])]
+    assert forward == reverse == ["A", "B"]
 
 def test_json_roundtrip_stable():
     r = recommend_worker(pkt(), [wkr()])
